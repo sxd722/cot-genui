@@ -223,12 +223,13 @@ const STEP_INSTRUCTION: Record<StepName, string> = {
   clarifying_questions:
     "执行【Step 6: clarifying_questions 最小化提问】：只针对低置信/冲突且阻塞关键决策的槽位，提出澄清问题，放进 questions 数组，标明 reason 和 blocking。每个问题必须提供 2-4 个 options（候选答案数组），让用户一键选择。",
   generate:
-    "执行【Step 7: generate 生成】：基于已确定的槽位值【以及用户对提问的回答 user_answers（若有）】，生成最终方案。把方案拆成 5-8 张【卡片】放进 result.cards 数组，每张卡片含 title/body(摘要)/tag/icon。关键：根据 tag 类型产出【结构化字段】以便前端图形化渲染——\n" +
-    "• tag=预算/费用 → 填 metrics 数组({label,value,unit}) 便于渲染比例条；\n" +
-    "• tag=行程/交通 → 填 timeline 数组({time,event}) 便于渲染时间轴；\n" +
-    "• tag=餐饮/提醒/购物/住宿/清单 → 填 items 字符串数组 便于渲染可勾选清单；\n" +
-    "• 每张卡片尽量填 highlight(一句亮点)。\n" +
-    "同时给出 result.summary(一句话总结) 和 result.assumptions(假设清单)。不要输出整段 plan 文字。",
+    "执行【Step 7: generate 生成】：基于已确定的槽位值【以及用户对提问的回答 user_answers（若有）】，生成最终方案。把方案拆成 5 张【卡片】放进 result.cards 数组。\n" +
+    "【最重要】每张卡片必须手写 html 字段——一段精炼的可视化 HTML 片段（每张控制在 300 字符以内），用内联 style 和 inline svg 把内容图形化。举例：预算→简单环形/条形图、行程→纵向时间轴、清单→带 emoji 的列表、对比→两栏。要求：\n" +
+    "• 纯 HTML+CSS+SVG，背景透明，浅色文字 rgba(255,255,255,.9)，系统字体；\n" +
+    "• 禁止 script/on*事件/外部资源（前端 iframe 沙箱渲染）；\n" +
+    "• 务必精简！class 名用单字母，样式紧凑，避免冗长，控制总输出量；\n" +
+    "• 每张卡片可视化各有特色。\n" +
+    "每张卡片还含 title/body(纯文本备份)/tag/icon/highlight。同时给出 result.summary 和 result.assumptions。",
 };
 
 /** 执行单步推理 */
@@ -423,6 +424,7 @@ function mockStep(input: StepInput): StepOutput {
         { title: "注意事项", body: "结合上下文画像的个性化提醒", tag: "提醒", icon: "💡", highlight: "带娃/长辈出行须知",
           items: ["提前预约门票", "携带常备药品", "注意天气变化", "保留弹性时间"] },
         { title: "预算参考", body: "基于画像的预算区间估算", tag: "预算", icon: "💰", highlight: "舒适型档位",
+          html: `<style>.b{font-family:system-ui;color:rgba(255,255,255,.95)}.wrap{display:flex;align-items:center;gap:14px}.ring{flex-shrink:0}.lg{display:flex;flex-direction:column;gap:5px;flex:1}.row{display:flex;align-items:center;gap:6px;font-size:11px}.dot{width:8px;height:8px;border-radius:50%}.bar{height:5px;border-radius:3px;background:rgba(255,255,255,.2);overflow:hidden}.bar>i{display:block;height:100%;border-radius:3px}.amt{margin-left:auto;font-weight:600}.tot{margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.2);display:flex;justify-content:space-between;font-size:12px;font-weight:700}</style><div class="b wrap"><svg class="ring" width="84" height="84" viewBox="0 0 84 84"><circle cx="42" cy="42" r="34" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="10"/><circle cx="42" cy="42" r="34" fill="none" stroke="#fbbf24" stroke-width="10" stroke-dasharray="120 213" stroke-linecap="round" transform="rotate(-90 42 42)"/><circle cx="42" cy="42" r="34" fill="none" stroke="#34d399" stroke-width="10" stroke-dasharray="96 213" stroke-linecap="round" transform="rotate(60 42 42)"/><circle cx="42" cy="42" r="34" fill="none" stroke="#60a5fa" stroke-width="10" stroke-dasharray="64 213" stroke-linecap="round" transform="rotate(155 42 42)"/><text x="42" y="40" text-anchor="middle" fill="white" font-size="10" font-family="system-ui">合计</text><text x="42" y="54" text-anchor="middle" fill="white" font-size="15" font-weight="700" font-family="system-ui">¥4000</text></svg><div class="lg"><div class="row"><span class="dot" style="background:#fbbf24"></span>交通<span class="bar" style="width:50px"><i style="width:100%;background:#fbbf24"></i></span><span class="amt">1500</span></div><div class="row"><span class="dot" style="background:#34d399"></span>住宿<span class="bar" style="width:50px"><i style="width:80%;background:#34d399"></i></span><span class="amt">1200</span></div><div class="row"><span class="dot" style="background:#60a5fa"></span>餐饮<span class="bar" style="width:50px"><i style="width:53%;background:#60a5fa"></i></span><span class="amt">800</span></div><div class="row"><span class="dot" style="background:#f472b6"></span>其他<span class="bar" style="width:50px"><i style="width:33%;background:#f472b6"></i></span><span class="amt">500</span></div><div class="tot"><span>总计</span><span>¥4000</span></div></div></div>`,
           metrics: [
             { label: "交通", value: 1500, unit: "元" },
             { label: "住宿", value: 1200, unit: "元" },

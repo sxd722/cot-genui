@@ -103,50 +103,53 @@ export const planCardSchema = {
   type: "object",
   properties: {
     title: { type: "string", description: "卡片标题" },
-    body: { type: "string", description: "卡片正文摘要（1-2句）" },
+    body: { type: "string", description: "卡片正文摘要（1-2句，纯文本备份）" },
     tag: {
       type: "string",
-      description: "分类标签，决定卡片图形化样式：交通/住宿/餐饮/行程/提醒/预算/购物/总览",
+      description: "分类标签：交通/住宿/餐饮/行程/提醒/预算/购物/总览",
     },
     icon: { type: "string", description: "一个 emoji 图标" },
     highlight: {
       type: "string",
-      description: "最关键的一句信息/亮点（醒目展示）",
+      description: "最关键的一句信息/亮点",
     },
-    // 清单型：餐饮/行程/提醒/购物 等，渲染为可勾选清单
+    // 模型为该卡片手写的可视化 HTML 代码（含内联 CSS / inline SVG，不含 script）
+    html: {
+      type: "string",
+      description:
+        "为这张卡片精心设计的可视化 HTML 代码片段：含内联 <style> 和 inline SVG，把内容图形化（如预算饼图、行程时间轴、对比卡片、清单等）。禁止 <script>/on* 事件属性/外部资源引用。背景透明，文字浅色（卡片底色为深色渐变）。",
+    },
     items: {
       type: "array",
       items: { type: "string" },
-      description: "清单条目（每项可被用户勾选标记完成）",
+      description: "清单条目（html 缺失时的兜底渲染）",
     },
-    // 指标型：预算 等，渲染为数值条
     metrics: {
       type: "array",
       items: {
         type: "object",
         properties: {
-          label: { type: "string", description: "指标名，如 高铁/住宿/餐饮" },
-          value: { type: "number", description: "数值（金额/数量）" },
-          unit: { type: "string", description: "单位，如 元/天/人" },
+          label: { type: "string" },
+          value: { type: "number" },
+          unit: { type: "string" },
         },
         required: ["label", "value", "unit"],
         additionalProperties: false,
       },
-      description: "数值指标（用于渲染比例条/对比图）",
+      description: "数值指标（html 缺失时的兜底渲染）",
     },
-    // 时间型：行程/交通 等，渲染为时间轴
     timeline: {
       type: "array",
       items: {
         type: "object",
         properties: {
-          time: { type: "string", description: "时间点或第几天，如 Day1/08:00" },
-          event: { type: "string", description: "该时段安排" },
+          time: { type: "string" },
+          event: { type: "string" },
         },
         required: ["time", "event"],
         additionalProperties: false,
       },
-      description: "时间轴节点（用于渲染行程时间线）",
+      description: "时间轴（html 缺失时的兜底渲染）",
     },
   },
   required: ["title", "body", "tag", "icon"],
@@ -275,11 +278,13 @@ export interface InferPlanCard {
   icon: string;
   /** 亮点信息（醒目展示） */
   highlight?: string;
-  /** 清单条目（可勾选） */
+  /** 模型手写的可视化 HTML（iframe 沙箱渲染） */
+  html?: string;
+  /** 清单条目（html 缺失时兜底） */
   items?: string[];
-  /** 数值指标（比例条） */
+  /** 数值指标（html 缺失时兜底） */
   metrics?: CardMetric[];
-  /** 时间轴 */
+  /** 时间轴（html 缺失时兜底） */
   timeline?: CardTimelineNode[];
   /** 允许额外字段 */
   [key: string]: unknown;
