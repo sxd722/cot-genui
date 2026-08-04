@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 但保留 .env.example 作为配置模板
+!.env.example
 
 # IDE / 工具私有目录
 .zcode/
