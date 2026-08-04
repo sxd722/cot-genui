@@ -103,12 +103,51 @@ export const planCardSchema = {
   type: "object",
   properties: {
     title: { type: "string", description: "卡片标题" },
-    body: { type: "string", description: "卡片正文内容" },
+    body: { type: "string", description: "卡片正文摘要（1-2句）" },
     tag: {
       type: "string",
-      description: "分类标签，如 交通/住宿/餐饮/行程/提醒/预算/购物",
+      description: "分类标签，决定卡片图形化样式：交通/住宿/餐饮/行程/提醒/预算/购物/总览",
     },
     icon: { type: "string", description: "一个 emoji 图标" },
+    highlight: {
+      type: "string",
+      description: "最关键的一句信息/亮点（醒目展示）",
+    },
+    // 清单型：餐饮/行程/提醒/购物 等，渲染为可勾选清单
+    items: {
+      type: "array",
+      items: { type: "string" },
+      description: "清单条目（每项可被用户勾选标记完成）",
+    },
+    // 指标型：预算 等，渲染为数值条
+    metrics: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string", description: "指标名，如 高铁/住宿/餐饮" },
+          value: { type: "number", description: "数值（金额/数量）" },
+          unit: { type: "string", description: "单位，如 元/天/人" },
+        },
+        required: ["label", "value", "unit"],
+        additionalProperties: false,
+      },
+      description: "数值指标（用于渲染比例条/对比图）",
+    },
+    // 时间型：行程/交通 等，渲染为时间轴
+    timeline: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          time: { type: "string", description: "时间点或第几天，如 Day1/08:00" },
+          event: { type: "string", description: "该时段安排" },
+        },
+        required: ["time", "event"],
+        additionalProperties: false,
+      },
+      description: "时间轴节点（用于渲染行程时间线）",
+    },
   },
   required: ["title", "body", "tag", "icon"],
   additionalProperties: false,
@@ -216,11 +255,32 @@ export interface InferQuestion {
 }
 
 /** 单张方案卡片 */
+/** 指标（预算等） */
+export interface CardMetric {
+  label: string;
+  value: number;
+  unit: string;
+}
+
+/** 时间轴节点（行程等） */
+export interface CardTimelineNode {
+  time: string;
+  event: string;
+}
+
 export interface InferPlanCard {
   title: string;
   body: string;
   tag: string;
   icon: string;
+  /** 亮点信息（醒目展示） */
+  highlight?: string;
+  /** 清单条目（可勾选） */
+  items?: string[];
+  /** 数值指标（比例条） */
+  metrics?: CardMetric[];
+  /** 时间轴 */
+  timeline?: CardTimelineNode[];
   /** 允许额外字段 */
   [key: string]: unknown;
 }

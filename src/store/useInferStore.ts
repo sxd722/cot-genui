@@ -223,6 +223,9 @@ export const useInferStore = create<InferState>((set, get) => ({
           conflicts: nextConflicts,
           questions: nextQuestions,
           result: nextResult,
+          // clarifying_questions 步成功后，问题可能已变化，
+          // 旧 answers 按 idx 存会与新问题错位，故清空。
+          ...(name === "clarifying_questions" ? { answers: {} } : {}),
           steps: {
             ...st.steps,
             [name]: {

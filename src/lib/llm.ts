@@ -223,7 +223,12 @@ const STEP_INSTRUCTION: Record<StepName, string> = {
   clarifying_questions:
     "执行【Step 6: clarifying_questions 最小化提问】：只针对低置信/冲突且阻塞关键决策的槽位，提出澄清问题，放进 questions 数组，标明 reason 和 blocking。每个问题必须提供 2-4 个 options（候选答案数组），让用户一键选择。",
   generate:
-    "执行【Step 7: generate 生成】：基于已确定的槽位值【以及用户对提问的回答 user_answers（若有）】，生成最终方案。把方案拆成 5-8 张【卡片】放进 result.cards 数组，每张卡片含 title(标题)/body(内容)/tag(分类标签如 交通/住宿/餐饮/行程/提醒/预算)/icon(一个 emoji)。同时给出 result.summary(一句话总结) 和 result.assumptions(假设清单)。不要输出整段 plan 文字，必须拆成卡片数组。",
+    "执行【Step 7: generate 生成】：基于已确定的槽位值【以及用户对提问的回答 user_answers（若有）】，生成最终方案。把方案拆成 5-8 张【卡片】放进 result.cards 数组，每张卡片含 title/body(摘要)/tag/icon。关键：根据 tag 类型产出【结构化字段】以便前端图形化渲染——\n" +
+    "• tag=预算/费用 → 填 metrics 数组({label,value,unit}) 便于渲染比例条；\n" +
+    "• tag=行程/交通 → 填 timeline 数组({time,event}) 便于渲染时间轴；\n" +
+    "• tag=餐饮/提醒/购物/住宿/清单 → 填 items 字符串数组 便于渲染可勾选清单；\n" +
+    "• 每张卡片尽量填 highlight(一句亮点)。\n" +
+    "同时给出 result.summary(一句话总结) 和 result.assumptions(假设清单)。不要输出整段 plan 文字。",
 };
 
 /** 执行单步推理 */
@@ -405,14 +410,27 @@ function mockStep(input: StepInput): StepOutput {
     clarifying_questions: { reasoning: "对象无法推断，必须问。", outputs: { questions: 1 }, questions: [
       { question: "这个任务具体涉及谁/为谁做？", reason: "对象缺失且无法从上下文推断，影响任务方向", blocking: true, options: ["为自己", "为家人", "为朋友", "工作需要"] },
     ] },
-    generate: { reasoning: "基于推断生成方案卡片。", outputs: { cards: 5 }, result: {
+    generate: { reasoning: "基于推断生成方案卡片（含结构化字段供图形化）。", outputs: { cards: 5 }, result: {
       summary: `针对「${input.query}」的初步方案（常驻${homeCity}）`,
       cards: [
-        { title: "概览", body: `为常驻${homeCity}的用户准备的初步方案`, tag: "总览", icon: "✨" },
-        { title: "核心安排", body: "基于已推断信息的主线安排，待确认细节后细化", tag: "行程", icon: "📋" },
-        { title: "注意事项", body: "结合上下文画像的个性化提醒", tag: "提醒", icon: "💡" },
-        { title: "预算参考", body: "基于画像的预算区间估算", tag: "预算", icon: "💰" },
-        { title: "待确认", body: "还有几处需你确认的信息", tag: "提醒", icon: "❓" },
+        { title: "概览", body: `为常驻${homeCity}的用户准备的初步方案`, tag: "总览", icon: "✨", highlight: "一键生成的个性化方案" },
+        { title: "核心安排", body: "基于已推断信息的主线安排", tag: "行程", icon: "📋", highlight: "待确认细节后细化",
+          timeline: [
+            { time: "Day1", event: "抵达 + 周边适应" },
+            { time: "Day2", event: "核心景点深度游" },
+            { time: "Day3", event: "返程" },
+          ] },
+        { title: "注意事项", body: "结合上下文画像的个性化提醒", tag: "提醒", icon: "💡", highlight: "带娃/长辈出行须知",
+          items: ["提前预约门票", "携带常备药品", "注意天气变化", "保留弹性时间"] },
+        { title: "预算参考", body: "基于画像的预算区间估算", tag: "预算", icon: "💰", highlight: "舒适型档位",
+          metrics: [
+            { label: "交通", value: 1500, unit: "元" },
+            { label: "住宿", value: 1200, unit: "元" },
+            { label: "餐饮", value: 800, unit: "元" },
+            { label: "门票/其他", value: 500, unit: "元" },
+          ] },
+        { title: "待确认", body: "还有几处需你确认的信息", tag: "提醒", icon: "❓",
+          items: ["具体出行日期", "同行人数", "特殊饮食需求"] },
       ],
       assumptions: [`假设地点相关：${homeCity}`, "假设采用默认偏好"],
     } },
