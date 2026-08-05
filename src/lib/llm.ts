@@ -28,6 +28,12 @@ function loadSystemPrompt(): string {
   return readFileSync(promptPath, "utf-8");
 }
 
+function loadCardPlanSpec(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const promptPath = join(here, "..", "prompts", "card-plan-spec.md");
+  return readFileSync(promptPath, "utf-8");
+}
+
 /* ------------------------------------------------------------------ */
 /*  JSON 提取容错                                                       */
 /*  很多兼容端点（GLM 等）即使指定了 response_format: json_schema，     */
@@ -178,6 +184,8 @@ export interface StepOutput {
   questions?: InferResponse["clarifying_questions"];
   /** generate 步会有 result */
   result?: InferResponse["result"];
+  /** generate 步产出的 CardPlan IR */
+  cardPlan?: unknown;
   rawDurationMs: number;
 }
 
@@ -223,13 +231,10 @@ const STEP_INSTRUCTION: Record<StepName, string> = {
   clarifying_questions:
     "执行【Step 6: clarifying_questions 最小化提问】：只针对低置信/冲突且阻塞关键决策的槽位，提出澄清问题，放进 questions 数组，标明 reason 和 blocking。每个问题必须提供 2-4 个 options（候选答案数组），让用户一键选择。",
   generate:
-    "执行【Step 7: generate 生成】：基于已确定的槽位值【以及用户对提问的回答 user_answers（若有）】，生成最终方案。把方案拆成 5 张【卡片】放进 result.cards 数组。\n" +
-    "【最重要】每张卡片必须手写 html 字段——一段精炼的可视化 HTML 片段（每张控制在 300 字符以内），用内联 style 和 inline svg 把内容图形化。举例：预算→简单环形/条形图、行程→纵向时间轴、清单→带 emoji 的列表、对比→两栏。要求：\n" +
-    "• 纯 HTML+CSS+SVG，背景透明，浅色文字 rgba(255,255,255,.9)，系统字体；\n" +
-    "• 禁止 script/on*事件/外部资源（前端 iframe 沙箱渲染）；\n" +
-    "• 务必精简！class 名用单字母，样式紧凑，避免冗长，控制总输出量；\n" +
-    "• 每张卡片可视化各有特色。\n" +
-    "每张卡片还含 title/body(纯文本备份)/tag/icon/highlight。同时给出 result.summary 和 result.assumptions。",
+    "执行【Step 7: generate 生成】：基于已确定的槽位值【以及用户对提问的回答 user_answers（若有）】，设计一份 CardPlan 卡片方案。\n" +
+    "CardPlan 的结构、可用 block/action 菜单、数据流语法见下方的「CardPlan IR 规范」。\n" +
+    "你要做的是：选 block 类型 + 用前序推断的槽位值填内容 + 用 navigate/onSelect 连接卡片流程。\n" +
+    "不是写代码，而是语义化的设计描述——编译器会翻译成可渲染的卡片。",
 };
 
 /** 执行单步推理 */
@@ -276,6 +281,10 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
           "",
         ]
       : []),
+    // generate 步注入 CardPlan IR 规范
+    ...(name === "generate"
+      ? ["## CardPlan IR 规范", loadCardPlanSpec(), ""]
+      : []),
     "## 本步任务",
     STEP_INSTRUCTION[name],
     "",
@@ -288,7 +297,7 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
         : "") +
       (name === "conflict_detection" ? "此外必须在【顶层】加一个 conflicts 数组字段（不要嵌套进 outputs）。" : "") +
       (name === "clarifying_questions" ? "此外必须在【顶层】加一个 questions 数组字段（不要嵌套进 outputs），每个元素形如 {question,reason,blocking,options:[2-4个候选答案字符串]}。" : "") +
-      (name === "generate" ? "此外必须在【顶层】加一个 result 对象字段（不要嵌套进 outputs），含 summary(一句话总结)/cards(5-8张卡片数组,每张含title/body/tag/icon)/assumptions(假设数组)。" : ""),
+      (name === "generate" ? "此外必须在【顶层】加一个 cardPlan 对象字段（不要嵌套进 outputs），严格按上方 CardPlan IR 规范的结构输出。同时给出 result.summary(一句话总结) 和 result.assumptions(假设数组)。" : ""),
   ].join("\n");
 
   const parsed = (await callLLM({
@@ -313,6 +322,7 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
     conflicts: pick<StepOutput["conflicts"]>(parsed.conflicts, "conflicts"),
     questions: pick<StepOutput["questions"]>(parsed.questions, "questions"),
     result: pick<StepOutput["result"]>(parsed.result, "result"),
+    cardPlan: pick<unknown>(parsed.cardPlan, "cardPlan"),
     rawDurationMs: Date.now() - startedAt,
   };
 }
@@ -411,30 +421,21 @@ function mockStep(input: StepInput): StepOutput {
     clarifying_questions: { reasoning: "对象无法推断，必须问。", outputs: { questions: 1 }, questions: [
       { question: "这个任务具体涉及谁/为谁做？", reason: "对象缺失且无法从上下文推断，影响任务方向", blocking: true, options: ["为自己", "为家人", "为朋友", "工作需要"] },
     ] },
-    generate: { reasoning: "基于推断生成方案卡片（含结构化字段供图形化）。", outputs: { cards: 5 }, result: {
-      summary: `针对「${input.query}」的初步方案（常驻${homeCity}）`,
+    generate: { reasoning: "基于推断生成 CardPlan IR。", outputs: {}, result: {
+      summary: `针对「${input.query}」的初步方案`,
+      assumptions: [`假设地点相关：${homeCity}`],
+    }, cardPlan: {
+      skillName: input.query,
+      iconText: "S",
+      reasoning: "mock CardPlan",
       cards: [
-        { title: "概览", body: `为常驻${homeCity}的用户准备的初步方案`, tag: "总览", icon: "✨", highlight: "一键生成的个性化方案" },
-        { title: "核心安排", body: "基于已推断信息的主线安排", tag: "行程", icon: "📋", highlight: "待确认细节后细化",
-          timeline: [
-            { time: "Day1", event: "抵达 + 周边适应" },
-            { time: "Day2", event: "核心景点深度游" },
-            { time: "Day3", event: "返程" },
-          ] },
-        { title: "注意事项", body: "结合上下文画像的个性化提醒", tag: "提醒", icon: "💡", highlight: "带娃/长辈出行须知",
-          items: ["提前预约门票", "携带常备药品", "注意天气变化", "保留弹性时间"] },
-        { title: "预算参考", body: "基于画像的预算区间估算", tag: "预算", icon: "💰", highlight: "舒适型档位",
-          html: `<style>.b{font-family:system-ui;color:rgba(255,255,255,.95)}.wrap{display:flex;align-items:center;gap:14px}.ring{flex-shrink:0}.lg{display:flex;flex-direction:column;gap:5px;flex:1}.row{display:flex;align-items:center;gap:6px;font-size:11px}.dot{width:8px;height:8px;border-radius:50%}.bar{height:5px;border-radius:3px;background:rgba(255,255,255,.2);overflow:hidden}.bar>i{display:block;height:100%;border-radius:3px}.amt{margin-left:auto;font-weight:600}.tot{margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.2);display:flex;justify-content:space-between;font-size:12px;font-weight:700}</style><div class="b wrap"><svg class="ring" width="84" height="84" viewBox="0 0 84 84"><circle cx="42" cy="42" r="34" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="10"/><circle cx="42" cy="42" r="34" fill="none" stroke="#fbbf24" stroke-width="10" stroke-dasharray="120 213" stroke-linecap="round" transform="rotate(-90 42 42)"/><circle cx="42" cy="42" r="34" fill="none" stroke="#34d399" stroke-width="10" stroke-dasharray="96 213" stroke-linecap="round" transform="rotate(60 42 42)"/><circle cx="42" cy="42" r="34" fill="none" stroke="#60a5fa" stroke-width="10" stroke-dasharray="64 213" stroke-linecap="round" transform="rotate(155 42 42)"/><text x="42" y="40" text-anchor="middle" fill="white" font-size="10" font-family="system-ui">合计</text><text x="42" y="54" text-anchor="middle" fill="white" font-size="15" font-weight="700" font-family="system-ui">¥4000</text></svg><div class="lg"><div class="row"><span class="dot" style="background:#fbbf24"></span>交通<span class="bar" style="width:50px"><i style="width:100%;background:#fbbf24"></i></span><span class="amt">1500</span></div><div class="row"><span class="dot" style="background:#34d399"></span>住宿<span class="bar" style="width:50px"><i style="width:80%;background:#34d399"></i></span><span class="amt">1200</span></div><div class="row"><span class="dot" style="background:#60a5fa"></span>餐饮<span class="bar" style="width:50px"><i style="width:53%;background:#60a5fa"></i></span><span class="amt">800</span></div><div class="row"><span class="dot" style="background:#f472b6"></span>其他<span class="bar" style="width:50px"><i style="width:33%;background:#f472b6"></i></span><span class="amt">500</span></div><div class="tot"><span>总计</span><span>¥4000</span></div></div></div>`,
-          metrics: [
-            { label: "交通", value: 1500, unit: "元" },
-            { label: "住宿", value: 1200, unit: "元" },
-            { label: "餐饮", value: 800, unit: "元" },
-            { label: "门票/其他", value: 500, unit: "元" },
-          ] },
-        { title: "待确认", body: "还有几处需你确认的信息", tag: "提醒", icon: "❓",
-          items: ["具体出行日期", "同行人数", "特殊饮食需求"] },
+        { id: "overview", purpose: "概览", blocks: [
+          { kind: "hero", title: input.query, text: `常驻${homeCity}的方案` },
+        ], actions: [{ id: "next", label: "查看详情", type: "navigate", targetCardId: "detail" }] },
+        { id: "detail", purpose: "详情", blocks: [
+          { kind: "summary", title: "方案详情", value: "基于已推断信息的方案", valueFromSlot: "destination" },
+        ] },
       ],
-      assumptions: [`假设地点相关：${homeCity}`, "假设采用默认偏好"],
     } },
   };
 

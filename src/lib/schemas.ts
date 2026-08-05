@@ -179,7 +179,7 @@ export const resultSchema = {
       description: "对用户的画像总结（基于推断）",
     },
   },
-  required: ["summary", "cards", "assumptions"],
+  required: ["summary", "assumptions"],
   additionalProperties: false,
 } as const;
 
@@ -292,7 +292,8 @@ export interface InferPlanCard {
 
 export interface InferResult {
   summary: string;
-  cards: InferPlanCard[];
+  /** 卡片数组（旧的 StackedCards 模式用；DSL 模式用 cardPlan） */
+  cards?: InferPlanCard[];
   assumptions: string[];
   /** 画像总结（可选，旧字段兼容） */
   inferred_profile?: string;
