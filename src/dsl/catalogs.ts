@@ -83,6 +83,42 @@ const BASE_TOOL_CATALOG: ToolCatalogEntry[] = [
     outputs: ["strings.statusMessage"],
     outcomes: ["success", "cancelled"],
   },
+  // —— spec §9 文件/文档/剪贴板工具（PDF MVP 原生）——
+  {
+    adapterId: "system.file.pick",
+    operation: "document",
+    inputs: [],
+    outputs: ["strings.selectedFileName", "strings.statusMessage"],
+    outcomes: ["success", "cancelled", "error"],
+  },
+  {
+    adapterId: "document.text.extract",
+    operation: "extract",
+    inputs: ["strings.selectedFileUri", "strings.outputFormat"],
+    outputs: ["strings.previewText", "numbers.progress", "numbers.totalPages"],
+    outcomes: ["success", "needsConfirmation", "error"],
+  },
+  {
+    adapterId: "vision.ocr",
+    operation: "recognize",
+    inputs: ["strings.selectedFileUri"],
+    outputs: ["strings.previewText"],
+    outcomes: ["success", "error"],
+  },
+  {
+    adapterId: "system.file.save",
+    operation: "save",
+    inputs: ["strings.outputFileName", "strings.outputFormat"],
+    outputs: ["strings.outputFileUri", "strings.statusMessage"],
+    outcomes: ["success", "cancelled", "error"],
+  },
+  {
+    adapterId: "system.clipboard.write",
+    operation: "write",
+    inputs: ["strings.previewText"],
+    outputs: ["strings.statusMessage"],
+    outcomes: ["success", "error"],
+  },
 ];
 
 const TRAVEL_TOOL_CATALOG: ToolCatalogEntry[] = [

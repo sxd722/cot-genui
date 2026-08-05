@@ -66,8 +66,8 @@ export function compileCardPlan(plan: CardPlan): CompileResult {
     );
     dslCards.push(card);
 
-    // flow card：收集 transitions（来自 IRAction + onSelect + 默认导航）
-    const transitions = collectTransitions(node, i, plan.cards.length, plan, extraTransitions);
+    // flow card：收集 transitions（来自 IRAction + onSelect + tool outcomes）
+    const transitions = collectTransitions(node, card, extraTransitions);
     flowCards.push({
       id: node.id,
       purpose: node.purpose,
@@ -488,29 +488,50 @@ function compileAction(ir: IRAction, cardId: string, notices: CompileNotice[]): 
 
 function collectTransitions(
   node: CardNode,
-  index: number,
-  total: number,
-  plan: CardPlan,
+  card: Card,
   extra: FlowTransition[],
 ): FlowTransition[] {
   const transitions: FlowTransition[] = [...extra];
   const seen = new Set<string>();
 
   const add = (t: FlowTransition) => {
-    const key = `${t.event}`;
-    if (!seen.has(key)) {
-      seen.add(key);
+    if (!seen.has(t.event)) {
+      seen.add(t.event);
       transitions.push(t);
     }
   };
 
-  // 从 IRAction 的 navigate 类型生成 transition
+  // 1. IRAction navigate 类型 → 目标卡 transition
   for (const irAction of node.actions ?? []) {
     if (irAction.type === "navigate" && irAction.targetCardId) {
       add({ event: irAction.id, targetCardId: irAction.targetCardId });
     }
-    // select/toggle/confirm 也可能有 event，但目标需在 onSelect/extra 里处理
-    // external-link/llm-call 降级的，event 存在但无 target，不加 transition
+  }
+
+  // 2. 编译后的 local action：有 event 但无对应 transition → 自环（留在当前卡）
+  //    这覆盖 confirm/select/toggle/external-link(降级)/llm-call(降级) 等
+  for (const action of card.actions) {
+    if (action.kind !== "local") continue;
+    const evt = action.event || action.id;
+    if (!evt) continue;
+    // onSelect 产生的 action 已在 extra 里处理；这里只补顶层 actions
+    if (action.id === action.event || action.event) {
+      if (!seen.has(evt)) {
+        add({ event: evt, targetCardId: node.id }); // 自环
+      }
+    }
+  }
+
+  // 3. tool action：每个 outcome 都要 transition（spec §5.3），无目标则自环
+  for (const action of card.actions) {
+    if (action.kind !== "tool" || !action.toolCall) continue;
+    // 查 IRAction 是否指定了某 outcome 的目标（暂不支持，统一自环）
+    for (const outcome of action.toolCall.outcomes ?? []) {
+      const evt = `${action.id}.${outcome}`;
+      if (!seen.has(evt)) {
+        add({ event: evt, targetCardId: node.id }); // 自环
+      }
+    }
   }
 
   return transitions;
