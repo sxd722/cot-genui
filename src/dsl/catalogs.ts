@@ -119,6 +119,14 @@ const BASE_TOOL_CATALOG: ToolCatalogEntry[] = [
     outputs: ["strings.statusMessage"],
     outcomes: ["success", "error"],
   },
+  // LLM 调用（卡片内 AI 分析/建议）
+  {
+    adapterId: "ai.llm",
+    operation: "chat",
+    inputs: ["strings.title", "strings.statusMessage"],
+    outputs: ["strings.aiResponse", "strings.statusMessage"],
+    outcomes: ["success", "error"],
+  },
 ];
 
 const TRAVEL_TOOL_CATALOG: ToolCatalogEntry[] = [

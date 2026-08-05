@@ -137,16 +137,15 @@ function compileCard(
     if (blocks.length >= 5) break;
   }
 
-  // 编译 IRAction → DSL action
-  const actions: Action[] = [];
+  // 编译 IRAction → DSL action（可见 action，限 3 个）
+  const visibleActions: Action[] = [];
   for (const irAction of node.actions ?? []) {
     const compiled = compileAction(irAction, node.id, notices);
-    if (compiled) actions.push(compiled);
-    if (actions.length >= 3) break; // spec §4.10 最多 3 action
+    if (compiled) visibleActions.push(compiled);
+    if (visibleActions.length >= 3) break; // spec §4.10 最多 3 个可见 action
   }
-  actions.push(...extraActions);
-  // 去重 + 限 3 个
-  const uniqueActions = dedupActions(actions).slice(0, 3);
+  // block 内部 action（choice/toggle 等）不计入可见 action 上限
+  const uniqueActions = dedupActions([...visibleActions, ...extraActions]);
 
   // template：从 IR 推断
   const template = inferTemplate(node, blocks);
@@ -214,6 +213,21 @@ function compileBlock(
     }
 
     case "toggle":
+    case "toggle": {
+      const actionId = `${id}-toggle`;
+      // 为 toggle block 生成对应的 toggle action（切换 booleans.{currentFromSlot}）
+      if (ir.currentFromSlot) {
+        extraActions.push({
+          id: actionId,
+          label: "切换",
+          role: "secondary",
+          kind: "local",
+          dispatch: "form",
+          operation: "state.toggle",
+          statePath: `booleans.${ir.currentFromSlot}`,
+          event: actionId,
+        });
+      }
       return {
         block: {
           id,
@@ -223,11 +237,28 @@ function compileBlock(
           valueBinding: ir.currentFromSlot
             ? { path: `booleans.${ir.currentFromSlot}`, fallback: "false", formatter: "plain" }
             : undefined,
-          actionId: `${id}-toggle`,
+          actionId,
         },
+        extraActions,
       };
+    }
 
-    case "choice":
+    case "choice": {
+      const actionId = `${id}-select`;
+      // 为 choice block 生成对应的 select action（写入 strings.{currentFromSlot}）
+      if (ir.currentFromSlot) {
+        extraActions.push({
+          id: actionId,
+          label: "选择",
+          role: "secondary",
+          kind: "local",
+          dispatch: "form",
+          operation: "state.select",
+          statePath: `strings.${ir.currentFromSlot}`,
+          stateValue: "", // 运行时由 ChoiceBlock 传入动态值
+          event: actionId,
+        });
+      }
       return {
         block: {
           id,
@@ -238,9 +269,11 @@ function compileBlock(
           valueBinding: ir.currentFromSlot
             ? { path: `strings.${ir.currentFromSlot}`, fallback: "", formatter: "plain" }
             : undefined,
-          actionId: `${id}-select`,
+          actionId,
         },
+        extraActions,
       };
+    }
 
     /* —— list（核心：处理可点击项的数据流）—— */
     case "list": {
@@ -460,21 +493,49 @@ function compileAction(ir: IRAction, cardId: string, notices: CompileNotice[]): 
         event: ir.id,
       };
 
-    case "llm-call":
-      // spec §8.3 禁止 kind: "agent"
-      notices.push({
-        level: "unsupported",
-        message: `llm-call action 标记为不支持（spec 禁止卡片内 agent），降级为 confirm`,
-        location: cardId,
-      });
+    case "pick-file":
+      // 文件选择 → tool: system.file.pick
       return {
         id: ir.id,
         label: ir.label,
         role,
-        kind: "local",
-        dispatch: "form",
-        operation: "none",
-        event: ir.id,
+        kind: "tool",
+        dispatch: "host",
+        toolCall: {
+          adapterId: "system.file.pick",
+          operation: "document",
+          outcomes: ["success", "cancelled", "error"],
+        },
+      };
+
+    case "ocr":
+      // 文字识别 → tool: document.text.extract
+      return {
+        id: ir.id,
+        label: ir.label,
+        role,
+        kind: "tool",
+        dispatch: "host",
+        toolCall: {
+          adapterId: "document.text.extract",
+          operation: "extract",
+          outcomes: ["success", "needsConfirmation", "error"],
+        },
+      };
+
+    case "llm-call":
+      // LLM 调用 → tool: ai.llm/chat（web 端真实调用）
+      return {
+        id: ir.id,
+        label: ir.label,
+        role,
+        kind: "tool",
+        dispatch: "host",
+        toolCall: {
+          adapterId: "ai.llm",
+          operation: "chat",
+          outcomes: ["success", "error"],
+        },
       };
 
     default:
@@ -522,14 +583,19 @@ function collectTransitions(
     }
   }
 
-  // 3. tool action：每个 outcome 都要 transition（spec §5.3），无目标则自环
+  // 3. tool action：每个 outcome 都要 transition（spec §5.3）
+  //    若 IRAction 有 targetCardId → success 跳目标卡，其余自环
+  const irActionMap = new Map((node.actions ?? []).map((a) => [a.id, a]));
   for (const action of card.actions) {
     if (action.kind !== "tool" || !action.toolCall) continue;
-    // 查 IRAction 是否指定了某 outcome 的目标（暂不支持，统一自环）
+    const irAct = irActionMap.get(action.id);
+    const successTarget = irAct?.targetCardId;
     for (const outcome of action.toolCall.outcomes ?? []) {
       const evt = `${action.id}.${outcome}`;
       if (!seen.has(evt)) {
-        add({ event: evt, targetCardId: node.id }); // 自环
+        // success 且有 targetCardId → 跳目标；否则自环
+        const target = outcome === "success" && successTarget ? successTarget : node.id;
+        add({ event: evt, targetCardId: target });
       }
     }
   }
@@ -569,6 +635,18 @@ function collectInitialState(plan: CardPlan, notices: CompileNotice[]): InitialS
       // progress 默认值
       if (block.kind === "progress" && block.valueFromSlot) {
         if (!numbers[block.valueFromSlot]) numbers[block.valueFromSlot] = 0;
+      }
+      // choice 默认值：第一个 option 作为初始选中
+      if (block.kind === "choice" && block.currentFromSlot && block.options?.length) {
+        if (!strings[block.currentFromSlot]) {
+          strings[block.currentFromSlot] = block.options[0];
+        }
+      }
+      // toggle 默认值：false
+      if (block.kind === "toggle" && block.currentFromSlot) {
+        if (booleans[block.currentFromSlot] === undefined) {
+          booleans[block.currentFromSlot] = false;
+        }
       }
     }
   }

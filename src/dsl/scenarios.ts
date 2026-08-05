@@ -129,7 +129,7 @@ export const pdfOcrPlan: CardPlan = {
         },
       ],
       actions: [
-        { id: "pick-file", label: "选择文件", type: "navigate", targetCardId: "choose-format", role: "primary" },
+        { id: "pick-file", label: "选择文件", type: "pick-file", targetCardId: "choose-format", role: "primary" },
       ],
     },
     {
@@ -151,7 +151,7 @@ export const pdfOcrPlan: CardPlan = {
         },
       ],
       actions: [
-        { id: "start-ocr", label: "开始识别", type: "navigate", targetCardId: "recognizing", role: "primary" },
+        { id: "start-ocr", label: "开始识别", type: "ocr", targetCardId: "recognizing", role: "primary" },
         { id: "back-pick", label: "返回", type: "navigate", targetCardId: "select-source", role: "secondary" },
       ],
     },
@@ -205,7 +205,7 @@ export const stockTrackerPlan: CardPlan = {
   skillName: "股票跟踪",
   iconText: "S",
   reasoning:
-    "自选股管理：选择关注的股票→查看最新行情(股价/涨跌)→异常波动告警(红/绿)→LLM给出行动建议。涉及 metric 展示和卡片内 LLM（spec暂不支持，降级）。",
+    "自选股管理：选择关注的股票→查看最新行情(股价/涨跌)→异常波动告警(红/绿)→点击AI建议调用真实LLM写回卡片。",
   cards: [
     {
       id: "watchlist-setup",
@@ -254,6 +254,13 @@ export const stockTrackerPlan: CardPlan = {
           title: "⚠ 暴涨告警",
           text: "今日涨幅 7.2%，触及异常波动阈值",
           tone: "danger",
+        },
+        // AI 建议区（LLM 调用前为空，调用后显示 strings.aiResponse）
+        {
+          kind: "summary",
+          title: "AI 行动建议",
+          valueFromSlot: "aiResponse",
+          value: "点击下方「AI行动建议」获取分析",
         },
       ],
       actions: [

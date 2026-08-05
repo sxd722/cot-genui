@@ -135,7 +135,10 @@ export type IRActionType =
   | "confirm" // 确认/提交（编译成 local + 可选 event）
   | "copy" // 复制文字（编译成 tool: system.clipboard.write）
   | "save" // 保存文件（编译成 tool: system.file.save）
-  | "llm-call"; // 卡片内 LLM 调用（spec 不支持，编译器标记 unsupported）
+  | "pick-file" // 选择文件（编译成 tool: system.file.pick）
+  | "ocr" // 文字识别（编译成 tool: document.text.extract / vision.ocr）
+  | "llm-call" // 卡片内 LLM 调用（编译成 tool: ai.llm）
+  | "tool"; // 通用工具调用（直接指定 adapterId/operation）
 
 export interface IRAction {
   id: string;

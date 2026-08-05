@@ -116,8 +116,21 @@ export function validateArtifact(artifact: unknown): ValidationResult {
     if (c?.blocks && c.blocks.length > 5) {
       errors.push(`卡片 ${c.id}: block 数量 ${c.blocks.length} 超过上限 5`);
     }
-    if (c?.actions && c.actions.length > 3) {
-      errors.push(`卡片 ${c.id}: action 数量 ${c.actions.length} 超过上限 3`);
+    // §4.10: action 上限。block 内部 action（被 block 引用，或由可点击列表项生成）
+    // 不计入可见上限 3，但总 action 不超过 8。
+    if (c?.actions) {
+      const blockIds = (c.blocks ?? []).map((b) => b?.id).filter(Boolean);
+      const blockActionIds = new Set((c.blocks ?? []).map((b) => b?.actionId).filter(Boolean));
+      const isBlockInternal = (aid: string) =>
+        blockActionIds.has(aid) ||
+        blockIds.some((bid) => aid.startsWith(`${bid}-pick-`));
+      const visibleCount = c.actions.filter((a) => !isBlockInternal(a.id)).length;
+      if (visibleCount > 3) {
+        errors.push(`卡片 ${c.id}: 可见 action 数量 ${visibleCount} 超过上限 3`);
+      }
+      if (c.actions.length > 8) {
+        errors.push(`卡片 ${c.id}: action 总数 ${c.actions.length} 超过上限 8`);
+      }
     }
   }
 

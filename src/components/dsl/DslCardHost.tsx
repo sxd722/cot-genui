@@ -10,6 +10,7 @@ import {
   localActionEvent,
   toolActionEvent,
 } from "@/dsl/reducer";
+import { executeTool } from "@/dsl/toolExecutor";
 import { DslThemeProvider } from "./ThemeProvider";
 import { DslCardView } from "./DslCardView";
 
@@ -24,7 +25,7 @@ interface HostState {
 
 type HostAction =
   | { type: "TRIGGER"; actionId: string; dynamicStateValue?: string }
-  | { type: "TOOL_RESULT"; actionId: string; outcome: string }
+  | { type: "TOOL_RESULT"; actionId: string; outcome: string; stateUpdates?: Record<string, unknown> }
   | { type: "RESET" };
 
 function makeReducer(artifact: CardArtifact) {
@@ -73,12 +74,28 @@ function makeReducer(artifact: CardArtifact) {
       }
 
       case "TOOL_RESULT": {
-        // 工具完成，按 outcome 跳转
+        // 工具完成：写入 stateUpdates + 按 outcome 跳转
         const evt = toolActionEvent(a.actionId, a.outcome);
         const transitions = getFlowCardTransitions(artifact, s.currentCardId);
         const target = resolveTransition(transitions, evt);
+        // 应用工具返回的 state 更新
+        let nextState = s.state;
+        if (a.stateUpdates) {
+          nextState = JSON.parse(JSON.stringify(s.state));
+          for (const [path, val] of Object.entries(a.stateUpdates)) {
+            const dot = path.indexOf(".");
+            if (dot < 0) continue;
+            const ns = path.slice(0, dot);
+            const key = path.slice(dot + 1);
+            const bucket = nextState[ns as keyof typeof nextState];
+            if (bucket && typeof bucket === "object") {
+              (bucket as Record<string, unknown>)[key] = val;
+            }
+          }
+        }
         return {
           ...s,
+          state: nextState,
           currentCardId: target ?? s.currentCardId,
           pendingTool: null,
         };
@@ -116,21 +133,33 @@ function DslCardHostInner({ artifact }: { artifact: CardArtifact }) {
     { currentCardId: artifact.dsl.startCardId, state: createRuntimeState(artifact), pendingTool: null },
   );
 
-  // 工具模拟：pendingTool 设置后，延迟随机选一个 outcome
+  // 工具执行：pendingTool 设置后，调用真实 toolExecutor
   const pendingAction = state.pendingTool;
+  const [toolMessage, setToolMessage] = useState<string | null>(null);
   useEffect(() => {
     if (!pendingAction) return;
     const card = artifact.dsl.cards.find((c) => c.id === state.currentCardId);
     const action = card?.actions.find((x) => x.id === pendingAction);
     if (!action?.toolCall) return;
-    const outcomes = action.toolCall.outcomes;
-    // MVP：默认选 success（若 success 不在 outcomes 则选第一个）
-    const outcome = outcomes.includes("success") ? "success" : outcomes[0];
-    const t = setTimeout(() => {
-      dispatch({ type: "TOOL_RESULT", actionId: pendingAction, outcome });
-    }, 900);
-    return () => clearTimeout(t);
-  }, [pendingAction, artifact, state.currentCardId]);
+    setToolMessage("执行中…");
+    let cancelled = false;
+    executeTool({ action, state: state.state, cardId: state.currentCardId })
+      .then((result) => {
+        if (cancelled) return;
+        setToolMessage(result.message ?? null);
+        dispatch({
+          type: "TOOL_RESULT",
+          actionId: pendingAction,
+          outcome: result.outcome,
+          stateUpdates: result.stateUpdates,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        dispatch({ type: "TOOL_RESULT", actionId: pendingAction, outcome: "error" });
+      });
+    return () => { cancelled = true; };
+  }, [pendingAction, artifact, state.currentCardId, state.state]);
 
   const card = artifact.dsl.cards.find((c) => c.id === state.currentCardId);
   if (!card) {
@@ -154,7 +183,9 @@ function DslCardHostInner({ artifact }: { artifact: CardArtifact }) {
             卡片 {cardIndex + 1} / {total}
           </span>
           {state.pendingTool && (
-            <span className="text-[10px] text-[var(--dsl-accent)]">执行中…</span>
+            <span className="text-[10px] text-[var(--dsl-accent)] animate-pulse">
+              {toolMessage ?? "执行中…"}
+            </span>
           )}
         </div>
 
