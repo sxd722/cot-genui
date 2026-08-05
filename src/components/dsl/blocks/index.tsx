@@ -49,17 +49,61 @@ export function EntitySummaryBlock({ block, state }: BlockProps) {
   );
 }
 
-/** choice: 横向按钮组（互斥选项） */
+/** choice: 按钮组。detail 含 "layout:stack" 时渲染为纵向可点击列表 */
 export function ChoiceBlock({ block, state, onAction, actions }: BlockProps) {
   const current = useBinding(state, block.valueBinding);
   const actionId = block.actionId;
-  const action = actions.find((a) => a.id === actionId);
+  const singleAction = actions.find((a) => a.id === actionId);
   const options = block.options ?? [];
+  // 纵向模式：编译器为每个列表项生成了独立 action（stateValue 匹配 option.value）
+  const isStack = block.detail?.includes("layout:stack");
+
+  const handlePick = (opt: { label: string; value: string }) => {
+    if (isStack) {
+      // 纵向可点击列表：找 stateValue === opt.value 的 action
+      const act = actions.find((a) => a.stateValue === opt.value);
+      if (act) onAction(act.id);
+    } else if (singleAction) {
+      // 横向按钮组：共用一个 action，传动态 value
+      onAction(singleAction.id, opt.value);
+    }
+  };
+
+  if (isStack) {
+    // 纵向列表布局（可点击的列表项）
+    return (
+      <div className="dsl-block-choice-stack">
+        {block.title && <p className="text-[12px] font-medium text-white/90">{block.title}</p>}
+        {block.text && <p className="mt-0.5 text-[11px] text-white/50">{block.text}</p>}
+        <div className="mt-2 flex flex-col gap-1">
+          {options.map((opt) => {
+            const selected = current === opt.value;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => handlePick(opt)}
+                className={`flex items-center justify-between rounded-lg border px-3 py-2 text-left text-[12px] transition-all ${
+                  selected
+                    ? "border-[var(--dsl-accent)] bg-[var(--dsl-accent)]/15 text-white"
+                    : "border-white/10 bg-white/[0.04] text-white/80 hover:border-white/30 hover:bg-white/[0.08]"
+                }`}
+              >
+                <span>{opt.label}</span>
+                <span className={`text-[10px] ${selected ? "text-[var(--dsl-accent)]" : "text-white/30"}`}>
+                  {selected ? "✓ 已选" : "选择 ›"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // 横向按钮组（默认）
   return (
     <div className="dsl-block-choice">
-      {block.title && (
-        <p className="text-[12px] font-medium text-white/90">{block.title}</p>
-      )}
+      {block.title && <p className="text-[12px] font-medium text-white/90">{block.title}</p>}
       {block.text && <p className="mt-0.5 text-[11px] text-white/50">{block.text}</p>}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {options.map((opt) => {
@@ -67,9 +111,7 @@ export function ChoiceBlock({ block, state, onAction, actions }: BlockProps) {
           return (
             <button
               key={opt.value}
-              onClick={() => {
-                if (action) onAction(action.id, opt.value);
-              }}
+              onClick={() => handlePick(opt)}
               className={`rounded-full border px-3 py-1.5 text-[11px] transition-all ${
                 selected
                   ? "border-[var(--dsl-accent)] bg-[var(--dsl-accent)] text-black"

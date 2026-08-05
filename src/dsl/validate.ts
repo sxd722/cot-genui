@@ -169,10 +169,15 @@ function checkUniqueIds(cards: Partial<FlowCard>[], scope: string, errors: strin
   }
 }
 
+/** 合法的状态命名空间前缀（spec §6.1） */
+const VALID_NAMESPACES = ["strings.", "numbers.", "booleans.", "stringLists.", "numberLists.", "objectsJson."];
+
 function checkBinding(b: Binding | undefined, label: string, errors: string[]) {
-  if (!b || !b.path) return; // 省略的 binding 用默认值，不报错
-  if (!isKnownDataPath(b.path)) {
-    errors.push(`${label}: path "${b.path}" 不在数据目录中`);
+  if (!b || !b.path) return; // 省略或空 path 用默认值/fallback，不报错
+  // 命名空间格式校验：path 必须以合法命名空间开头（动态 state key 也合法）
+  const nsOk = VALID_NAMESPACES.some((ns) => b.path.startsWith(ns));
+  if (!nsOk) {
+    errors.push(`${label}: path "${b.path}" 缺少合法命名空间前缀（strings./numbers./...）`);
   }
 }
 
