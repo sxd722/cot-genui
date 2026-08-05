@@ -1,0 +1,499 @@
+{
+  "artifactId": "上海房贷规划-generated",
+  "flow": {
+    "flowVersion": "card-flow-1",
+    "skillId": "上海房贷规划",
+    "singleForm": true,
+    "startCardId": "overview",
+    "cards": [
+      {
+        "id": "overview",
+        "purpose": "房贷规划总览，展示核心假设和关键指标",
+        "template": "hero",
+        "transitions": [
+          {
+            "event": "go-finance",
+            "targetCardId": "finance"
+          },
+          {
+            "event": "go-scenarios",
+            "targetCardId": "scenarios"
+          }
+        ]
+      },
+      {
+        "id": "finance",
+        "purpose": "家庭财务健康度评估，判断贷款承受力",
+        "template": "progress",
+        "transitions": [
+          {
+            "event": "go-scenarios-2",
+            "targetCardId": "scenarios"
+          },
+          {
+            "event": "back-overview",
+            "targetCardId": "overview"
+          }
+        ]
+      },
+      {
+        "id": "scenarios",
+        "purpose": "三档贷款方案对比，点击查看月供明细",
+        "template": "hero",
+        "transitions": [
+          {
+            "event": "scenarios-b1-pick-0",
+            "targetCardId": "scenario-detail"
+          },
+          {
+            "event": "scenarios-b1-pick-1",
+            "targetCardId": "scenario-detail"
+          },
+          {
+            "event": "scenarios-b1-pick-2",
+            "targetCardId": "scenario-detail"
+          },
+          {
+            "event": "scenarios-b1-pick-0",
+            "targetCardId": "scenarios"
+          },
+          {
+            "event": "scenarios-b1-pick-1",
+            "targetCardId": "scenarios"
+          },
+          {
+            "event": "scenarios-b1-pick-2",
+            "targetCardId": "scenarios"
+          }
+        ]
+      },
+      {
+        "id": "scenario-detail",
+        "purpose": "选中方案的月供明细和风险评级",
+        "template": "config",
+        "transitions": [
+          {
+            "event": "go-checklist",
+            "targetCardId": "checklist"
+          },
+          {
+            "event": "back-scenarios",
+            "targetCardId": "scenarios"
+          },
+          {
+            "event": "scenario-detail-b2-select",
+            "targetCardId": "scenario-detail"
+          }
+        ]
+      },
+      {
+        "id": "checklist",
+        "purpose": "可操作的下一步行动清单",
+        "template": "hero",
+        "transitions": [
+          {
+            "event": "back-overview-final",
+            "targetCardId": "overview"
+          },
+          {
+            "event": "copy-checklist.success",
+            "targetCardId": "checklist"
+          },
+          {
+            "event": "copy-checklist.error",
+            "targetCardId": "checklist"
+          }
+        ]
+      }
+    ]
+  },
+  "dsl": {
+    "dslVersion": "card-dsl-1",
+    "theme": {
+      "preset": "black-gold",
+      "accentToken": "#D7AE59",
+      "surfaceToken": "#0B0D10",
+      "dangerToken": "#E88A73"
+    },
+    "startCardId": "overview",
+    "initialState": {
+      "strings": {
+        "finance-summary-value": "≤50%收入",
+        "family_monthly_expenses": 62,
+        "housing_purpose": "保留二套"
+      },
+      "numbers": {
+        "-----": "按利率4.1%",
+        "---": "1.8万",
+        "----": "需<50%",
+        "family_monthly_expenses": 0,
+        "--------": "含闵行房贷"
+      },
+      "booleans": {},
+      "stringLists": {
+        "scenarios-list-items": [
+          "保守型：300万房价·贷150万",
+          "均衡型：400万房价·贷250万",
+          "进取型：500万房价·贷350万"
+        ],
+        "checklist-list-items": [
+          "① 拉取征信报告，确认首套/二套认定",
+          "② 确认闵行房产当前贷款余额和月供",
+          "③ 评估是否置换闵行房产（卖旧买新）",
+          "④ 比较3家以上银行商贷利率",
+          "⑤ 父母资金提前到账，留存转账凭证",
+          "⑥ 预留10万应急金（首付之外）",
+          "⑦ 确定目标区域，开始实地看房"
+        ]
+      }
+    },
+    "cards": [
+      {
+        "id": "overview",
+        "template": "hero",
+        "header": {
+          "skillName": "上海房贷规划",
+          "stepLabel": "1 / 5 · 房贷规划总览，展示核心假设和关键指标",
+          "iconText": "贷"
+        },
+        "blocks": [
+          {
+            "id": "overview-b0",
+            "kind": "hero",
+            "title": "上海改善型房贷规划",
+            "text": "300-500万·商贷30年·首付≤150万"
+          },
+          {
+            "id": "overview-b1",
+            "kind": "key-value",
+            "title": "家庭月收入",
+            "valueBinding": {
+              "path": "",
+              "fallback": "5.8万 元/月",
+              "formatter": "plain"
+            }
+          },
+          {
+            "id": "overview-b2",
+            "kind": "status",
+            "title": "关键提醒",
+            "text": "名下已有闵行房产，若不卖出则按二套计算，首付比例更高（50%-70%）"
+          }
+        ],
+        "actions": [
+          {
+            "id": "go-finance",
+            "label": "财务体检",
+            "role": "primary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "none",
+            "event": "go-finance"
+          },
+          {
+            "id": "go-scenarios",
+            "label": "贷款方案",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "none",
+            "event": "go-scenarios"
+          }
+        ]
+      },
+      {
+        "id": "finance",
+        "template": "progress",
+        "header": {
+          "skillName": "上海房贷规划",
+          "stepLabel": "2 / 5 · 家庭财务健康度评估，判断贷款承受力",
+          "iconText": "贷"
+        },
+        "blocks": [
+          {
+            "id": "finance-b0",
+            "kind": "entity-summary",
+            "title": "月收入分配",
+            "valueBinding": {
+              "path": "",
+              "fallback": "58000元/月",
+              "formatter": "plain"
+            },
+            "secondaryBinding": {
+              "path": "",
+              "fallback": "生活费18000 + 现有房贷(估)10000 + 可用于新贷约30000",
+              "formatter": "plain"
+            }
+          },
+          {
+            "id": "finance-b1",
+            "kind": "progress",
+            "title": "月供安全垫（新+旧月供占收入比）",
+            "valueBinding": {
+              "path": "numbers.family_monthly_expenses",
+              "fallback": 62,
+              "formatter": "percent"
+            }
+          },
+          {
+            "id": "finance-b2",
+            "kind": "status",
+            "title": "应急金不足",
+            "text": "当前储蓄15万，仅覆盖约5个月家庭支出（含双房贷）。建议首付外至少预留10万应急金。",
+            "tone": "danger"
+          },
+          {
+            "id": "finance-b3",
+            "kind": "entity-summary",
+            "title": "银行月供红线",
+            "valueBinding": {
+              "path": "",
+              "fallback": "≤50%收入",
+              "formatter": "plain"
+            },
+            "secondaryBinding": {
+              "path": "",
+              "fallback": "家庭总月供上限约29,000元（含现有闵行房贷）",
+              "formatter": "plain"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "id": "go-scenarios-2",
+            "label": "查看方案",
+            "role": "primary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "none",
+            "event": "go-scenarios-2"
+          },
+          {
+            "id": "back-overview",
+            "label": "返回概览",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "none",
+            "event": "back-overview"
+          }
+        ]
+      },
+      {
+        "id": "scenarios",
+        "template": "hero",
+        "header": {
+          "skillName": "上海房贷规划",
+          "stepLabel": "3 / 5 · 三档贷款方案对比，点击查看月供明细",
+          "iconText": "贷"
+        },
+        "blocks": [
+          {
+            "id": "scenarios-b0",
+            "kind": "hero",
+            "title": "贷款方案对比",
+            "text": "商贷30年·利率4.1%（二套估算）"
+          },
+          {
+            "id": "scenarios-b1",
+            "kind": "choice",
+            "title": "选择方案查看详情",
+            "options": [
+              {
+                "label": "保守型：300万房价·贷150万",
+                "value": "conservative"
+              },
+              {
+                "label": "均衡型：400万房价·贷250万",
+                "value": "balanced"
+              },
+              {
+                "label": "进取型：500万房价·贷350万",
+                "value": "aggressive"
+              }
+            ],
+            "detail": "layout:stack"
+          }
+        ],
+        "actions": [
+          {
+            "id": "scenarios-b1-pick-0",
+            "label": "保守型：300万房价·贷150万",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "state.set",
+            "statePath": "strings.selectedScenario",
+            "stateValue": "conservative",
+            "event": "scenarios-b1-pick-0"
+          },
+          {
+            "id": "scenarios-b1-pick-1",
+            "label": "均衡型：400万房价·贷250万",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "state.set",
+            "statePath": "strings.selectedScenario",
+            "stateValue": "balanced",
+            "event": "scenarios-b1-pick-1"
+          },
+          {
+            "id": "scenarios-b1-pick-2",
+            "label": "进取型：500万房价·贷350万",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "state.set",
+            "statePath": "strings.selectedScenario",
+            "stateValue": "aggressive",
+            "event": "scenarios-b1-pick-2"
+          }
+        ]
+      },
+      {
+        "id": "scenario-detail",
+        "template": "config",
+        "header": {
+          "skillName": "上海房贷规划",
+          "stepLabel": "4 / 5 · 选中方案的月供明细和风险评级",
+          "iconText": "贷"
+        },
+        "blocks": [
+          {
+            "id": "scenario-detail-b0",
+            "kind": "entity-summary",
+            "title": "选中方案",
+            "valueBinding": {
+              "path": "strings.selectedScenario",
+              "fallback": "",
+              "formatter": "plain"
+            },
+            "secondaryBinding": {
+              "path": "",
+              "fallback": "详细月供与收入占比分析",
+              "formatter": "plain"
+            }
+          },
+          {
+            "id": "scenario-detail-b1",
+            "kind": "key-value",
+            "title": "贷款金额",
+            "valueBinding": {
+              "path": "",
+              "fallback": "按方案 万元",
+              "formatter": "plain"
+            }
+          },
+          {
+            "id": "scenario-detail-b2",
+            "kind": "choice",
+            "title": "是否考虑置换闵行房产？",
+            "options": [
+              {
+                "label": "保留二套",
+                "value": "保留二套"
+              },
+              {
+                "label": "卖旧买新（首付更低）",
+                "value": "卖旧买新（首付更低）"
+              }
+            ],
+            "valueBinding": {
+              "path": "strings.housing_purpose",
+              "fallback": "",
+              "formatter": "plain"
+            },
+            "actionId": "scenario-detail-b2-select"
+          }
+        ],
+        "actions": [
+          {
+            "id": "go-checklist",
+            "label": "行动清单",
+            "role": "primary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "none",
+            "event": "go-checklist"
+          },
+          {
+            "id": "back-scenarios",
+            "label": "返回方案",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "none",
+            "event": "back-scenarios"
+          },
+          {
+            "id": "scenario-detail-b2-select",
+            "label": "选择",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "state.select",
+            "statePath": "strings.housing_purpose",
+            "stateValue": "",
+            "event": "scenario-detail-b2-select"
+          }
+        ]
+      },
+      {
+        "id": "checklist",
+        "template": "hero",
+        "header": {
+          "skillName": "上海房贷规划",
+          "stepLabel": "5 / 5 · 可操作的下一步行动清单",
+          "iconText": "贷"
+        },
+        "blocks": [
+          {
+            "id": "checklist-b0",
+            "kind": "hero",
+            "title": "行动清单",
+            "text": "按优先级排序，建议2-3个月内完成"
+          },
+          {
+            "id": "checklist-b1",
+            "kind": "list",
+            "title": "关键步骤",
+            "maxItems": 7
+          },
+          {
+            "id": "checklist-b2",
+            "kind": "status",
+            "title": "时间建议",
+            "text": "征信和资金准备约1个月，银行审批约2-4周，建议提前3个月启动。"
+          }
+        ],
+        "actions": [
+          {
+            "id": "copy-checklist",
+            "label": "复制清单",
+            "role": "primary",
+            "kind": "tool",
+            "dispatch": "host",
+            "toolCall": {
+              "adapterId": "system.clipboard.write",
+              "operation": "write",
+              "outcomes": [
+                "success",
+                "error"
+              ]
+            }
+          },
+          {
+            "id": "back-overview-final",
+            "label": "返回概览",
+            "role": "secondary",
+            "kind": "local",
+            "dispatch": "form",
+            "operation": "none",
+            "event": "back-overview-final"
+          }
+        ]
+      }
+    ]
+  }
+}

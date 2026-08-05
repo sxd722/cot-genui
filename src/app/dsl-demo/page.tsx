@@ -5,17 +5,45 @@ import { DslCardHost } from "@/components/dsl/DslCardHost";
 import { compileCardPlan } from "@/dsl/compiler";
 import { validateArtifact } from "@/dsl/validate";
 import { scenarios } from "@/dsl/scenarios";
+import housingArtifact from "@/dsl/housing-artifact.json";
+
+/** 所有可选场景：IR 编译型 + 预编译 artifact 型 */
+interface DemoScenario {
+  id: string;
+  label: string;
+  description: string;
+  /** IR 编译型 */
+  plan?: import("@/dsl/modules").CardPlan;
+  /** 预编译 artifact 型 */
+  artifact?: unknown;
+  source: "glm" | "ir";
+}
+
+const allScenarios: DemoScenario[] = [
+  ...scenarios.map((s) => ({ ...s, source: "ir" as const })),
+  {
+    id: "housing",
+    label: "购房规划",
+    description: "GLM真实生成·上海改善置换（6卡含数据流）",
+    artifact: housingArtifact,
+    source: "glm" as const,
+  },
+];
 
 /**
- * DSL 渲染引擎 Demo：选场景 → 编译 IR → 校验 → 渲染。
- * 验证三个场景 + 旅游的 DSL 能否正常渲染。
+ * DSL 渲染引擎 Demo：选场景 → 编译 IR / 加载预编译 → 校验 → 渲染。
  */
 export default function DslDemoPage() {
-  const [scenarioId, setScenarioId] = useState(scenarios[0].id);
-  const scenario = scenarios.find((s) => s.id === scenarioId)!;
+  const [scenarioId, setScenarioId] = useState(allScenarios[0].id);
+  const scenario = allScenarios.find((s) => s.id === scenarioId)!;
 
-  // 编译当前场景的 IR
-  const compiled = useMemo(() => compileCardPlan(scenario.plan), [scenario]);
+  // 编译或加载 artifact
+  const compiled = useMemo<{ artifact: unknown; notices: import("@/dsl/modules").CompileNotice[] }>(() => {
+    if (scenario.artifact) {
+      return { artifact: scenario.artifact, notices: [] };
+    }
+    return compileCardPlan(scenario.plan!);
+  }, [scenario]);
   // 校验产出的 artifact
   const validation = useMemo(() => validateArtifact(compiled.artifact), [compiled]);
 
@@ -30,7 +58,7 @@ export default function DslDemoPage() {
 
       {/* 场景切换 */}
       <div className="flex flex-wrap gap-1.5 border-b border-white/10 px-4 py-2.5">
-        {scenarios.map((s) => (
+        {allScenarios.map((s) => (
           <button
             key={s.id}
             onClick={() => setScenarioId(s.id)}
@@ -40,6 +68,7 @@ export default function DslDemoPage() {
                 : "border-white/20 text-white/70 hover:border-white/40"
             }`}
           >
+            {s.source === "glm" && "🤖 "}
             {s.label}
           </button>
         ))}
@@ -51,7 +80,10 @@ export default function DslDemoPage() {
           <div className="mb-1.5 text-[10px] text-white/40">{scenario.description}</div>
           <div className="flex-1" style={{ minHeight: "480px" }}>
             {/* key 强制场景切换时重建组件，重置 currentCardId */}
-            <DslCardHost key={compiled.artifact.artifactId} artifact={compiled.artifact} />
+            <DslCardHost
+              key={(compiled.artifact as { artifactId?: string })?.artifactId ?? scenarioId}
+              artifact={compiled.artifact}
+            />
           </div>
         </div>
 
@@ -101,20 +133,32 @@ export default function DslDemoPage() {
             </div>
           )}
 
-          {/* IR 概览 */}
+          {/* IR / Artifact 概览 */}
           <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
-            <p className="text-xs font-medium text-white/70">CardPlan IR 概览</p>
-            <p className="mt-1 text-[10px] text-white/40">{scenario.plan.reasoning}</p>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {scenario.plan.cards.map((c, i) => (
-                <span
-                  key={i}
-                  className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-white/50"
-                >
-                  {i + 1}.{c.id}
-                </span>
-              ))}
-            </div>
+            <p className="text-xs font-medium text-white/70">
+              {scenario.source === "glm" ? "GLM 生成 Artifact 概览" : "CardPlan IR 概览"}
+            </p>
+            {scenario.plan ? (
+              <>
+                <p className="mt-1 text-[10px] text-white/40">{scenario.plan.reasoning}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {scenario.plan.cards.map((c, i) => (
+                    <span key={i} className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-white/50">
+                      {i + 1}.{c.id}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="mt-1 text-[10px] text-white/40">
+                {(() => {
+                  const a = compiled.artifact as { artifactId?: string; dsl?: { cards?: unknown[] } };
+                  return `artifactId: ${a.artifactId ?? "?"} | cards: ${a.dsl?.cards?.length ?? 0} 张`;
+                })()}
+                <br />
+                <span className="text-emerald-400/60">由 GLM 真实生成 · 编译器翻译 · 校验通过</span>
+              </p>
+            )}
           </div>
 
           {/* Artifact JSON */}
