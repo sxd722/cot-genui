@@ -3,6 +3,9 @@
 import { create } from "zustand";
 import { presets, DEFAULT_QUERY, type DeviceContext } from "@/lib/presets";
 import type { InferSlot, InferConflict, InferQuestion, InferResult } from "@/lib/schemas";
+import { compileCardPlan } from "@/dsl/compiler";
+import { enrichCardPlan, hasMissingInfo } from "@/dsl/enrichPlan";
+import type { CardPlan } from "@/dsl/modules";
 
 /* ----------------------- 类型 ----------------------- */
 
@@ -20,6 +23,8 @@ export interface StepState {
   reasoning: string;
   outputs: Record<string, unknown>;
   durationMs: number;
+  /** token 消耗（从 _logs 里的 usage 提取） */
+  tokens?: { prompt: number; completion: number; total: number };
   error: string | null;
   logs: StepLog[];
 }
@@ -67,6 +72,18 @@ interface InferState {
   questions: InferQuestion[];
   result: InferResult | null;
 
+  /** generate 步产出的 CardPlan IR */
+  cardPlan: unknown | null;
+  /** 编译后的 CardArtifact（generate 完成后自动编译） */
+  compiledArtifact: unknown | null;
+  /** 编译诊断 notices */
+  compileNotices: import("@/dsl/modules").CompileNotice[];
+
+  /** 信息补齐状态 */
+  enrichStatus: "idle" | "scanning" | "enriching" | "done" | "skipped";
+  enrichProgress: { done: number; total: number; current: string };
+  enrichResults: import("@/dsl/enrichPlan").EnrichResult[];
+
   /* 用户对提问的回答（模拟交互），key = 问题在 questions 数组中的索引 */
   answers: Record<number, string>;
 
@@ -75,6 +92,8 @@ interface InferState {
   selectPreset: (id: string) => void;
   setContextText: (t: string) => void;
   answerQuestion: (idx: number, value: string) => void;
+  /** generate 完成后：补齐 missingInfo → 编译 */
+  enrichAndCompile: () => Promise<void>;
   runStep: (name: StepName) => Promise<void>;
   runAll: () => Promise<void>;
   reset: () => void;
@@ -105,6 +124,21 @@ function emptySteps(): Record<StepName, StepState> {
   };
 }
 
+/** 从 _logs 里提取 token 消耗（callLLM 的 response log 含 detail.usage） */
+function extractTokens(logs: StepLog[]): StepState["tokens"] {
+  for (const l of logs) {
+    const usage = (l.detail as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } })?.usage;
+    if (usage && (usage.total_tokens || usage.prompt_tokens)) {
+      return {
+        prompt: usage.prompt_tokens ?? 0,
+        completion: usage.completion_tokens ?? 0,
+        total: usage.total_tokens ?? (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0),
+      };
+    }
+  }
+  return undefined;
+}
+
 /** 从已完成的步骤构造 priorSteps（发给后端的上下文） */
 function buildPriorSteps(
   steps: Record<StepName, StepState>,
@@ -132,6 +166,12 @@ export const useInferStore = create<InferState>((set, get) => ({
   conflicts: [],
   questions: [],
   result: null,
+  cardPlan: null,
+  compiledArtifact: null,
+  compileNotices: [],
+  enrichStatus: "idle",
+  enrichProgress: { done: 0, total: 0, current: "" },
+  enrichResults: [],
   answers: {},
 
   setQuery: (q) => set({ query: q }),
@@ -148,6 +188,12 @@ export const useInferStore = create<InferState>((set, get) => ({
       conflicts: [],
       questions: [],
       result: null,
+      cardPlan: null,
+      compiledArtifact: null,
+      compileNotices: [],
+      enrichStatus: "idle",
+      enrichProgress: { done: 0, total: 0, current: "" },
+      enrichResults: [],
       answers: {},
     });
   },
@@ -156,6 +202,66 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   answerQuestion: (idx, value) =>
     set((st) => ({ answers: { ...st.answers, [idx]: value } })),
+
+  enrichAndCompile: async () => {
+    const { cardPlan } = get();
+    if (!cardPlan) return;
+
+    // 检查是否有 missingInfo
+    if (!hasMissingInfo(cardPlan as CardPlan)) {
+      // 无需补齐，直接编译
+      set({ enrichStatus: "skipped", enrichResults: [] });
+      try {
+        const compiled = compileCardPlan(cardPlan as CardPlan);
+        set({ compiledArtifact: compiled.artifact, compileNotices: compiled.notices });
+      } catch (e) {
+        set({
+          compileNotices: [{
+            level: "unsupported",
+            message: `编译失败: ${e instanceof Error ? e.message : String(e)}`,
+          }],
+        });
+      }
+      return;
+    }
+
+    // 有 missingInfo，开始补齐
+    set({ enrichStatus: "enriching", enrichProgress: { done: 0, total: 0, current: "扫描缺失信息…" } });
+
+    try {
+      const { enrichedPlan, results, notices } = await enrichCardPlan(
+        cardPlan as CardPlan,
+        (done, total, current) =>
+          set({ enrichProgress: { done, total, current } }),
+      );
+
+      // 补齐后重新编译
+      const compiled = compileCardPlan(enrichedPlan);
+      set({
+        cardPlan: enrichedPlan,
+        compiledArtifact: compiled.artifact,
+        compileNotices: [...compiled.notices, ...notices],
+        enrichResults: results,
+        enrichStatus: "done",
+      });
+    } catch (e) {
+      // 补齐失败，用原始 plan 编译
+      set({
+        enrichStatus: "done",
+        enrichResults: [],
+        compileNotices: [{
+          level: "info",
+          message: `信息补齐异常: ${e instanceof Error ? e.message : String(e)}`,
+        }],
+      });
+      try {
+        const compiled = compileCardPlan(cardPlan as CardPlan);
+        set({ compiledArtifact: compiled.artifact });
+      } catch {
+        /* 忽略 */
+      }
+    }
+  },
 
   runStep: async (name) => {
     const { query, contextText, steps } = get();
@@ -217,12 +323,27 @@ export const useInferStore = create<InferState>((set, get) => ({
         const nextConflicts = data.conflicts ?? st.conflicts;
         const nextQuestions = data.questions ?? st.questions;
         const nextResult = data.result ?? st.result;
+
+        // generate 步：提取 cardPlan，标记待补齐（enrichAndCompile 会异步处理）
+        const isGen = name === "generate" && data.cardPlan;
+
         return {
           isMock: !!_mock,
           slots: nextSlots,
           conflicts: nextConflicts,
           questions: nextQuestions,
           result: nextResult,
+          // generate 步：存 cardPlan，重置编译状态
+          ...(isGen
+            ? {
+                cardPlan: data.cardPlan,
+                compiledArtifact: null,
+                compileNotices: [],
+                enrichStatus: "scanning" as const,
+                enrichProgress: { done: 0, total: 0, current: "" },
+                enrichResults: [],
+              }
+            : {}),
           // clarifying_questions 步成功后，问题可能已变化，
           // 旧 answers 按 idx 存会与新问题错位，故清空。
           ...(name === "clarifying_questions" ? { answers: {} } : {}),
@@ -233,12 +354,19 @@ export const useInferStore = create<InferState>((set, get) => ({
               reasoning: reasoning ?? "",
               outputs: outputs ?? {},
               durationMs: durationMs ?? 0,
+              tokens: extractTokens(_logs ?? []),
               error: null,
               logs: _logs ?? [],
             },
           },
         };
       });
+
+      // generate 步完成后：异步补齐 missingInfo + 编译
+      if (name === "generate" && data.cardPlan) {
+        // 不 await——让 UI 先更新，补齐在后台进行
+        get().enrichAndCompile();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "网络错误";
       set((st) => ({
@@ -266,6 +394,12 @@ export const useInferStore = create<InferState>((set, get) => ({
       conflicts: [],
       questions: [],
       result: null,
+      cardPlan: null,
+      compiledArtifact: null,
+      compileNotices: [],
+      enrichStatus: "idle",
+      enrichProgress: { done: 0, total: 0, current: "" },
+      enrichResults: [],
       answers: {},
     }),
 }));

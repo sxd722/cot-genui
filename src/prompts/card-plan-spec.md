@@ -134,3 +134,37 @@ role: `primary`(主操作) / `secondary`(次操作) / `tertiary`(辅助)
 4. **valueFromSlot 优先**：如果前序步骤已推断出某个槽位值，用 valueFromSlot 引用它，让编译器自动填入
 5. **文案紧凑**：标题≤18字，按钮≤8字，说明≤60字
 6. 纯展示卡可以没有 actions
+
+## 缺失信息识别（missingInfo）
+
+如果某张卡或某个 block 需要的信息**不在前序推理结果中**，你可以声明 `missingInfo`，系统会自动尝试补齐（web 搜索或 LLM 推理）。
+
+两种缺失类型：
+- **外部客观信息**：实时股价、天气、政策利率、景点门票价格等——标注 `source: "web_search"`
+- **推理生成信息**：行动清单、注意事项、对比分析等——标注 `source: "llm_reasoning"`
+
+```json
+{
+  "kind": "metric",
+  "title": "贵州茅台实时行情",
+  "missingInfo": {
+    "query": "贵州茅台 600519 今日股价",
+    "source": "web_search",
+    "fallback": "数据加载中…"
+  }
+}
+```
+
+```json
+{
+  "kind": "list",
+  "title": "购房行动清单",
+  "missingInfo": {
+    "query": "上海改善置换购房的完整行动清单，包括旧房评估、公积金查询、征信打印、银行对比等步骤",
+    "source": "llm_reasoning",
+    "fallback": "清单生成中…"
+  }
+}
+```
+
+系统补齐后，结果会自动填入该 block 的 value/items 字段。**只对真正缺失的信息标注 missingInfo**，前序已推断出的槽位值用 valueFromSlot 引用即可。

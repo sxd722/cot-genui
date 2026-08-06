@@ -73,6 +73,11 @@ function StepRow({ name }: { name: StepName }) {
           {s.durationMs > 0 && (
             <span className="text-[10px] text-zinc-400">{(s.durationMs / 1000).toFixed(1)}s</span>
           )}
+          {s.tokens && s.tokens.total > 0 && (
+            <span className="text-[10px] text-zinc-400" title={`prompt ${s.tokens.prompt} + completion ${s.tokens.completion}`}>
+              · {s.tokens.total} tok
+            </span>
+          )}
           {hasContent && (
             <span className="ml-auto text-xs text-zinc-400">{open ? "▾" : "▸"}</span>
           )}

@@ -97,6 +97,19 @@ export interface IRBlock {
   // —— image/chart 领先字段（编译器降级）——
   imageUrl?: string;
   chartType?: string;
+
+  // —— 缺失信息（系统自动补齐）——
+  missingInfo?: IRMissingInfo;
+}
+
+/** 缺失信息声明（系统自动补齐） */
+export interface IRMissingInfo {
+  /** 搜索/推理查询语句 */
+  query: string;
+  /** 补齐来源 */
+  source: "web_search" | "llm_reasoning";
+  /** 补齐前的占位文本 */
+  fallback?: string;
 }
 
 /** 列表项（核心：可带 onSelect 表达数据流） */
