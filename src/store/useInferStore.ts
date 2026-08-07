@@ -66,6 +66,9 @@ interface InferState {
   steps: Record<StepName, StepState>;
   isMock: boolean;
 
+  /** 第7步生成模式：ir=结构化CardPlan / semantic=纯语义描述 */
+  genMode: "ir" | "semantic";
+
   /* 汇总（逐步累积） */
   slots: InferSlot[];
   conflicts: InferConflict[];
@@ -74,6 +77,8 @@ interface InferState {
 
   /** generate 步产出的 CardPlan IR */
   cardPlan: unknown | null;
+  /** generate 步产出的纯语义卡片描述（semantic 模式） */
+  semanticCards: unknown | null;
   /** 编译后的 CardArtifact（generate 完成后自动编译） */
   compiledArtifact: unknown | null;
   /** 编译诊断 notices */
@@ -87,11 +92,17 @@ interface InferState {
   /* 用户对提问的回答（模拟交互），key = 问题在 questions 数组中的索引 */
   answers: Record<number, string>;
 
+  /** 一键全部暂停状态（等用户回答提问后再继续 generate） */
+  runAllPaused: boolean;
+
   /* actions */
   setQuery: (q: string) => void;
   selectPreset: (id: string) => void;
   setContextText: (t: string) => void;
+  setGenMode: (mode: "ir" | "semantic") => void;
   answerQuestion: (idx: number, value: string) => void;
+  /** 一键全部暂停后，用户回答完提问，继续执行 generate */
+  continueGenerate: () => Promise<void>;
   /** generate 完成后：补齐 missingInfo → 编译 */
   enrichAndCompile: () => Promise<void>;
   runStep: (name: StepName) => Promise<void>;
@@ -162,11 +173,14 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   steps: emptySteps(),
   isMock: false,
+  genMode: "ir",
+  runAllPaused: false,
   slots: [],
   conflicts: [],
   questions: [],
   result: null,
   cardPlan: null,
+  semanticCards: null,
   compiledArtifact: null,
   compileNotices: [],
   enrichStatus: "idle",
@@ -189,16 +203,20 @@ export const useInferStore = create<InferState>((set, get) => ({
       questions: [],
       result: null,
       cardPlan: null,
+      semanticCards: null,
       compiledArtifact: null,
       compileNotices: [],
       enrichStatus: "idle",
       enrichProgress: { done: 0, total: 0, current: "" },
       enrichResults: [],
+      runAllPaused: false,
       answers: {},
     });
   },
 
   setContextText: (t) => set({ contextText: t }),
+
+  setGenMode: (mode) => set({ genMode: mode }),
 
   answerQuestion: (idx, value) =>
     set((st) => ({ answers: { ...st.answers, [idx]: value } })),
@@ -284,18 +302,21 @@ export const useInferStore = create<InferState>((set, get) => ({
     const priorSteps = buildPriorSteps(get().steps, name);
 
     try {
-      const { answers } = get();
+      const { answers, genMode } = get();
       const res = await fetch("/api/infer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // generate 步把用户回答一起带上，影响最终方案
         body: JSON.stringify({
           query,
           deviceContext,
           step: name,
           priorSteps,
-          ...(name === "generate" && Object.keys(answers).length > 0
-            ? { userAnswers: answers }
+          // generate 步把用户回答和生成模式一起带上
+          ...(name === "generate"
+            ? {
+                ...(Object.keys(answers).length > 0 ? { userAnswers: answers } : {}),
+                genMode,
+              }
             : {}),
         }),
       });
@@ -324,8 +345,10 @@ export const useInferStore = create<InferState>((set, get) => ({
         const nextQuestions = data.questions ?? st.questions;
         const nextResult = data.result ?? st.result;
 
-        // generate 步：提取 cardPlan，标记待补齐（enrichAndCompile 会异步处理）
-        const isGen = name === "generate" && data.cardPlan;
+        // generate 步：提取 cardPlan 或 semanticCards
+        const isGen = name === "generate";
+        const hasCardPlan = isGen && data.cardPlan;
+        const hasSemantic = isGen && data.semanticCards;
 
         return {
           isMock: !!_mock,
@@ -333,14 +356,25 @@ export const useInferStore = create<InferState>((set, get) => ({
           conflicts: nextConflicts,
           questions: nextQuestions,
           result: nextResult,
-          // generate 步：存 cardPlan，重置编译状态
-          ...(isGen
+          // generate 步：存 cardPlan（IR模式）或 semanticCards（语义模式）
+          ...(hasCardPlan
             ? {
                 cardPlan: data.cardPlan,
+                semanticCards: null,
                 compiledArtifact: null,
                 compileNotices: [],
                 enrichStatus: "scanning" as const,
                 enrichProgress: { done: 0, total: 0, current: "" },
+                enrichResults: [],
+              }
+            : {}),
+          ...(hasSemantic
+            ? {
+                cardPlan: null,
+                semanticCards: data.semanticCards,
+                compiledArtifact: null,
+                compileNotices: [],
+                enrichStatus: "skipped" as const,
                 enrichResults: [],
               }
             : {}),
@@ -376,11 +410,27 @@ export const useInferStore = create<InferState>((set, get) => ({
   },
 
   runAll: async () => {
+    set({ runAllPaused: false });
+    // 跑 ⓪~⑥（到 clarifying_questions 为止）
     for (const name of STEP_ORDER) {
+      if (name === "generate") break; // generate 留给 continueGenerate
       await get().runStep(name);
-      // 若某步失败则停止后续
-      if (get().steps[name].status === "error") break;
+      if (get().steps[name].status === "error") return;
     }
+    // ⑥ 完成后：如果有提问且用户还没全答 → 暂停等用户
+    const { questions, answers } = get();
+    const unanswered = questions.filter((_, i) => !answers[i]);
+    if (unanswered.length > 0) {
+      set({ runAllPaused: true });
+      return; // 等用户回答后点"继续生成"
+    }
+    // 没有提问或已全答 → 直接生成
+    await get().runStep("generate");
+  },
+
+  continueGenerate: async () => {
+    set({ runAllPaused: false });
+    await get().runStep("generate");
   },
 
   reset: () =>
@@ -395,11 +445,13 @@ export const useInferStore = create<InferState>((set, get) => ({
       questions: [],
       result: null,
       cardPlan: null,
+      semanticCards: null,
       compiledArtifact: null,
       compileNotices: [],
       enrichStatus: "idle",
       enrichProgress: { done: 0, total: 0, current: "" },
       enrichResults: [],
+      runAllPaused: false,
       answers: {},
     }),
 }));

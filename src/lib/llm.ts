@@ -34,6 +34,12 @@ function loadCardPlanSpec(): string {
   return readFileSync(promptPath, "utf-8");
 }
 
+function loadSemanticSpec(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const promptPath = join(here, "..", "prompts", "semantic-card-spec.md");
+  return readFileSync(promptPath, "utf-8");
+}
+
 /* ------------------------------------------------------------------ */
 /*  JSON 提取容错                                                       */
 /*  很多兼容端点（GLM 等）即使指定了 response_format: json_schema，     */
@@ -167,6 +173,8 @@ export interface StepInput {
   priorSteps?: Partial<Record<StepName, unknown>>;
   /** 用户对提问的回答（仅 generate 步会用上），key 为问题索引 */
   userAnswers?: Record<number, string>;
+  /** generate 步生成模式：ir=结构化CardPlan / semantic=纯语义描述 */
+  genMode?: "ir" | "semantic";
   /** 日志回调 */
   onLog?: (entry: CallLog) => void;
   /** mock 模式 */
@@ -184,8 +192,10 @@ export interface StepOutput {
   questions?: InferResponse["clarifying_questions"];
   /** generate 步会有 result */
   result?: InferResponse["result"];
-  /** generate 步产出的 CardPlan IR */
+  /** generate 步产出的 CardPlan IR（ir 模式） */
   cardPlan?: unknown;
+  /** generate 步产出的纯语义卡片描述（semantic 模式） */
+  semanticCards?: unknown;
   rawDurationMs: number;
 }
 
@@ -239,7 +249,7 @@ const STEP_INSTRUCTION: Record<StepName, string> = {
 
 /** 执行单步推理 */
 export async function runStep(input: StepInput): Promise<StepOutput> {
-  const { name, query, deviceContext, priorSteps = {}, userAnswers, onLog, mock } = input;
+  const { name, query, deviceContext, priorSteps = {}, userAnswers, genMode = "ir", onLog, mock } = input;
 
   if (mock) {
     return mockStep(input);
@@ -281,9 +291,12 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
           "",
         ]
       : []),
-    // generate 步注入 CardPlan IR 规范
-    ...(name === "generate"
+    // generate 步注入规范（按模式分支）
+    ...(name === "generate" && genMode === "ir"
       ? ["## CardPlan IR 规范", loadCardPlanSpec(), ""]
+      : []),
+    ...(name === "generate" && genMode === "semantic"
+      ? ["## 语义化卡片描述规范", loadSemanticSpec(), ""]
       : []),
     "## 本步任务",
     STEP_INSTRUCTION[name],
@@ -297,7 +310,12 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
         : "") +
       (name === "conflict_detection" ? "此外必须在【顶层】加一个 conflicts 数组字段（不要嵌套进 outputs）。" : "") +
       (name === "clarifying_questions" ? "此外必须在【顶层】加一个 questions 数组字段（不要嵌套进 outputs），每个元素形如 {question,reason,blocking,options:[2-4个候选答案字符串]}。" : "") +
-      (name === "generate" ? "此外必须在【顶层】加一个 cardPlan 对象字段（不要嵌套进 outputs），严格按上方 CardPlan IR 规范的结构输出。同时给出 result.summary(一句话总结) 和 result.assumptions(假设数组)。" : ""),
+      (name === "generate" && genMode === "ir"
+        ? "此外必须在【顶层】加一个 cardPlan 对象字段（不要嵌套进 outputs），严格按上方 CardPlan IR 规范的结构输出。同时给出 result.summary(一句话总结) 和 result.assumptions(假设数组)。"
+        : "") +
+      (name === "generate" && genMode === "semantic"
+        ? "此外必须在【顶层】加一个 semanticCards 数组字段（不要嵌套进 outputs），严格按上方「语义化卡片描述规范」输出每张卡的完整描述。同时给出 result.summary 和 result.assumptions。"
+        : ""),
   ].join("\n");
 
   const parsed = (await callLLM({
@@ -323,6 +341,7 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
     questions: pick<StepOutput["questions"]>(parsed.questions, "questions"),
     result: pick<StepOutput["result"]>(parsed.result, "result"),
     cardPlan: pick<unknown>(parsed.cardPlan, "cardPlan"),
+    semanticCards: pick<unknown>(parsed.semanticCards, "semanticCards"),
     rawDurationMs: Date.now() - startedAt,
   };
 }

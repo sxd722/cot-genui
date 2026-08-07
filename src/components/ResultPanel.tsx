@@ -37,21 +37,30 @@ export function ResultPanel() {
             <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
               替你做的假设（可纠正）
             </h3>
-            {!result.assumptions || result.assumptions.length === 0 ? (
-              <p className="text-xs text-zinc-400">无</p>
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {result.assumptions.map((a, i) => (
-                  <li
-                    key={i}
-                    className="flex items-start gap-2 whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
-                  >
-                    <span className="mt-0.5 text-amber-500">•</span>
-                    <span>{toText(a)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            {(() => {
+              // 容错：assumptions 可能是数组/字符串/null/对象
+              const raw = result.assumptions;
+              const items = Array.isArray(raw)
+                ? raw
+                : typeof raw === "string"
+                  ? [raw]
+                  : [];
+              return items.length === 0 ? (
+                <p className="text-xs text-zinc-400">无</p>
+              ) : (
+                <ul className="flex flex-col gap-1.5">
+                  {items.map((a, i) => (
+                    <li
+                      key={i}
+                      className="flex items-start gap-2 whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                    >
+                      <span className="mt-0.5 text-amber-500">•</span>
+                      <span>{toText(a)}</span>
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
           </div>
         </>
       )}
