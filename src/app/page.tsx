@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { InputPanel } from "@/components/InputPanel";
 import { CotTrace } from "@/components/CotTrace";
 import { ResultPanel } from "@/components/ResultPanel";
 import { StackedCards } from "@/components/StackedCards";
 import { DslCardHost } from "@/components/dsl/DslCardHost";
 import { validateArtifact } from "@/dsl/validate";
+import { renderA2UIIframe } from "@/components/A2UIRenderer";
 import { useInferStore } from "@/store/useInferStore";
 
 export default function Home() {
@@ -15,10 +18,11 @@ export default function Home() {
     compiledArtifact, compileNotices,
     enrichStatus, enrichProgress, enrichResults,
     genMode, setGenMode,
-    cardPlan, semanticCards,
+    cardPlan, semanticMarkdown,
+    a2uiJsonl,
     runAllPaused, continueGenerate,
   } = useInferStore();
-  const [rightView, setRightView] = useState<"dsl" | "cards" | "raw" | "semantic" | "blueprint">("dsl");
+  const [rightView, setRightView] = useState<"dsl" | "cards" | "raw" | "semantic" | "blueprint" | "a2ui">("dsl");
 
   const anyDone = Object.values(steps).some((s) => s.status === "done");
   const anyLoading = Object.values(steps).some((s) => s.status === "loading");
@@ -31,6 +35,16 @@ export default function Home() {
   // generate 步完成且编译出了 artifact → 可显示 DSL 卡片
   const hasDsl = !!compiledArtifact;
   const dslValidation = compiledArtifact ? validateArtifact(compiledArtifact) : null;
+  const hasA2UI = !!a2uiJsonl && Array.isArray(a2uiJsonl) && a2uiJsonl.length > 0;
+  // 当 semanticMarkdown 存在时默认显示 semantic，但不覆盖 a2ui 选择
+  const activeRightView =
+    rightView === "a2ui"
+      ? "a2ui"
+      : semanticMarkdown
+        ? "semantic"
+        : rightView === "semantic"
+          ? "dsl"
+          : rightView;
 
   return (
     <div className="flex h-screen flex-col bg-white text-zinc-900 dark:bg-black dark:text-zinc-100">
@@ -54,7 +68,7 @@ export default function Home() {
             title="第7步生成模式"
           >
             <option value="ir">🔧 结构化 IR → DSL</option>
-            <option value="semantic">📝 纯语义描述</option>
+            <option value="semantic">📝 Semantic Markdown</option>
           </select>
           <button
             onClick={runAllPaused ? continueGenerate : runAll}
@@ -77,40 +91,56 @@ export default function Home() {
           <CotTrace />
         </main>
         {/* 右栏：generate 完成后显示切换器 */}
-        {hasDsl || showCards || !!semanticCards ? (
+        {hasDsl || showCards || !!semanticMarkdown || hasA2UI ? (
           <aside className="flex w-[360px] shrink-0 flex-col border-l border-zinc-200 dark:border-zinc-800">
             {/* 视图切换下拉框 */}
             <div className="flex shrink-0 items-center gap-2 border-b border-zinc-200 p-2 dark:border-zinc-800">
               <span className="text-[10px] text-zinc-400">视图</span>
               <select
-                value={rightView}
-                onChange={(e) => setRightView(e.target.value as "dsl" | "cards" | "raw" | "semantic" | "blueprint")}
+                value={activeRightView}
+                onChange={(e) => setRightView(e.target.value as "dsl" | "cards" | "raw" | "semantic" | "blueprint" | "a2ui")}
                 className="flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] text-zinc-700 outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
               >
                 <option value="dsl">📋 DSL 卡片渲染</option>
                 <option value="cards" disabled={!showCards}>🎴 堆叠卡片</option>
-                <option value="semantic" disabled={!semanticCards}>📝 语义卡片描述</option>
-                <option value="blueprint" disabled={!semanticCards && !cardPlan}>📦 Blueprint JSON</option>
+                <option value="semantic" disabled={!semanticMarkdown}>📝 Semantic Markdown</option>
+                <option value="blueprint" disabled={!cardPlan}>📦 Blueprint JSON</option>
+                <option value="a2ui" disabled={!hasA2UI}>📱 A2UI 卡片渲染</option>
                 <option value="raw" disabled={!cardPlan}>🔧 GLM Raw IR</option>
               </select>
             </div>
             {/* 内容区 */}
             <div className="flex flex-1 flex-col overflow-hidden">
-              {/* 语义卡片描述 */}
-              {rightView === "semantic" && semanticCards ? (
-                <SemanticCardsView cards={semanticCards} />
+              {/* A2UI 卡片渲染（iframe 内） */}
+              {activeRightView === "a2ui" && hasA2UI ? (
+                <div className="flex h-full flex-col bg-zinc-950 p-3">
+                  <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
+                    A2UI 卡片渲染 · 2x4 手机桌面尺寸 · {Array.isArray(a2uiJsonl) ? a2uiJsonl.length : 0} 条消息
+                  </div>
+                  <div className="flex-1 overflow-hidden rounded-2xl border-2 border-zinc-800" style={{ minHeight: "500px" }}>
+                    <iframe
+                      title="a2ui-render"
+                      className="h-full w-full"
+                      style={{ border: "none", minHeight: "500px" }}
+                      srcDoc={renderA2UIIframe(a2uiJsonl as unknown[])}
+                    />
+                  </div>
+                </div>
+              ) : /* 语义卡片描述 */
+              activeRightView === "semantic" && semanticMarkdown ? (
+                <SemanticMarkdownView markdown={semanticMarkdown} />
               ) : /* Blueprint JSON */
-              rightView === "blueprint" && (semanticCards || cardPlan) ? (
+              activeRightView === "blueprint" && cardPlan ? (
                 <div className="flex h-full flex-col overflow-hidden bg-zinc-950 p-3">
                   <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
-                    Blueprint JSON · {semanticCards ? "semantic 模式" : "IR 模式"} · 可直接复制给后续 LLM
+                    Blueprint JSON · IR 模式 · 可直接复制给后续 LLM
                   </div>
                   <pre className="flex-1 overflow-auto rounded-lg bg-zinc-900 p-2 font-mono text-[10px] leading-relaxed text-emerald-300/80">
-                    {JSON.stringify(semanticCards ?? cardPlan, null, 2)}
+                    {JSON.stringify(cardPlan, null, 2)}
                   </pre>
                 </div>
               ) : /* GLM Raw 输出 */
-              rightView === "raw" && cardPlan ? (
+              activeRightView === "raw" && cardPlan ? (
                 <div className="flex h-full flex-col overflow-hidden bg-zinc-950 p-3">
                   <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
                     GLM 第7步产出的 CardPlan IR（enrich 前的原始 JSON）
@@ -119,7 +149,7 @@ export default function Home() {
                     {JSON.stringify(cardPlan, null, 2)}
                   </pre>
                 </div>
-              ) : rightView === "dsl" && (hasDsl || enrichStatus === "enriching" || enrichStatus === "scanning") ? (
+              ) : activeRightView === "dsl" && (hasDsl || enrichStatus === "enriching" || enrichStatus === "scanning") ? (
                 <div className="flex h-full flex-col bg-zinc-950 p-3">
                   {/* 信息补齐进度 */}
                   {(enrichStatus === "scanning" || enrichStatus === "enriching") && (
@@ -169,7 +199,7 @@ export default function Home() {
                     </div>
                   )}
                 </div>
-              ) : rightView === "cards" && showCards ? (
+              ) : activeRightView === "cards" && showCards ? (
                 <StackedCards />
               ) : (
                 <ResultPanel />
@@ -184,123 +214,79 @@ export default function Home() {
   );
 }
 
-/* ----------------------- 语义卡片描述视图 ----------------------- */
+/* ----------------------- Semantic Markdown 视图 ----------------------- */
 
-function SemanticCardsView({ cards }: { cards: unknown }) {
-  const list = Array.isArray(cards) ? cards : [];
+function SemanticMarkdownView({ markdown }: { markdown: string }) {
+  const [mode, setMode] = useState<"preview" | "source">("preview");
+  const [copied, setCopied] = useState(false);
+
+  const copyMarkdown = async () => {
+    await navigator.clipboard.writeText(markdown);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-zinc-50 p-3 dark:bg-zinc-950">
-      <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
-        GLM 语义 Blueprint · {list.length} 张卡片 · content(markdown) + data(数据源) + action(操作)
+    <div className="flex h-full flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950">
+      <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+        <div>
+          <p className="text-[10px] font-medium text-zinc-600 dark:text-zinc-300">Semantic Markdown 原文</p>
+          <p className="text-[9px] text-zinc-400">不提取卡片结构 · 不做 YAML/JSON 解析</p>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setMode("preview")}
+            className={`rounded px-2 py-1 text-[10px] ${mode === "preview" ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-800"}`}
+          >
+            预览
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("source")}
+            className={`rounded px-2 py-1 text-[10px] ${mode === "source" ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-800"}`}
+          >
+            源文
+          </button>
+          <button
+            type="button"
+            onClick={copyMarkdown}
+            className="rounded border border-zinc-300 px-2 py-1 text-[10px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            {copied ? "✓ 已复制" : "复制"}
+          </button>
+        </div>
       </div>
-      <div className="flex flex-col gap-2.5">
-        {list.map((card, i) => {
-          const c = card as Record<string, unknown>;
-          const name = String(c.name ?? `card${i + 1}`);
-          const content = String(c.content ?? "");
-          const data = Array.isArray(c.data) ? c.data.map(String) : [];
-          const actions = Array.isArray(c.action) ? c.action.map(String) : [];
-          return (
-            <div key={i} className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-              {/* 卡片标识 */}
-              <div className="flex items-center gap-2">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px] font-bold text-white dark:bg-zinc-100 dark:text-zinc-900">
-                  {i + 1}
-                </span>
-                <code className="text-xs font-mono font-medium text-[var(--dsl-accent,#D7AE59)]">{name}</code>
-              </div>
 
-              {/* content（markdown 正文，高亮 @引用 和 action链接） */}
-              {!!content && (
-                <div className="mt-2">
-                  <SemanticMarkdown text={content} />
-                </div>
-              )}
-
-              {/* data 数据源索引 */}
-              {data.length > 0 && (
-                <div className="mt-2 border-t border-zinc-100 pt-1.5 dark:border-zinc-800">
-                  <p className="text-[9px] font-medium uppercase tracking-wide text-zinc-400">data</p>
-                  <ul className="mt-0.5 flex flex-col gap-0.5">
-                    {data.map((d, j) => (
-                      <li key={j} className="font-mono text-[9px] leading-relaxed text-cyan-600 dark:text-cyan-400">
-                        {d}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* action 操作索引 */}
-              {actions.length > 0 && (
-                <div className="mt-1.5">
-                  <p className="text-[9px] font-medium uppercase tracking-wide text-zinc-400">action</p>
-                  <ul className="mt-0.5 flex flex-col gap-0.5">
-                    {actions.map((a, j) => (
-                      <li key={j} className="font-mono text-[9px] leading-relaxed text-purple-600 dark:text-purple-400">
-                        {a}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {mode === "source" ? (
+        <pre className="flex-1 overflow-auto whitespace-pre-wrap bg-zinc-950 p-3 font-mono text-[10px] leading-relaxed text-emerald-300/90">
+          {markdown}
+        </pre>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-3">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              h1: ({ children }) => <h1 className="mb-3 text-lg font-semibold text-zinc-900 dark:text-zinc-100">{children}</h1>,
+              h2: ({ children }) => <h2 className="mb-2 mt-5 border-b border-zinc-200 pb-1 text-sm font-semibold text-zinc-900 first:mt-0 dark:border-zinc-800 dark:text-zinc-100">{children}</h2>,
+              h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-xs font-semibold text-zinc-700 dark:text-zinc-300">{children}</h3>,
+              p: ({ children }) => <p className="my-2 text-[11px] leading-relaxed text-zinc-700 dark:text-zinc-300">{children}</p>,
+              ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5 text-[11px] text-zinc-700 dark:text-zinc-300">{children}</ul>,
+              ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5 text-[11px] text-zinc-700 dark:text-zinc-300">{children}</ol>,
+              blockquote: ({ children }) => <blockquote className="my-2 border-l-2 border-amber-400 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-300">{children}</blockquote>,
+              table: ({ children }) => <div className="my-2 overflow-x-auto"><table className="w-full border-collapse text-[10px]">{children}</table></div>,
+              th: ({ children }) => <th className="border border-zinc-300 bg-zinc-100 px-2 py-1 text-left font-semibold dark:border-zinc-700 dark:bg-zinc-900">{children}</th>,
+              td: ({ children }) => <td className="border border-zinc-300 px-2 py-1 align-top dark:border-zinc-700">{children}</td>,
+              hr: () => <hr className="my-4 border-zinc-200 dark:border-zinc-800" />,
+              a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline underline-offset-2 dark:text-blue-400">{children}</a>,
+              pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded-md bg-zinc-950 p-2 font-mono text-[10px] leading-relaxed text-indigo-300">{children}</pre>,
+              code: ({ children, className }) => <code className={className ?? "rounded bg-zinc-200 px-1 py-0.5 font-mono text-[10px] dark:bg-zinc-800"}>{children}</code>,
+            }}
+          >
+            {markdown}
+          </ReactMarkdown>
+        </div>
+      )}
     </div>
   );
-}
-
-/**
- * 渲染混写 markdown content：
- * - @slot 引用 → 蓝色高亮
- * - [文字](action:...) → 绿色可点击样式
- * - 其余按纯文本 + 换行渲染
- */
-function SemanticMarkdown({ text }: { text: string }) {
-  // 按行渲染，每行内做 @引用 和 action链接 的着色
-  const lines = text.split("\n");
-  return (
-    <div className="whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-700 dark:text-zinc-300">
-      {lines.map((line, i) => (
-        <span key={i}>
-          {renderInlineMarkdown(line)}
-          {"\n"}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-/** 单行内的 @引用 和 [text](action:...) 着色 */
-function renderInlineMarkdown(line: string): ReactNode[] {
-  const parts: React.ReactNode[] = [];
-  // 匹配 [text](action:...) 或 @slot_name 或 @slot_name(默认值)
-  const regex = /(\[([^\]]+)\]\(action:[^)]+\))|(@[a-zA-Z_][a-zA-Z0-9_]*(\([^)]*\))?)/g;
-  let last = 0;
-  let match;
-  let key = 0;
-  while ((match = regex.exec(line)) !== null) {
-    if (match.index > last) parts.push(line.slice(last, match.index));
-    if (match[2] !== undefined) {
-      // [text](action:...) 链接
-      const linkMatch = match[1].match(/\[([^\]]+)\]\((action:[^)]+)\)/);
-      parts.push(
-        <span key={`a${key++}`} className="rounded bg-emerald-100 px-1 text-[10px] text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400" title={linkMatch?.[2]}>
-          {linkMatch?.[1]} ↗
-        </span>,
-      );
-    } else if (match[3] !== undefined) {
-      // @slot 引用
-      parts.push(
-        <span key={`s${key++}`} className="rounded bg-blue-100 px-0.5 font-mono text-[10px] text-blue-700 dark:bg-blue-950 dark:text-blue-400">
-          {match[3]}
-        </span>,
-      );
-    }
-    last = match.index + match[0].length;
-  }
-  if (last < line.length) parts.push(line.slice(last));
-  return parts;
 }

@@ -36,7 +36,13 @@ function loadCardPlanSpec(): string {
 
 function loadSemanticSpec(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  const promptPath = join(here, "..", "prompts", "semantic-card-spec.md");
+  const promptPath = join(here, "..", "prompts", "semantic-markdown-spec.md");
+  return readFileSync(promptPath, "utf-8");
+}
+
+function loadA2UISpec(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const promptPath = join(here, "..", "prompts", "a2ui-spec.md");
   return readFileSync(promptPath, "utf-8");
 }
 
@@ -144,6 +150,34 @@ async function callLLM(opts: CallOptions): Promise<unknown> {
   }
 }
 
+/**
+ * Markdown 模式调用：普通 completion，模型输出纯 Markdown 原文。
+ * 不做 JSON/YAML/业务结构解析；除空响应外全部原样返回。
+ */
+async function callLLMMarkdown(opts: {
+  systemPrompt: string;
+  userMessage: string;
+  onLog?: (entry: CallLog) => void;
+}): Promise<{ raw: string; usage?: unknown }> {
+  const client = createLLMClient();
+  const model = process.env.LLM_MODEL ?? "gpt-4o-mini";
+  const log = opts.onLog ?? (() => {});
+  const ts = () => new Date().toISOString();
+  log({ ts: ts(), phase: "request", message: `POST /chat/completions (markdown)  model=${model}` });
+
+  const completion = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: opts.systemPrompt },
+      { role: "user", content: opts.userMessage },
+    ],
+  });
+  const content = completion.choices[0]?.message?.content ?? "";
+  if (!content.trim()) throw new Error("模型返回空 Markdown 内容");
+  log({ ts: ts(), phase: "response", message: "markdown 调用成功", detail: { usage: completion.usage } });
+  return { raw: content, usage: completion.usage };
+}
+
 /* ------------------------------------------------------------------ */
 /*  分步推理                                                            */
 /*  8 个步骤，每步可独立调用；传 priorContext 把前序结果衔接进来。       */
@@ -159,6 +193,7 @@ export const STEP_NAMES = [
   "triage",
   "clarifying_questions",
   "generate",
+  "a2ui_generate",
 ] as const;
 
 export type StepName = (typeof STEP_NAMES)[number];
@@ -175,6 +210,8 @@ export interface StepInput {
   userAnswers?: Record<number, string>;
   /** generate 步生成模式：ir=结构化CardPlan / semantic=纯语义描述 */
   genMode?: "ir" | "semantic";
+  /** 第7步结果（仅 a2ui_generate 步用） */
+  step7Result?: unknown;
   /** 日志回调 */
   onLog?: (entry: CallLog) => void;
   /** mock 模式 */
@@ -194,8 +231,12 @@ export interface StepOutput {
   result?: InferResponse["result"];
   /** generate 步产出的 CardPlan IR（ir 模式） */
   cardPlan?: unknown;
-  /** generate 步产出的纯语义卡片描述（semantic 模式） */
-  semanticCards?: unknown;
+  /** generate 步产出的原始 Semantic Markdown（semantic 模式） */
+  semanticMarkdown?: string;
+  /** generate 步产出的推理流程图（mermaid 文本） */
+  reasoningGraph?: string;
+  /** a2ui_generate 步产出的 A2UI JSONL 消息数组 */
+  a2uiJsonl?: unknown[];
   rawDurationMs: number;
 }
 
@@ -208,6 +249,7 @@ const STEP_LABEL: Record<StepName, string> = {
   triage: "⑤ 分流",
   clarifying_questions: "⑥ 最小化提问",
   generate: "⑦ 生成",
+  a2ui_generate: "⑧ A2UI卡片",
 };
 
 /** 单步输出的 JSON schema（宽松：要求 reasoning + outputs，其余可选） */
@@ -220,6 +262,9 @@ const stepOutputSchema = {
     conflicts: { type: "array", items: { type: "object", additionalProperties: true } },
     questions: { type: "array", items: { type: "object", additionalProperties: true } },
     result: { type: "object", additionalProperties: true },
+    cardPlan: { type: "object", additionalProperties: true },
+    reasoningGraph: { type: "string" },
+    a2uiJsonl: { type: "array", items: { type: "object", additionalProperties: true } },
   },
   required: ["reasoning", "outputs"],
   additionalProperties: false,
@@ -245,17 +290,65 @@ const STEP_INSTRUCTION: Record<StepName, string> = {
     "CardPlan 的结构、可用 block/action 菜单、数据流语法见下方的「CardPlan IR 规范」。\n" +
     "你要做的是：选 block 类型 + 用前序推断的槽位值填内容 + 用 navigate/onSelect 连接卡片流程。\n" +
     "不是写代码，而是语义化的设计描述——编译器会翻译成可渲染的卡片。",
+  a2ui_generate:
+    "执行【Step 8: A2UI卡片生成】：基于第7步的语义卡片设计，用 A2UI 标准组件生成可在 2x4 手机桌面卡片上渲染的交互界面。\n" +
+    "A2UI 组件规范、JSONL 消息格式、2x4约束见下方的「A2UI 卡片生成规范」。\n" +
+    "把第7步的每张语义卡片翻译成 A2UI 的扁平邻接表（Card/Column/Row/Text/Button/Image等组件），保持内容和交互完整。\n" +
+    "输出 a2uiJsonl 字段：一个 JSON 数组，每条消息是 createSurface 或 updateComponents。",
 };
 
 /** 执行单步推理 */
 export async function runStep(input: StepInput): Promise<StepOutput> {
-  const { name, query, deviceContext, priorSteps = {}, userAnswers, genMode = "ir", onLog, mock } = input;
+  const { name, query, deviceContext, priorSteps = {}, userAnswers, genMode = "ir", step7Result, onLog, mock } = input;
 
   if (mock) {
     return mockStep(input);
   }
 
   const startedAt = Date.now();
+
+  // Semantic 模式有独立的纯 Markdown 协议，不能混入通用 JSON/CardPlan 指令。
+  if (name === "generate" && genMode === "semantic") {
+    const userMessage = [
+      "## 用户请求",
+      query,
+      "",
+      "## 设备使用记录 (device_context)",
+      "```json",
+      JSON.stringify(deviceContext, null, 2),
+      "```",
+      "",
+      "## 前序步骤已完成的结果",
+      Object.keys(priorSteps).length > 0
+        ? "```json\n" + JSON.stringify(priorSteps, null, 2) + "\n```"
+        : "（无）",
+      "",
+      ...(userAnswers && Object.keys(userAnswers).length > 0
+        ? [
+            "## 用户对提问的回答 (user_answers，必须严格遵守)",
+            "```json",
+            JSON.stringify(userAnswers, null, 2),
+            "```",
+            "",
+          ]
+        : []),
+      "## 本步任务",
+      "基于以上已确定信息生成完整的 Semantic Markdown 卡片方案。只输出 Markdown 原文，不要输出 JSON、YAML、解释前缀或包裹整篇文档的代码围栏。",
+    ].join("\n");
+
+    const { raw } = await callLLMMarkdown({
+      systemPrompt: loadSemanticSpec(),
+      userMessage,
+      onLog,
+    });
+    return {
+      name,
+      reasoning: "已根据前序推断生成 Semantic Markdown 原文。",
+      outputs: { format: "semantic_markdown" },
+      semanticMarkdown: raw,
+      rawDurationMs: Date.now() - startedAt,
+    };
+  }
 
   const systemPrompt = loadSystemPrompt();
   const userMessage = [
@@ -291,12 +384,22 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
           "",
         ]
       : []),
+    // a2ui_generate 步注入第7步结果 + A2UI 规范
+    ...(name === "a2ui_generate" && step7Result
+      ? [
+          "## 第7步产出的卡片设计（你要翻译成 A2UI）",
+          "```json",
+          JSON.stringify(step7Result, null, 2),
+          "```",
+          "",
+        ]
+      : []),
+    ...(name === "a2ui_generate"
+      ? ["## A2UI 卡片生成规范", loadA2UISpec(), ""]
+      : []),
     // generate 步注入规范（按模式分支）
     ...(name === "generate" && genMode === "ir"
       ? ["## CardPlan IR 规范", loadCardPlanSpec(), ""]
-      : []),
-    ...(name === "generate" && genMode === "semantic"
-      ? ["## 语义化卡片描述规范", loadSemanticSpec(), ""]
       : []),
     "## 本步任务",
     STEP_INSTRUCTION[name],
@@ -313,8 +416,11 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
       (name === "generate" && genMode === "ir"
         ? "此外必须在【顶层】加一个 cardPlan 对象字段（不要嵌套进 outputs），严格按上方 CardPlan IR 规范的结构输出。同时给出 result.summary(一句话总结) 和 result.assumptions(假设数组)。"
         : "") +
-      (name === "generate" && genMode === "semantic"
-        ? "此外必须在【顶层】加一个 semanticCards 数组字段（不要嵌套进 outputs），严格按上方「语义化卡片描述规范」输出每张卡的完整描述。同时给出 result.summary 和 result.assumptions。"
+      (name === "generate"
+        ? "此外必须在【顶层】加一个 reasoningGraph 字符串字段（不要嵌套进 outputs），内容是一段 mermaid 流程图文本，描述从槽位到卡片内容的推理依赖关系（节点标注类型/来源/置信度）。"
+        : "") +
+      (name === "a2ui_generate"
+        ? "此外必须在【顶层】加一个 a2uiJsonl 数组字段（不要嵌套进 outputs），内容是 A2UI 消息数组（createSurface + updateComponents）。"
         : ""),
   ].join("\n");
 
@@ -341,7 +447,16 @@ export async function runStep(input: StepInput): Promise<StepOutput> {
     questions: pick<StepOutput["questions"]>(parsed.questions, "questions"),
     result: pick<StepOutput["result"]>(parsed.result, "result"),
     cardPlan: pick<unknown>(parsed.cardPlan, "cardPlan"),
-    semanticCards: pick<unknown>(parsed.semanticCards, "semanticCards"),
+    reasoningGraph: typeof parsed.reasoningGraph === "string"
+      ? parsed.reasoningGraph
+      : typeof (outputs.reasoningGraph) === "string"
+        ? (outputs.reasoningGraph as string)
+        : undefined,
+    a2uiJsonl: Array.isArray(parsed.a2uiJsonl)
+      ? parsed.a2uiJsonl
+      : Array.isArray(outputs.a2uiJsonl)
+        ? outputs.a2uiJsonl
+        : undefined,
     rawDurationMs: Date.now() - startedAt,
   };
 }
@@ -410,6 +525,85 @@ function mockStep(input: StepInput): StepOutput {
     (input.deviceContext.location_history as { home_city?: string } | undefined)?.home_city ?? "未知";
   const startedAt = Date.now();
 
+  if (name === "generate" && input.genMode === "semantic") {
+    const semanticMarkdown = [
+      `# ${input.query} · 卡片方案`,
+      "",
+      "本方案包含 3 张卡片，依次提供概览、方案比较和最终确认。",
+      "",
+      "## 卡片 1：方案概览",
+      "",
+      `围绕“${input.query}”给出整体建议，并优先考虑与${homeCity}相关的已知信息。`,
+      "",
+      "### 使用的数据",
+      "",
+      `- 相关地点为${homeCity}，来自设备定位记录，置信度为 0.90。`,
+      `- 用户目标为“${input.query}”，直接来自本次请求，可视为确定信息。`,
+      "",
+      "### 支持的动作",
+      "",
+      "- 用户点击“比较方案”后进入卡片 2，不修改当前状态。",
+      "",
+      "---",
+      "",
+      "## 卡片 2：方案比较",
+      "",
+      "| 方案 | 调整项 | 预估投入 |",
+      "|---|---|---|",
+      "| 经济档 | 保留核心内容 | 较低 |",
+      "| 舒适档（推荐） | 平衡体验与投入 | 中等 |",
+      "| 进阶档 | 增加扩展能力 | 较高 |",
+      "",
+      "### 使用的数据",
+      "",
+      "- 方案差异来自当前任务目标与前序推断；具体价格当前未知，需要外部数据补充。",
+      "",
+      "### 支持的动作",
+      "",
+      "- 用户选择某个档位后记录所选方案，并进入卡片 3。",
+      "",
+      "---",
+      "",
+      "## 卡片 3：确认方案",
+      "",
+      "汇总用户选择，并清楚标出仍需确认或补充的信息。",
+      "",
+      "### 使用的数据",
+      "",
+      "- 所选方案来自卡片 2 的用户操作；尚未选择时显示为“待选择”。",
+      "",
+      "### 支持的动作",
+      "",
+      "- 用户点击“保存方案”后保存当前选择，并显示保存结果。",
+      "",
+      "## 推理流程图",
+      "",
+      "```mermaid",
+      "flowchart TD",
+      `    S1[\"地点=${homeCity} / 定位记录 / 0.90\"] --> R1[\"结合用户目标形成方案\"]`,
+      "    R1 --> C1[\"卡片 1：方案概览\"]",
+      "    C1 --> C2[\"卡片 2：方案比较\"]",
+      "    C2 --> C3[\"卡片 3：确认方案\"]",
+      "```",
+      "",
+      "## 方案总结",
+      "",
+      "用三张卡片完成信息理解、方案比较和选择确认。",
+      "",
+      "## 假设与待确认项",
+      "",
+      `- 当前假设地点与${homeCity}相关；如不正确，需要用户纠正。`,
+    ].join("\n");
+
+    return {
+      name,
+      reasoning: "已根据前序推断生成 Semantic Markdown 原文（mock）。",
+      outputs: { format: "semantic_markdown" },
+      semanticMarkdown,
+      rawDurationMs: Date.now() - startedAt,
+    };
+  }
+
   const table: Record<StepName, Omit<StepOutput, "name" | "rawDurationMs">> = {
     slot_definition: {
       reasoning: `根据 query「${input.query}」判断任务类型并自行定义所需槽位（mock 占位，实际由模型生成）。`,
@@ -455,7 +649,25 @@ function mockStep(input: StepInput): StepOutput {
           { kind: "summary", title: "方案详情", value: "基于已推断信息的方案", valueFromSlot: "destination" },
         ] },
       ],
-    } },
+    }, reasoningGraph: [
+      "flowchart TD",
+      `    S1[\"地点=${homeCity} / 定位记录 / 0.90\"] --> R1[\"形成方案\"]`,
+      "    R1 --> C1[\"overview\"]",
+      "    C1 --> C2[\"detail\"]",
+    ].join("\n") },
+    a2ui_generate: { reasoning: "基于第7步卡片设计生成 A2UI JSONL（mock）。", outputs: {},
+      a2uiJsonl: [
+        { version: "v0.9", createSurface: { surfaceId: "mock", catalogId: "https://a2ui.org/specification/v0_9/standard_catalog.json" } },
+        { version: "v0.9", updateComponents: { surfaceId: "mock", components: [
+          { id: "root", component: "Card", child: "col" },
+          { id: "col", component: "Column", children: ["title", "desc", "btn"] },
+          { id: "title", component: "Text", text: input.query, variant: "h3" },
+          { id: "desc", component: "Text", text: `常驻${homeCity}的方案（mock A2UI）`, variant: "body" },
+          { id: "btn", component: "Button", child: "btn_text", variant: "primary", action: { event: { name: "click" } } },
+          { id: "btn_text", component: "Text", text: "查看详情" },
+        ]}},
+      ],
+    },
   };
 
   return { name, rawDurationMs: Date.now() - startedAt, ...table[name] };

@@ -56,6 +56,7 @@ export async function POST(request: Request) {
           (body.userAnswers as Record<number, string> | undefined) ?? undefined,
         genMode:
           (body.genMode as "ir" | "semantic" | undefined) ?? undefined,
+        step7Result: body.step7Result,
         name: body.step,
         mock: useMock,
         onLog,

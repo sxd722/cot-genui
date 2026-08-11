@@ -25,11 +25,13 @@ export interface StepState {
   durationMs: number;
   /** token 消耗（从 _logs 里的 usage 提取） */
   tokens?: { prompt: number; completion: number; total: number };
+  /** 估算费用（美元），基于 token 数和模型定价 */
+  cost?: number;
   error: string | null;
   logs: StepLog[];
 }
 
-// 8 步固定顺序（⓪ 槽位定义 → ①~⑦ 推理）
+// 9 步固定顺序（⓪ 槽位定义 → ①~⑦ 推理 → ⑧ A2UI卡片流生成）
 export const STEP_ORDER = [
   "slot_definition",
   "surface_parse",
@@ -39,6 +41,7 @@ export const STEP_ORDER = [
   "triage",
   "clarifying_questions",
   "generate",
+  "a2ui_generate",
 ] as const;
 
 export type StepName = (typeof STEP_ORDER)[number];
@@ -52,6 +55,7 @@ export const STEP_LABEL: Record<StepName, string> = {
   triage: "⑤ 分流",
   clarifying_questions: "⑥ 最小化提问",
   generate: "⑦ 生成",
+  a2ui_generate: "⑧ A2UI卡片",
 };
 
 /* ----------------------- store ----------------------- */
@@ -77,8 +81,12 @@ interface InferState {
 
   /** generate 步产出的 CardPlan IR */
   cardPlan: unknown | null;
-  /** generate 步产出的纯语义卡片描述（semantic 模式） */
-  semanticCards: unknown | null;
+  /** generate 步产出的原始 Semantic Markdown（semantic 模式） */
+  semanticMarkdown: string | null;
+  /** generate 步产出的推理流程图（mermaid 文本） */
+  reasoningGraph: string | null;
+  /** 第8步产出的 A2UI JSONL（数组） */
+  a2uiJsonl: unknown[] | null;
   /** 编译后的 CardArtifact（generate 完成后自动编译） */
   compiledArtifact: unknown | null;
   /** 编译诊断 notices */
@@ -132,6 +140,7 @@ function emptySteps(): Record<StepName, StepState> {
     triage: { ...init },
     clarifying_questions: { ...init },
     generate: { ...init },
+    a2ui_generate: { ...init },
   };
 }
 
@@ -148,6 +157,32 @@ function extractTokens(logs: StepLog[]): StepState["tokens"] {
     }
   }
   return undefined;
+}
+
+/** 模型定价（美元/百万token）。仅常见模型的粗略估算。 */
+function getModelPricing(): { input: number; output: number } {
+  // 这些是公开标价的粗略值，实际可能因套餐/区域不同
+  const defaults: Record<string, { input: number; output: number }> = {
+    "glm-4.6": { input: 0.6, output: 0.6 },        // ≈¥4.3/M both
+    "glm-4-plus": { input: 0.7, output: 0.7 },
+    "glm-4": { input: 0.7, output: 0.7 },
+    "gpt-4o": { input: 2.5, output: 10 },
+    "gpt-4o-mini": { input: 0.15, output: 0.6 },
+    "deepseek-chat": { input: 0.14, output: 0.28 },
+  };
+  const model = (process.env.NEXT_PUBLIC_LLM_MODEL || "gpt-4o-mini").toLowerCase();
+  for (const [key, val] of Object.entries(defaults)) {
+    if (model.includes(key)) return val;
+  }
+  return { input: 1, output: 3 }; // 兜底估算
+}
+
+/** 根据估算 token 费用（美元） */
+function estimateCost(tokens?: { prompt: number; completion: number; total: number }): number | undefined {
+  if (!tokens) return undefined;
+  const pricing = getModelPricing();
+  const cost = (tokens.prompt / 1_000_000) * pricing.input + (tokens.completion / 1_000_000) * pricing.output;
+  return cost > 0 ? cost : undefined;
 }
 
 /** 从已完成的步骤构造 priorSteps（发给后端的上下文） */
@@ -173,14 +208,16 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   steps: emptySteps(),
   isMock: false,
-  genMode: "ir",
+  genMode: "semantic",
   runAllPaused: false,
   slots: [],
   conflicts: [],
   questions: [],
   result: null,
   cardPlan: null,
-  semanticCards: null,
+  semanticMarkdown: null,
+  reasoningGraph: null,
+  a2uiJsonl: null,
   compiledArtifact: null,
   compileNotices: [],
   enrichStatus: "idle",
@@ -203,7 +240,8 @@ export const useInferStore = create<InferState>((set, get) => ({
       questions: [],
       result: null,
       cardPlan: null,
-      semanticCards: null,
+      semanticMarkdown: null,
+      reasoningGraph: null,
       compiledArtifact: null,
       compileNotices: [],
       enrichStatus: "idle",
@@ -216,7 +254,20 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   setContextText: (t) => set({ contextText: t }),
 
-  setGenMode: (mode) => set({ genMode: mode }),
+  setGenMode: (mode) =>
+    set((st) => ({
+      genMode: mode,
+      result: null,
+      cardPlan: null,
+      semanticMarkdown: null,
+      reasoningGraph: null,
+      compiledArtifact: null,
+      compileNotices: [],
+      enrichStatus: "idle",
+      enrichProgress: { done: 0, total: 0, current: "" },
+      enrichResults: [],
+      steps: { ...st.steps, generate: emptySteps().generate },
+    })),
 
   answerQuestion: (idx, value) =>
     set((st) => ({ answers: { ...st.answers, [idx]: value } })),
@@ -282,7 +333,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   },
 
   runStep: async (name) => {
-    const { query, contextText, steps } = get();
+    const { query, contextText } = get();
 
     let deviceContext: Record<string, unknown>;
     try {
@@ -296,13 +347,26 @@ export const useInferStore = create<InferState>((set, get) => ({
 
     // 标记 loading
     set((st) => ({
+      ...(name === "generate"
+        ? {
+            result: null,
+            cardPlan: null,
+            semanticMarkdown: null,
+            reasoningGraph: null,
+            compiledArtifact: null,
+            compileNotices: [],
+            enrichStatus: "idle" as const,
+            enrichProgress: { done: 0, total: 0, current: "" },
+            enrichResults: [],
+          }
+        : {}),
       steps: { ...st.steps, [name]: { ...st.steps[name], status: "loading", error: null, logs: [] } },
     }));
 
     const priorSteps = buildPriorSteps(get().steps, name);
 
     try {
-      const { answers, genMode } = get();
+      const { answers, genMode, semanticMarkdown, cardPlan } = get();
       const res = await fetch("/api/infer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -317,6 +381,10 @@ export const useInferStore = create<InferState>((set, get) => ({
                 ...(Object.keys(answers).length > 0 ? { userAnswers: answers } : {}),
                 genMode,
               }
+            : {}),
+          // a2ui_generate 步把第7步结果带上
+          ...(name === "a2ui_generate"
+            ? { step7Result: semanticMarkdown ?? cardPlan ?? null }
             : {}),
         }),
       });
@@ -345,10 +413,10 @@ export const useInferStore = create<InferState>((set, get) => ({
         const nextQuestions = data.questions ?? st.questions;
         const nextResult = data.result ?? st.result;
 
-        // generate 步：提取 cardPlan 或 semanticCards
+        // generate 步：提取 CardPlan 或原始 Semantic Markdown
         const isGen = name === "generate";
-        const hasCardPlan = isGen && data.cardPlan;
-        const hasSemantic = isGen && data.semanticCards;
+        const hasCardPlan = isGen && !!data.cardPlan;
+        const hasSemantic = isGen && typeof data.semanticMarkdown === "string" && data.semanticMarkdown.trim().length > 0;
 
         return {
           isMock: !!_mock,
@@ -356,11 +424,12 @@ export const useInferStore = create<InferState>((set, get) => ({
           conflicts: nextConflicts,
           questions: nextQuestions,
           result: nextResult,
-          // generate 步：存 cardPlan（IR模式）或 semanticCards（语义模式）
+          // generate 步：存 CardPlan（IR模式）或 Markdown 原文（语义模式）
           ...(hasCardPlan
             ? {
                 cardPlan: data.cardPlan,
-                semanticCards: null,
+                semanticMarkdown: null,
+                reasoningGraph: data.reasoningGraph ?? null,
                 compiledArtifact: null,
                 compileNotices: [],
                 enrichStatus: "scanning" as const,
@@ -371,12 +440,17 @@ export const useInferStore = create<InferState>((set, get) => ({
           ...(hasSemantic
             ? {
                 cardPlan: null,
-                semanticCards: data.semanticCards,
+                semanticMarkdown: data.semanticMarkdown as string,
+                reasoningGraph: null,
                 compiledArtifact: null,
                 compileNotices: [],
                 enrichStatus: "skipped" as const,
                 enrichResults: [],
               }
+            : {}),
+          // a2ui_generate 步：存 A2UI JSONL
+          ...(name === "a2ui_generate" && data.a2uiJsonl
+            ? { a2uiJsonl: data.a2uiJsonl }
             : {}),
           // clarifying_questions 步成功后，问题可能已变化，
           // 旧 answers 按 idx 存会与新问题错位，故清空。
@@ -388,7 +462,8 @@ export const useInferStore = create<InferState>((set, get) => ({
               reasoning: reasoning ?? "",
               outputs: outputs ?? {},
               durationMs: durationMs ?? 0,
-              tokens: extractTokens(_logs ?? []),
+              tokens: (() => { const t = extractTokens(_logs ?? []); return t; })(),
+              cost: estimateCost(extractTokens(_logs ?? [])),
               error: null,
               logs: _logs ?? [],
             },
@@ -424,13 +499,19 @@ export const useInferStore = create<InferState>((set, get) => ({
       set({ runAllPaused: true });
       return; // 等用户回答后点"继续生成"
     }
-    // 没有提问或已全答 → 直接生成
+    // 没有提问或已全答 → 直接生成 + A2UI
     await get().runStep("generate");
+    if (get().steps.generate.status !== "error") {
+      await get().runStep("a2ui_generate");
+    }
   },
 
   continueGenerate: async () => {
     set({ runAllPaused: false });
     await get().runStep("generate");
+    if (get().steps.generate.status !== "error") {
+      await get().runStep("a2ui_generate");
+    }
   },
 
   reset: () =>
@@ -445,7 +526,8 @@ export const useInferStore = create<InferState>((set, get) => ({
       questions: [],
       result: null,
       cardPlan: null,
-      semanticCards: null,
+      semanticMarkdown: null,
+      reasoningGraph: null,
       compiledArtifact: null,
       compileNotices: [],
       enrichStatus: "idle",

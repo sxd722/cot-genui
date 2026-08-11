@@ -71,11 +71,16 @@ function StepRow({ name }: { name: StepName }) {
             {badge.text}
           </span>
           {s.durationMs > 0 && (
-            <span className="text-[10px] text-zinc-400">{(s.durationMs / 1000).toFixed(1)}s</span>
+            <span className="text-[10px] text-zinc-400" title="模型调用耗时">{(s.durationMs / 1000).toFixed(1)}s</span>
           )}
           {s.tokens && s.tokens.total > 0 && (
             <span className="text-[10px] text-zinc-400" title={`prompt ${s.tokens.prompt} + completion ${s.tokens.completion}`}>
               · {s.tokens.total} tok
+            </span>
+          )}
+          {s.cost !== undefined && s.cost > 0 && (
+            <span className="text-[10px] text-zinc-400" title="估算费用">
+              · {s.cost < 0.01 ? `$${(s.cost * 1000).toFixed(2)}‰` : `$${s.cost.toFixed(4)}`}
             </span>
           )}
           {hasContent && (
@@ -135,7 +140,7 @@ function StepRow({ name }: { name: StepName }) {
 }
 
 export function CotTrace() {
-  const { slots, conflicts, questions, answers, answerQuestion } = useInferStore();
+  const { slots, conflicts, questions, answers, answerQuestion, reasoningGraph } = useInferStore();
 
   return (
     <section className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
@@ -258,6 +263,41 @@ export function CotTrace() {
           )}
         </div>
       )}
+
+      {/* 推理流程图（generate 完成后显示） */}
+      {reasoningGraph && <ReasoningGraphView graph={reasoningGraph} />}
     </section>
+  );
+}
+
+/* ----------------------- 推理流程图 ----------------------- */
+
+function ReasoningGraphView({ graph }: { graph: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(graph);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="mt-2 rounded-lg border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-900 dark:bg-indigo-950/40">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-400">
+          🔗 推理流程图（DAG）
+        </h3>
+        <button
+          onClick={handleCopy}
+          className="rounded border border-indigo-300 px-1.5 py-0.5 text-[10px] text-indigo-600 hover:bg-indigo-100 dark:border-indigo-800 dark:text-indigo-400 dark:hover:bg-indigo-900"
+        >
+          {copied ? "✓ 已复制" : "复制 mermaid"}
+        </button>
+      </div>
+      <p className="mt-1 text-[10px] text-indigo-500 dark:text-indigo-500">
+        从槽位到卡片内容的推理依赖。可贴到 mermaid.live 查看图形。
+      </p>
+      <pre className="mt-1.5 max-h-[300px] overflow-auto rounded bg-white p-2 font-mono text-[10px] leading-relaxed text-indigo-800 dark:bg-zinc-900 dark:text-indigo-300">
+        {graph}
+      </pre>
+    </div>
   );
 }

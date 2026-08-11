@@ -135,6 +135,48 @@ role: `primary`(主操作) / `secondary`(次操作) / `tertiary`(辅助)
 5. **文案紧凑**：标题≤18字，按钮≤8字，说明≤60字
 6. 纯展示卡可以没有 actions
 
+## 推理流程图（reasoningGraph）
+
+除了 cardPlan，你还必须输出 `reasoningGraph`——一段 mermaid 流程图文本，描述从槽位到卡片内容的推理依赖关系。
+
+### 节点类型
+
+- **slot 节点**（叶子）：前序推断的槽位值。标注 `来源 + 置信度`
+- **推理节点**（中间）：多个 slot 组合推导的中间结论。标注 `推理逻辑`
+- **卡片节点**（根）：最终输出的每张卡。标注 `卡片名`
+
+### mermaid 语法示例
+
+```
+graph TD
+    S1["📍 origin=上海<br/>来源: location_history<br/>置信度: 0.92"]
+    S2["📍 destination=北京<br/>来源: user_query<br/>置信度: 1.0"]
+    S3["💰 budget=舒适型<br/>来源: payment.budget_style<br/>置信度: 0.6"]
+    S4["👨‍👩‍👧 travel_party=一家三口<br/>来源: family.children<br/>置信度: 0.7"]
+
+    R1["🚄 transport=高铁<br/>推理: origin+destination→高铁优先"]
+    R2["🎫 attractions=故宫/动物园/颐和园<br/>推理: destination+preferences→亲子景点"]
+
+    C1["📋 card1: overview"]
+    C2["📋 card2: attractions"]
+    C3["📋 card3: spot-detail"]
+
+    S1 --> R1
+    S2 --> R1
+    R1 --> C1
+    S2 --> R2
+    S4 --> R2
+    R2 --> C2
+    C2 -->|用户选择景点| C3
+```
+
+### 规则
+- 每个 slot 节点标注来源记录和置信度
+- 每个推理节点标注"从什么推导出什么"
+- 每张卡至少有一个入边（说明内容从哪来）
+- 用 `-->` 表示推导依赖，`-->|条件|` 表示条件触发（如用户选择）
+- 节点 ID 用 S1/S2（slot）、R1/R2（推理）、C1/C2（卡片）前缀
+
 ## 缺失信息识别（missingInfo）
 
 如果某张卡或某个 block 需要的信息**不在前序推理结果中**，你可以声明 `missingInfo`，系统会自动尝试补齐（web 搜索或 LLM 推理）。
