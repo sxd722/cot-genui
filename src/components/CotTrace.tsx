@@ -7,6 +7,7 @@ import {
   STEP_LABEL,
   type StepName,
 } from "@/store/useInferStore";
+import { MODEL_PROFILES, MODEL_PROFILE_LABELS, type ModelProfile } from "@/lib/pipelineTypes";
 import { SlotTable } from "./SlotTable";
 import { toText, toTextInline } from "@/lib/format";
 
@@ -38,11 +39,19 @@ const STATUS_BADGE: Record<string, { text: string; cls: string }> = {
   error: { text: "失败", cls: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-400" },
 };
 
+/** 完成状态的徽章文本：如果有耗时则显示时间，否则显示"完成" */
+function doneBadgeText(durationMs: number): string {
+  if (durationMs <= 0) return "完成";
+  return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
+}
+
 function StepRow({ name }: { name: StepName }) {
-  const { steps, runStep } = useInferStore();
+  const { steps, stepModels, setStepModel, runStep } = useInferStore();
   const s = steps[name];
   const [open, setOpen] = useState(false);
   const badge = STATUS_BADGE[s.status];
+  // 完成状态时，徽章文本替换为调用时间
+  const badgeText = s.status === "done" ? doneBadgeText(s.durationMs) : badge.text;
   const hasContent = s.status === "done" || s.status === "error";
 
   return (
@@ -58,28 +67,38 @@ function StepRow({ name }: { name: StepName }) {
           {s.status === "loading" ? "…" : "▶"}
         </button>
 
+        <select
+          value={stepModels[name]}
+          onChange={(event) => setStepModel(name, event.target.value as ModelProfile)}
+          disabled={s.status === "loading"}
+          className="max-w-[170px] shrink-0 rounded border border-zinc-300 bg-white px-1.5 py-1 text-[10px] text-zinc-600 outline-none focus:border-zinc-600 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+          title={`${STEP_LABEL[name]} 使用的模型`}
+        >
+          {MODEL_PROFILES.map((profile) => (
+            <option key={profile} value={profile}>{MODEL_PROFILE_LABELS[profile]}</option>
+          ))}
+        </select>
+
         {/* 标题（点击展开/收起） */}
         <button
           onClick={() => hasContent && setOpen((o) => !o)}
-          className="flex flex-1 items-center gap-2 text-left"
+          className="flex flex-1 items-center gap-1.5 text-left"
           disabled={!hasContent}
         >
           <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
             {STEP_LABEL[name]}
           </span>
-          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}>
-            {badge.text}
+          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`} title={s.status === "done" ? `步骤端到端耗时 ${(s.durationMs / 1000).toFixed(1)}s` : undefined}>
+            {badgeText}
           </span>
-          {s.durationMs > 0 && (
-            <span className="text-[10px] text-zinc-400" title="模型调用耗时">{(s.durationMs / 1000).toFixed(1)}s</span>
-          )}
+          {/* 统计标签：token · 费用 */}
           {s.tokens && s.tokens.total > 0 && (
-            <span className="text-[10px] text-zinc-400" title={`prompt ${s.tokens.prompt} + completion ${s.tokens.completion}`}>
+            <span className="shrink-0 text-[10px] text-zinc-400" title={`prompt ${s.tokens.prompt}（缓存 ${s.tokens.cached}）+ completion ${s.tokens.completion}`}>
               · {s.tokens.total} tok
             </span>
           )}
           {s.cost !== undefined && s.cost > 0 && (
-            <span className="text-[10px] text-zinc-400" title="估算费用">
+            <span className="shrink-0 text-[10px] text-zinc-400" title="估算费用">
               · {s.cost < 0.01 ? `$${(s.cost * 1000).toFixed(2)}‰` : `$${s.cost.toFixed(4)}`}
             </span>
           )}
@@ -105,6 +124,18 @@ function StepRow({ name }: { name: StepName }) {
                 </pre>
               )}
             </>
+          )}
+
+          {s.status === "done" && s.timing && (
+            <div className="mt-2 grid grid-cols-2 gap-1 rounded bg-zinc-50 p-2 text-[10px] text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400 sm:grid-cols-4">
+              <div><span className="block text-zinc-400">端到端</span>{s.timing.totalMs} ms</div>
+              <div><span className="block text-zinc-400">LLM 请求</span>{s.timing.llmMs} ms</div>
+              <div><span className="block text-zinc-400">应用开销</span>{s.timing.overheadMs} ms</div>
+              <div><span className="block text-zinc-400">模型</span>{s.modelProfile ? MODEL_PROFILE_LABELS[s.modelProfile] : (s.model ?? "—")}</div>
+              <p className="col-span-2 mt-1 text-[9px] leading-relaxed text-zinc-400 sm:col-span-4">
+                当前为非流式调用。模型响应仅提供 created 时间戳和 token usage，不提供服务端纯推理时延；“LLM 请求”是本服务测得的完整请求墙钟时间。
+              </p>
+            </div>
           )}
 
           {/* 日志 */}
@@ -149,7 +180,7 @@ export function CotTrace() {
         <span className="text-[11px] text-zinc-400">点击 ▶ 逐步触发</span>
       </div>
 
-      {/* 7 步，可逐个触发 */}
+      {/* 六阶段：槽位 → 事实 → 提问 → 能力补齐 → CardPlan → A2UI */}
       <div className="flex flex-col gap-2">
         {STEP_ORDER.map((name) => (
           <StepRow key={name} name={name} />
@@ -245,12 +276,9 @@ export function CotTrace() {
                       })}
                     </div>
                   ) : (
-                    <input
-                      value={answered ?? ""}
-                      onChange={(e) => answerQuestion(i, e.target.value)}
-                      placeholder="输入你的回答…"
-                      className="mt-1.5 w-full rounded border border-rose-300 bg-white px-2 py-1 text-[11px] text-rose-900 outline-none focus:border-rose-500 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-200"
-                    />
+                    <p className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400">
+                      候选项生成异常，请重新执行「③ 不确定性提问」。系统不会接受自由文本填空。
+                    </p>
                   )}
                 </li>
               );
@@ -258,7 +286,7 @@ export function CotTrace() {
           </ul>
           {Object.keys(answers).length > 0 && (
             <p className="mt-2 text-[10px] text-rose-500 dark:text-rose-500">
-              回答将在「⑦ 生成」步被采纳，生成个性化方案。
+              回答会先进入「④ 总结与能力补齐」，确认完成后才允许生成 CardPlan。
             </p>
           )}
         </div>

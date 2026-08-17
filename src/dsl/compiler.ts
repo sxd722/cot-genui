@@ -34,6 +34,17 @@ import type {
   CompileNotice,
 } from "./modules";
 
+function safeExternalUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:" ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  主入口                                                             */
 /* ------------------------------------------------------------------ */
@@ -327,7 +338,9 @@ function compileBlock(
           title: ir.title,
           itemsBinding: ir.itemsFromSlot
             ? { path: `stringLists.${ir.itemsFromSlot}`, fallback: "", formatter: "join" }
-            : undefined,
+            : ir.items?.length
+              ? { path: `stringLists.${cardId}-${ir.kind}-items`, fallback: "", formatter: "join" }
+              : undefined,
           maxItems: ir.items ? ir.items.length : 5,
         },
       };
@@ -396,6 +409,14 @@ function compileBlock(
 /* ------------------------------------------------------------------ */
 
 function compileAction(ir: IRAction, cardId: string, notices: CompileNotice[]): Action | null {
+  if (!ir || typeof ir.id !== "string" || !ir.id.trim() || typeof ir.label !== "string" || !ir.label.trim()) {
+    notices.push({
+      level: "downgraded",
+      message: "忽略缺少有效 id/label 的 action",
+      location: cardId,
+    });
+    return null;
+  }
   const role = ir.role ?? "primary";
 
   switch (ir.type) {
@@ -477,20 +498,27 @@ function compileAction(ir: IRAction, cardId: string, notices: CompileNotice[]): 
       };
 
     case "external-link":
-      // spec §8.3 禁止 URL scheme，但 local.navigate 可做纯导航
-      notices.push({
-        level: "downgraded",
-        message: `external-link 降级为 navigate（spec 禁止 URL scheme），link: ${ir.link}`,
-        location: cardId,
-      });
+      const externalUrl = safeExternalUrl(ir.link);
+      if (!externalUrl) {
+        notices.push({
+          level: "unsupported",
+          message: `external-link 缺少合法的 http(s) URL，已丢弃: ${String(ir.link ?? "")}`,
+          location: cardId,
+        });
+        return null;
+      }
       return {
         id: ir.id,
         label: ir.label,
         role,
-        kind: "local",
-        dispatch: "form",
-        operation: "none",
-        event: ir.id,
+        kind: "tool",
+        dispatch: "host",
+        externalUrl,
+        toolCall: {
+          adapterId: "system.browser.open",
+          operation: "open",
+          outcomes: ["success", "error"],
+        },
       };
 
     case "pick-file":
@@ -564,6 +592,7 @@ function collectTransitions(
 
   // 1. IRAction navigate 类型 → 目标卡 transition
   for (const irAction of node.actions ?? []) {
+    if (!irAction || typeof irAction.id !== "string" || !irAction.id.trim()) continue;
     if (irAction.type === "navigate" && irAction.targetCardId) {
       add({ event: irAction.id, targetCardId: irAction.targetCardId });
     }
@@ -585,7 +614,11 @@ function collectTransitions(
 
   // 3. tool action：每个 outcome 都要 transition（spec §5.3）
   //    若 IRAction 有 targetCardId → success 跳目标卡，其余自环
-  const irActionMap = new Map((node.actions ?? []).map((a) => [a.id, a]));
+  const irActionMap = new Map(
+    (node.actions ?? [])
+      .filter((action) => action && typeof action.id === "string" && action.id.trim())
+      .map((action) => [action.id, action]),
+  );
   for (const action of card.actions) {
     if (action.kind !== "tool" || !action.toolCall) continue;
     const irAct = irActionMap.get(action.id);

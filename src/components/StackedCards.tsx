@@ -271,7 +271,7 @@ export function StackedCards() {
   const [topIdx, setTopIdx] = useState(0);
   const [flipped, setFlipped] = useState<Record<number, boolean>>({});
 
-  const taskType = steps.slot_definition.outputs.task_type;
+  const taskType = steps.intent_analysis.outputs.taskType;
   const theme = useMemo(() => pickTheme(taskType), [taskType]);
 
   if (!result || !result.cards || result.cards.length === 0) {

@@ -35,6 +35,8 @@ export interface CardNode {
   id: string;
   /** 这张卡的用途说明 */
   purpose: string;
+  /** 这张卡所依赖的推断槽位；用于代码派生证据 DAG */
+  sourceSlots?: string[];
   /** 展示内容块 */
   blocks: IRBlock[];
   /** 可选的操作（按钮）；纯展示卡可为空或省略 */
@@ -71,6 +73,8 @@ export interface IRBlock {
   detail?: string;
   /** 状态色调：info/success/warning/danger */
   tone?: string;
+  /** 该内容块所依赖的推断槽位 */
+  sourceSlots?: string[];
 
   // —— 内容来源（三选一，编译器优先级：value > valueFromSlot > items/itemsFromSlot）——
   /** 直接给文本值 */
@@ -115,6 +119,8 @@ export interface IRMissingInfo {
 /** 列表项（核心：可带 onSelect 表达数据流） */
 export interface IRListItem {
   label: string;
+  /** 列表项的补充说明，A2UI 可展开为副文本。 */
+  detail?: string;
   /** 点击这一项发生什么——这是动态数据流的来源 */
   onSelect?: IRSelectFlow;
 }

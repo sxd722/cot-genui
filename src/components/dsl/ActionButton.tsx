@@ -21,6 +21,18 @@ export function ActionButton({
   onClick: () => void;
 }) {
   const cls = ROLE_STYLES[action.role ?? "secondary"] ?? ROLE_STYLES.secondary;
+  if (action.externalUrl) {
+    return (
+      <a
+        href={action.externalUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`block w-full rounded-lg px-3 py-2 text-center text-[12px] transition-all ${cls}`}
+      >
+        {action.label}
+      </a>
+    );
+  }
   return (
     <button
       onClick={onClick}

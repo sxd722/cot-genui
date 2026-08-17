@@ -67,6 +67,14 @@ export function getDataEntry(path: string): DataCatalogEntry | undefined {
 /* ------------------------------------------------------------------ */
 
 const BASE_TOOL_CATALOG: ToolCatalogEntry[] = [
+  // 在新标签页打开经过校验的 http(s) 外部链接。
+  {
+    adapterId: "system.browser.open",
+    operation: "open",
+    inputs: [],
+    outputs: ["strings.statusMessage"],
+    outcomes: ["success", "error"],
+  },
   // 通用导航工具（纯跳转，用于多卡流程的"下一步"）
   {
     adapterId: "local.navigate",

@@ -17,34 +17,25 @@ export default function Home() {
     isMock, result, steps, runAll,
     compiledArtifact, compileNotices,
     enrichStatus, enrichProgress, enrichResults,
-    genMode, setGenMode,
     cardPlan, semanticMarkdown,
-    a2uiJsonl,
+    a2uiJsonl, a2uiBlueprint,
     runAllPaused, continueGenerate,
   } = useInferStore();
-  const [rightView, setRightView] = useState<"dsl" | "cards" | "raw" | "semantic" | "blueprint" | "a2ui">("dsl");
+  const [rightView, setRightView] = useState<"dsl" | "cards" | "raw" | "semantic" | "blueprint" | "a2ui-blueprint" | "a2ui">("dsl");
 
   const anyDone = Object.values(steps).some((s) => s.status === "done");
   const anyLoading = Object.values(steps).some((s) => s.status === "loading");
-  // generate 步完成且产出了卡片 → 右栏切换为卡片视图
+  // CardPlan 完成且产出了兼容卡片 → 可显示旧堆叠视图
   const showCards =
-    steps.generate.status === "done" &&
+    steps.card_plan_generate.status === "done" &&
     !!result &&
     Array.isArray(result.cards) &&
     result.cards.length > 0;
-  // generate 步完成且编译出了 artifact → 可显示 DSL 卡片
+  // CardPlan 编译出了 artifact → 可显示 DSL 卡片
   const hasDsl = !!compiledArtifact;
   const dslValidation = compiledArtifact ? validateArtifact(compiledArtifact) : null;
   const hasA2UI = !!a2uiJsonl && Array.isArray(a2uiJsonl) && a2uiJsonl.length > 0;
-  // 当 semanticMarkdown 存在时默认显示 semantic，但不覆盖 a2ui 选择
-  const activeRightView =
-    rightView === "a2ui"
-      ? "a2ui"
-      : semanticMarkdown
-        ? "semantic"
-        : rightView === "semantic"
-          ? "dsl"
-          : rightView;
+  const activeRightView = rightView === "semantic" && !semanticMarkdown ? "dsl" : rightView;
 
   return (
     <div className="flex h-screen flex-col bg-white text-zinc-900 dark:bg-black dark:text-zinc-100">
@@ -60,16 +51,9 @@ export default function Home() {
               Mock 输出（未配置 LLM_API_KEY）
             </span>
           )}
-          {/* 生成模式切换 */}
-          <select
-            value={genMode}
-            onChange={(e) => setGenMode(e.target.value as "ir" | "semantic")}
-            className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] text-zinc-600 outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
-            title="第7步生成模式"
-          >
-            <option value="ir">🔧 结构化 IR → DSL</option>
-            <option value="semantic">📝 Semantic Markdown</option>
-          </select>
+          <span className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-500 dark:border-zinc-700">
+            CardPlan 单一协议 · 6 阶段
+          </span>
           <button
             onClick={runAllPaused ? continueGenerate : runAll}
             disabled={anyLoading}
@@ -98,13 +82,14 @@ export default function Home() {
               <span className="text-[10px] text-zinc-400">视图</span>
               <select
                 value={activeRightView}
-                onChange={(e) => setRightView(e.target.value as "dsl" | "cards" | "raw" | "semantic" | "blueprint" | "a2ui")}
+                onChange={(e) => setRightView(e.target.value as "dsl" | "cards" | "raw" | "semantic" | "blueprint" | "a2ui-blueprint" | "a2ui")}
                 className="flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] text-zinc-700 outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
               >
                 <option value="dsl">📋 DSL 卡片渲染</option>
                 <option value="cards" disabled={!showCards}>🎴 堆叠卡片</option>
                 <option value="semantic" disabled={!semanticMarkdown}>📝 Semantic Markdown</option>
-                <option value="blueprint" disabled={!cardPlan}>📦 Blueprint JSON</option>
+                <option value="blueprint" disabled={!cardPlan}>📦 CardPlan JSON</option>
+                <option value="a2ui-blueprint" disabled={!a2uiBlueprint}>🎨 A2UI Visual Blueprint</option>
                 <option value="a2ui" disabled={!hasA2UI}>📱 A2UI 卡片渲染</option>
                 <option value="raw" disabled={!cardPlan}>🔧 GLM Raw IR</option>
               </select>
@@ -112,7 +97,16 @@ export default function Home() {
             {/* 内容区 */}
             <div className="flex flex-1 flex-col overflow-hidden">
               {/* A2UI 卡片渲染（iframe 内） */}
-              {activeRightView === "a2ui" && hasA2UI ? (
+              {activeRightView === "a2ui-blueprint" && a2uiBlueprint ? (
+                <div className="flex h-full flex-col overflow-hidden bg-zinc-950 p-3">
+                  <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
+                    A2UI Visual Blueprint · CardPlan 覆盖校验后的模型原始视觉规划
+                  </div>
+                  <pre className="flex-1 overflow-auto rounded-lg bg-zinc-900 p-2 font-mono text-[10px] leading-relaxed text-cyan-300/80">
+                    {JSON.stringify(a2uiBlueprint, null, 2)}
+                  </pre>
+                </div>
+              ) : activeRightView === "a2ui" && hasA2UI ? (
                 <div className="flex h-full flex-col bg-zinc-950 p-3">
                   <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
                     A2UI 卡片渲染 · 2x4 手机桌面尺寸 · {Array.isArray(a2uiJsonl) ? a2uiJsonl.length : 0} 条消息
@@ -133,7 +127,7 @@ export default function Home() {
               activeRightView === "blueprint" && cardPlan ? (
                 <div className="flex h-full flex-col overflow-hidden bg-zinc-950 p-3">
                   <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
-                    Blueprint JSON · IR 模式 · 可直接复制给后续 LLM
+                    CardPlan JSON · 语义与交互规划 · A2UI Visual Blueprint 的输入
                   </div>
                   <pre className="flex-1 overflow-auto rounded-lg bg-zinc-900 p-2 font-mono text-[10px] leading-relaxed text-emerald-300/80">
                     {JSON.stringify(cardPlan, null, 2)}
@@ -143,7 +137,7 @@ export default function Home() {
               activeRightView === "raw" && cardPlan ? (
                 <div className="flex h-full flex-col overflow-hidden bg-zinc-950 p-3">
                   <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
-                    GLM 第7步产出的 CardPlan IR（enrich 前的原始 JSON）
+                    强模型产出的 CardPlan IR（enrich 前的原始 JSON）
                   </div>
                   <pre className="flex-1 overflow-auto rounded-lg bg-zinc-900 p-2 font-mono text-[10px] leading-relaxed text-emerald-300/80">
                     {JSON.stringify(cardPlan, null, 2)}
