@@ -30,20 +30,68 @@ export async function POST(request: Request) {
   }
 
   const logs: CallLog[] = [];
-  try {
-    const output = await runPipelineStep({
-      name: body.step,
-      query: body.query,
-      deviceContext: body.deviceContext as Record<string, unknown>,
-      inferenceState: body.inferenceState as InferenceState | undefined,
-      userAnswers: body.userAnswers as Record<number, string> | undefined,
-      cardPlan: body.cardPlan as CardPlan | undefined,
-      profileDigest: body.profileDigest as ProfileDigest | undefined,
-      modelProfile: isModelProfile(body.modelProfile) ? body.modelProfile : undefined,
-      prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
-      mock: !process.env.LLM_API_KEY,
-      onLog: (entry) => logs.push(entry),
+  const run = (onStreamDelta?: (cumulativeChars: number) => void) => runPipelineStep({
+    name: body.step as PipelineStepName,
+    query: body.query as string,
+    deviceContext: body.deviceContext as Record<string, unknown>,
+    inferenceState: body.inferenceState as InferenceState | undefined,
+    userAnswers: body.userAnswers as Record<number, string> | undefined,
+    cardPlan: body.cardPlan as CardPlan | undefined,
+    profileDigest: body.profileDigest as ProfileDigest | undefined,
+    modelProfile: isModelProfile(body.modelProfile) ? body.modelProfile : undefined,
+    prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
+    stream: body.step === "a2ui_generate" && body.stream === true,
+    onStreamDelta,
+    mock: !process.env.LLM_API_KEY,
+    onLog: (entry) => logs.push(entry),
+  });
+
+  if (body.step === "a2ui_generate" && body.stream === true) {
+    const encoder = new TextEncoder();
+    const encodeEvent = (event: string, data: unknown) =>
+      encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    let clientCanceled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const emit = (event: string, data: unknown) => {
+          if (clientCanceled) return;
+          try {
+            controller.enqueue(encodeEvent(event, data));
+          } catch {
+            clientCanceled = true;
+          }
+        };
+        void (async () => {
+          try {
+            const output = await run((cumulativeChars) => {
+              emit("delta", { chars: cumulativeChars });
+            });
+            emit("done", { ...output, _mock: !process.env.LLM_API_KEY, _logs: logs });
+          } catch (error) {
+            emit("error", {
+              error: error instanceof Error ? error.message : "推理失败",
+              _logs: logs,
+            });
+          } finally {
+            if (!clientCanceled) controller.close();
+          }
+        })();
+      },
+      cancel() {
+        clientCanceled = true;
+      },
     });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
+  try {
+    const output = await run();
     return NextResponse.json({ ...output, _mock: !process.env.LLM_API_KEY, _logs: logs });
   } catch (error) {
     return NextResponse.json(

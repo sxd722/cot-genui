@@ -51,7 +51,11 @@ function StepRow({ name }: { name: StepName }) {
   const [open, setOpen] = useState(false);
   const badge = STATUS_BADGE[s.status];
   // 完成状态时，徽章文本替换为调用时间
-  const badgeText = s.status === "done" ? doneBadgeText(s.durationMs) : badge.text;
+  const badgeText = s.status === "done"
+    ? doneBadgeText(s.durationMs)
+    : s.status === "loading" && name === "a2ui_generate" && s.streamingChars > 0
+      ? `生成中 · ${s.streamingChars} 字`
+      : badge.text;
   const hasContent = s.status === "done" || s.status === "error";
 
   return (
@@ -133,7 +137,8 @@ function StepRow({ name }: { name: StepName }) {
               <div><span className="block text-zinc-400">应用开销</span>{s.timing.overheadMs} ms</div>
               <div><span className="block text-zinc-400">模型</span>{s.modelProfile ? MODEL_PROFILE_LABELS[s.modelProfile] : (s.model ?? "—")}</div>
               <p className="col-span-2 mt-1 text-[9px] leading-relaxed text-zinc-400 sm:col-span-4">
-                当前为非流式调用。模型响应仅提供 created 时间戳和 token usage，不提供服务端纯推理时延；“LLM 请求”是本服务测得的完整请求墙钟时间。
+                {name === "a2ui_generate" ? "A2UI 使用流式传输；" : "当前为非流式调用；"}
+                模型响应仅提供 created 时间戳和 token usage，不提供服务端纯推理时延；“LLM 请求”是本服务测得的完整请求墙钟时间。
               </p>
             </div>
           )}

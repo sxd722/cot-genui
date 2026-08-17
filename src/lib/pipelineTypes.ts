@@ -87,7 +87,7 @@ export interface StepTiming {
   overheadMs: number;
   /** 模型响应的 created 时间戳；它不是推理耗时 */
   providerCreatedAt?: number;
-  /** 非流式请求无法取得，预留给未来流式链路 */
+  /** provider 未报告纯推理分段时延，当前仍保留给后续可观测性扩展 */
   timeToFirstReasoningMs?: number;
   timeToFirstContentMs?: number;
 }

@@ -50,7 +50,9 @@ flowchart TD
   S2 --> S3["③ 不确定性提问"]
   S3 -->|"无阻塞问题"| S4["④ 总结与能力补齐"]
   S3 -->|"存在阻塞问题"| PAUSE["暂停，等待用户选择"]
+  PAUSE --> PF["后台投机预取 web_search（10 分钟）"]
   PAUSE --> S4
+  PF -. "搜索词一致则注入" .-> S4
   S4 --> CP["⑤ CardPlan 生成"]
 
   CP --> DSL["确定性 CardPlan → CardArtifact 编译"]
@@ -86,10 +88,13 @@ flowchart TD
 - `compiledArtifact`：CardPlan 编译后的 DSL；
 - `a2uiBlueprint / a2uiJsonl`：A2UI 原始视觉规划和编译结果；
 - `steps`：每一步状态、模型、耗时、token、费用和调用日志。
+- `prefetchedSearch`：暂停期搜索词、provider 原始结果和获取时间；
+- 模块级步骤缓存：最多 20 项的前端 LRU，只供“一键全部/继续生成”复用。
 
 ### 3.2 修改输入时的失效规则
 
 - 修改 JSON 上下文会清空画像、六步结果、CardPlan、DSL 和 A2UI；
+- 修改 JSON 上下文、切换预设或“重置全部”也会清空步骤 LRU；
 - 切换预设会清空旧结果，并异步预热画像；如果仍保留超过 20 字的自由文本，画像入口优先使用自由文本而不是新预设 JSON；
 - 修改某一步模型会把该步骤重置为 `pending`，但不会自动重跑后续步骤；
 - 点击“重置全部”恢复默认 query、默认预设和默认模型组合；当前实现不会清空 `customContextText`。
@@ -107,12 +112,12 @@ flowchart TD
 执行过程：
 
 1. 对 JSON key 排序后稳定序列化，计算 SHA-256 `contextHash`；
-2. 查询服务进程内的 `Map<contextHash, ProfileDigest>`；
+2. 使用带来源前缀的缓存键（`json:` / `freetext:`）查询服务进程内的 `Map`；
 3. 将嵌套 JSON 展平成 `{path, value, domain}` 原子记录；
 4. 按顶层 domain 分组，每个 chunk 最多约 8,000 字符，最多 8 个 chunk；
 5. 多 chunk 时并行执行领域 map 摘要，再执行一次 reduce；单 chunk 直接 reduce；
 6. 生成 `ProfileDigest v1` 并写入进程内缓存；
-7. 模型不可用或调用失败时，退化到确定性目录摘要，并标记 `degraded: true`。
+7. 模型不可用或调用失败时，退化到确定性目录摘要，并标记 `degraded: true`；降级结果不写缓存，使后续请求可以重试模型。
 
 结构化画像压缩固定使用：
 
@@ -152,6 +157,8 @@ ProfileDigest
 
 ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域可查”，不是最终事实证据。最终槽位证据必须来自 query 本身、用户回答或第二步披露的原始记录。
 
+为避免平台相关排序差异，画像稳定序列化使用显式字符串比较器，不依赖 `localeCompare`。
+
 ### 4.4 当前缓存边界
 
 画像缓存只存在于当前 Next.js 服务进程内：
@@ -183,7 +190,22 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 
 选择 Thinking 时请求额外携带 `reasoning_effort: high`。如果 Flash 遇到 429、访问量过大或 rate limit，服务端自动用 `glm-5.2`、Thinking disabled 重试一次。
 
-### 5.2 ① 意图建模
+### 5.2 模型载荷投影
+
+浏览器和 API 返回的 `InferenceState` 始终保持完整，但发给每一步模型的 user 载荷由 `projectForModel(step, state)` 按职责裁剪：
+
+| 步骤 | 模型可见的状态字段 | 另行传入 |
+|---|---|---|
+| ① | 完整 `ProfileDigest` | `query` |
+| ② | 不再携带 `profileDigest`；保留任务状态 | 过滤后的 `domainSummaries`、`retrievedEvidence` |
+| ③ | `taskType / fulfillment / slotRequirements / slots / conflicts` | `uncertainSlotNames` |
+| ④ | `taskType / fulfillment / slotRequirements / slots / assumptions` | `qa`；预取命中时附 `searchResults` |
+| ⑤ | `taskType / fulfillment / slotRequirements / slots / summary / webFacts / assumptions` | `answers` |
+| ⑥ | 不传 `InferenceState` | 仅传 `cardPlan` |
+
+因此 `profileDigest` 顶层字段只在第一步请求出现；后续步骤不会反复发送 digest、检索请求、历史问题、冲突和能力日志等已无必要的数据。
+
+### 5.3 ① 意图建模
 
 输入：
 
@@ -204,7 +226,7 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 
 输出进入 `InferenceState`。所有明示槽位会立即生成高置信 slot，证据为 `query`；其余需求留待第二步解析。
 
-### 5.3 ② 证据解析
+### 5.4 ② 证据解析
 
 若第一步判断 `needsContext=false`，本步直接跳过模型调用。
 
@@ -226,7 +248,7 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 
 未找到证据的必需槽位会被代码补成空值、0 置信度、`low` 状态。
 
-### 5.4 ③ 不确定性提问
+### 5.5 ③ 不确定性提问
 
 代码先确定哪些槽位必须澄清。槽位同时满足以下两类条件才进入提问：
 
@@ -244,7 +266,7 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 - 模型漏问或输出无效选项时，代码为未覆盖槽位补默认选择题；
 - 不允许把澄清延迟到最终 CardPlan/A2UI。
 
-### 5.5 暂停和继续
+### 5.6 暂停和继续
 
 “一键全部”按顺序执行前三步。第三步完成后：
 
@@ -254,7 +276,13 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 
 第四步也会再次校验，任何未回答问题都会阻止继续。
 
-### 5.6 ④ 总结与能力补齐
+进入暂停时，前端会后台调用 `POST /api/prefetch-search`。服务端只使用置信度 `>=0.7` 的已有槽位构造任务搜索词，通过 `glm-5.2` 非 Thinking 请求一次 `web_search`，前端以 `searchQuery` 为键保存 10 分钟。继续生成时：
+
+- 若第四步重新计算出的搜索词完全一致，原始结果作为 `searchResults` 注入 user 载荷，本次不再挂搜索工具；
+- 若答案改变了搜索词、缓存过期或预取失败，自动回退到第四步即时工具调用；
+- 命中、失配和回退都会写入步骤日志。
+
+### 5.7 ④ 总结与能力补齐
 
 首先由代码把选择题答案确定性写回所有关联槽位：
 
@@ -278,7 +306,7 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 
 `webFacts.entities` 是后续真实商家、景点、酒店、食品、预约页等内容的主要载体。
 
-### 5.7 ⑤ CardPlan 生成
+### 5.8 ⑤ CardPlan 生成
 
 本步要求第四步已经产生 `summary`，否则拒绝生成。
 
@@ -303,14 +331,15 @@ CardPlan
 
 1. 基础结构校验；
 2. 最多保留 6 张卡；
-3. 修复缺失 card ID；
+3. 修复缺失 card ID，并把重复 ID 追加 `_2` 等后缀；
 4. 把错误的 list `{title}` 归一化成 `{label}`；
 5. 将非法 action role 降为 `secondary`；
-6. 过滤不在 `webFacts` URL 集合内的 external-link；
+6. 过滤不在 provider URL registry（缺失时回退 `webFacts` URL 集合）内的 external-link；
 7. 将 `webFacts` 中漏抄的实体、摘要和入口确定性补进 CardPlan；
-8. 派生 Semantic Markdown 和 Mermaid 推理 DAG。
+8. 丢弃不存在的 `targetCardId` action，移除不存在的槽位引用，每卡最多保留 5 个 block；未知 block kind 确定性降为 text；
+9. 派生 Semantic Markdown 和 Mermaid 推理 DAG。
 
-### 5.8 ⑥ A2UI 生成
+### 5.9 ⑥ A2UI 生成
 
 输入只包含 CardPlan。模型负责视觉规划，不应重新决定业务事实。
 
@@ -330,8 +359,10 @@ CardPlan
 - 所有 block index 是否覆盖；
 - 所有 action id 是否覆盖；
 - CardPlan list 的每个 label 是否实际进入组件树；
+- hero / summary / status / metric 的标题（归一化后至少 4 字）是否实际进入组件树；
 - external-link 是否精确转换为 `openUrl(action.link)`；
-- 未知组件是否需要忽略并产生 warning。
+- chart / table / tabs / switch 安全别名是否分别降级为 Metric / List / Column / CheckBox；
+- 其余未知组件是否需要忽略并产生 warning。
 
 通过后把嵌套 Blueprint 扁平化为 A2UI v0.9 消息：
 
@@ -340,11 +371,13 @@ CardPlan
 
 若第一次 Blueprint 结构或覆盖率校验失败，系统固定使用 `glm-5.2`、Thinking disabled、temperature 0 定向修复一次。第二次仍失败时，第六步返回错误，不渲染无效 A2UI。
 
+第六步默认通过 SSE 流式传输。服务端向前端发送 `delta`（当前累计 JSON 字符数）和最终 `done`（完整步骤结果）；模型流式调用失败时，服务端自动回退到普通非流式调用。页面执行徽章会显示“生成中 · N 字”。
+
 ---
 
 ## 6. CardPlan 到 DSL 的旁路
 
-CardPlan 完成后，前端会异步执行 `enrichAndCompile()`：
+CardPlan 完成后，前端会 `await enrichAndCompile()`，完成补齐/编译后才允许进入 A2UI：
 
 ```text
 CardPlan
@@ -378,16 +411,17 @@ CardPlan
 
 ```text
 GLM web_search 原始结果
+  → 深度提取合法 link/url/source → providerSearchUrls
   → 模型结构化为 webFacts/entities
-  → CardPlan URL allowlist
+  → CardPlan URL allowlist（webFacts URL ∩ providerSearchUrls）
   → external-link
   → DSL tool openUrl
   → A2UI functionCall openUrl
 ```
 
-URL 只接受 `http` 或 `https`。CardPlan 模型自行新增、但未出现在 `webFacts` 的外链会被删除。资源卡优先使用 actionUrl，其次 sourceUrl，并根据 `order / reserve / details` 生成“去下单 / 去预订 / 查看”标签。
+URL 只接受 `http` 或 `https`。第四步会从 provider 原始搜索对象全树提取 `link / url / source` 等字段中的合法 URL，写入 `InferenceState.providerSearchUrls`。第五步有原始结果时，只接受同时出现在模型 `webFacts` 和 provider registry 中的 URL；模型自行注入的链接不会进入 CardPlan。provider 原始结果缺失时，为保证流程可用性才回退到 `webFacts` URL 集合，并在日志明确标注。资源卡优先使用 actionUrl，其次 sourceUrl，并根据 `order / reserve / details` 生成“去下单 / 去预订 / 查看”标签。
 
-需要注意：当前 allowlist 来源仍是模型结构化后的 `webFacts`，而不是服务端从 provider 原始搜索结果中建立的不可伪造 source registry。因此它能防止第五、六步新增链接，但不能完全证明第四步给出的 URL 一定真实或可访问。
+该 registry 证明“链接来自本次 provider 返回”，但当前仍不执行 HTTP 可达性、官方域名评级或页面内容二次核验。
 
 旁路 `/api/search` 也不是真正的搜索 API：它目前调用 `LLM_MODEL` 做 3–5 句知识问答，只适用于旧 `missingInfo` 兼容链路，不能视为实时联网事实来源。
 
@@ -408,9 +442,19 @@ URL 只接受 `http` 或 `https`。CardPlan 模型自行新增、但未出现在
 | `usage.cached` | provider 报告的缓存输入 token |
 | `cost` | 按 `LLM_PRICING_JSON` 计算的估算费用 |
 
-当前请求是非流式的，因此拿不到真实的首个推理 token 或首个正文 token 时延；`timeToFirstReasoningMs` 和 `timeToFirstContentMs` 只是预留字段。
+①–⑤ 当前仍是非流式请求；⑥ 使用 SSE 输出累计正文字符。provider 没有提供服务端纯推理耗时或首个 reasoning token 指标，因此 `timeToFirstReasoningMs` 和 `timeToFirstContentMs` 仍只是预留字段；页面展示的“LLM 请求”是应用侧测得的请求墙钟时间。
 
 每一步日志包含 request、response、error 和 fallback，页面展开步骤后可以查看模型、Thinking、temperature、do_sample、调用耗时、usage、响应形状和搜索元数据。
+
+### 8.1 前端步骤结果缓存
+
+模块级 `Map` 实现最多 20 项 LRU，键为：
+
+```text
+step | modelProfile | stableStringify(实际请求体)
+```
+
+“一键全部”和“继续生成”允许命中，复用完整 API 响应并追加“命中前端步骤缓存”日志；步骤左侧手动 ▶ 永远绕过缓存。JSON 上下文变化、切换预设和重置都会清空缓存。query、模型、答案、推断状态、CardPlan 或预取内容变化都会自然生成不同键。
 
 ---
 
@@ -423,18 +467,19 @@ idle
   → ② evidence_resolution（可能 skip）
   → ③ clarification（可能 skip）
       ├─ 有未回答问题 → paused
+      │                  → 后台 prefetch-search
       │                  → 用户选择全部答案
       │                  → continueGenerate
       └─ 无未回答问题 ─────────────────────┐
                                            ↓
-  → ④ context_enrichment（可能一次 web_search）
+  → ④ context_enrichment（命中预取，或即时一次 web_search）
   → ⑤ card_plan_generate
-       ├─ 异步 CardPlan → DSL 编译
-       └─ ⑥ a2ui_generate
+       ├─ await CardPlan → DSL 编译
+       └─ ⑥ a2ui_generate（SSE）
   → done
 ```
 
-任一步返回 error 时，一键流程立即停止。用户也可以通过每一步左侧的 ▶ 独立重跑，但独立重跑上游后，调用者需要自行保证下游状态仍然与之匹配。
+任一步返回 error 时，一键流程立即停止。用户也可以通过每一步左侧的 ▶ 独立重跑；手动执行用于强制刷新，因此不会读取或写入步骤 LRU。
 
 ---
 
@@ -445,6 +490,7 @@ idle
 | `/api/profile/compress` | POST | 结构化 JSON 通用画像压缩 |
 | `/api/profile/compress-free-text` | POST | 自由文本通用画像压缩 |
 | `/api/infer` | POST | 执行六步中的指定一步 |
+| `/api/prefetch-search` | POST | 暂停期按高置信槽位构造搜索词并返回 provider 原始结果 |
 | `/api/search` | POST | 旧 missingInfo 的 LLM 知识问答旁路 |
 | `/api/llm` | POST | 卡片内或 missingInfo 的普通文本生成 |
 
@@ -459,11 +505,13 @@ idle
   "profileDigest": {},
   "inferenceState": {},
   "userAnswers": {},
-  "cardPlan": {}
+  "cardPlan": {},
+  "prefetchedSearch": {},
+  "stream": true
 }
 ```
 
-接口会根据 step 使用需要的字段。没有配置 `LLM_API_KEY` 时，六步返回 mock 结果以便调试页面。
+接口会根据 step 使用需要的字段。`stream` 只对 `a2ui_generate` 生效，此时响应类型为 `text/event-stream`；其余步骤返回 JSON。没有配置 `LLM_API_KEY` 时，六步返回 mock 结果以便调试页面。
 
 ---
 
@@ -520,16 +568,14 @@ idle
 
 ## 13. 当前已知边界
 
-1. **画像缓存不持久化**：只在当前 Node 进程内有效。
-2. **自由文本存在二级检索边界**：自由文本摘要能进入第一步，但第二步的 `retrieveProfileEvidence` 当前仍从 JSON `deviceContext` 取原始证据；若要完全支持纯自由文本，需要保存并检索其原文分块。即使填写了自由文本，当前主流程仍要求 JSON 编辑框保持合法。
+1. **画像和步骤缓存不持久化**：画像在 Node 进程、步骤 LRU 在浏览器模块内；重启、热更新、刷新页面或实例切换会丢失。
+2. **纯自由文本仍缺少原文二级检索**：自由文本摘要能进入第一步，但第二步仍从 JSON `deviceContext` 披露原始证据；完整方案需要保存和检索自由文本分块。页面主流程也仍要求 JSON 编辑框合法。
 3. **通用画像可能压缩掉反向信号**：当前只有 `conflicts`，尚未单独建模 tensions/counterSignals。
-4. **URL 尚非强验证**：第四步模型结构化的 `webFacts` 仍可能包含不可访问或非官方 URL；没有服务端 sourceId、HEAD/GET 验证和官方域名评级。
-5. **搜索预算固定为一次**：复杂任务无法自动进行多轮搜索、实体补查或交叉验证。
-6. **A2UI 仍是非流式大 JSON 生成**：复杂 CardPlan 可能产生较长延迟；只有一次定向修复机会。
-7. **DSL enrich 与 A2UI 可并行发生**：CardPlan 后的 `enrichAndCompile()` 是前端异步旁路，A2UI 使用第五步返回的 CardPlan；正常提示词禁止 missingInfo，因此通常一致，但旧 CardPlan 可能存在竞态。
-8. **分步手动重跑没有自动依赖失效图**：修改上游步骤后，旧下游结果可能暂时仍显示，直到重新生成。
-9. **旁路 `/api/search` 不是实时搜索**：生产使用时应替换为真实搜索服务。
-10. **自由文本状态不会随“重置全部”清空**：它持续具有高于 JSON 预设的画像优先级；切换预设前应手动清空，或在后续实现中修正 reset 行为。
+4. **provider URL registry 不等于链接验真**：它阻止模型注入搜索结果之外的 URL，但没有执行 HTTP 可达性、官方域名评级和页面内容二次核验；provider 缺失时仍会降级使用 `webFacts`。
+5. **实时搜索预算仍固定为一次**：预取只是把等待时间前移，不增加搜索轮数；复杂任务不能自动做实体补查和交叉验证。
+6. **A2UI 只有一次定向修复机会**：SSE 改善可见进度和传输等待，不会缩短模型生成本身。
+7. **旁路 `/api/search` 不是实时搜索**：生产使用时应替换为真实搜索服务。
+8. **自由文本状态不会随“重置全部”清空**：它持续具有高于 JSON 预设的画像优先级；切换预设前应手动清空，或在后续实现中修正 reset 行为。
 
 ---
 
@@ -541,7 +587,7 @@ idle
 | `src/lib/profileTypes.ts` | ProfileDigest 和 RetrievalRequest 类型 |
 | `src/lib/pipeline.ts` | 六步模型调用、提示词、搜索、归一化、修复和计时 |
 | `src/lib/pipelineTypes.ts` | 六步名称、模型档位、InferenceState、计时与 usage |
-| `src/store/useInferStore.ts` | 页面状态机、一键暂停/继续、API 调用、DSL 编译触发 |
+| `src/store/useInferStore.ts` | 页面状态机、暂停期搜索预取、步骤 LRU、SSE 解析、DSL 编译触发 |
 | `src/dsl/modules.ts` | CardPlan IR 类型 |
 | `src/dsl/compiler.ts` | CardPlan → CardArtifact 确定性编译 |
 | `src/dsl/validate.ts` | CardArtifact 渲染前不变量校验和异常边界 |
@@ -550,6 +596,7 @@ idle
 | `src/components/A2UIRenderer.tsx` | A2UI 多 surface 卡片渲染和动作执行 |
 | `src/components/CotTrace.tsx` | 六步状态、耗时、日志、问题和 DAG 展示 |
 | `src/app/api/infer/route.ts` | 六步统一 API 入口 |
+| `src/app/api/prefetch-search/route.ts` | 暂停期投机搜索入口 |
 
 ---
 

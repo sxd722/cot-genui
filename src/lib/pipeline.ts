@@ -30,6 +30,8 @@ interface RunInput {
   modelProfile?: ModelProfile;
   /** 暂停期预取的搜索结果：searchQuery 与 ④ 最终计算一致时注入，跳过 tool 调用 */
   prefetchedSearch?: { searchQuery: string; webSearchRaw: unknown };
+  stream?: boolean;
+  onStreamDelta?: (cumulativeChars: number) => void;
   mock?: boolean;
   onLog?: (entry: CallLog) => void;
 }
@@ -126,12 +128,14 @@ async function callJson(args: {
   webSearchQuery?: string;
   onLog?: RunInput["onLog"];
   allowModelFallback?: boolean;
+  stream?: boolean;
+  onStreamDelta?: (cumulativeChars: number) => void;
 }): Promise<LLMResult> {
   const client = createLLMClient();
   const started = Date.now();
   const isGlm = args.model.toLowerCase().startsWith("glm-") ||
     (process.env.LLM_BASE_URL ?? "").toLowerCase().includes("bigmodel");
-  log(args.onLog, "request", `POST /chat/completions model=${args.model} thinking=${args.thinking ? "enabled" : "disabled"} temperature=${args.temperature} do_sample=${args.doSample}${args.webSearchQuery ? " tool=web_search" : ""}`);
+  log(args.onLog, "request", `POST /chat/completions model=${args.model} thinking=${args.thinking ? "enabled" : "disabled"} temperature=${args.temperature} do_sample=${args.doSample}${args.webSearchQuery ? " tool=web_search" : ""}${args.stream ? " stream=true" : ""}`);
 
   const params = {
     model: args.model,
@@ -170,6 +174,56 @@ async function callJson(args: {
     do_sample?: boolean;
     reasoning_effort?: string;
   };
+
+  if (args.stream && !args.webSearchQuery) {
+    try {
+      const completionStream = await client.chat.completions.create({
+        ...params,
+        stream: true,
+        stream_options: { include_usage: true },
+      } as unknown as OpenAI.ChatCompletionCreateParamsStreaming);
+      let content = "";
+      let responseModel = args.model;
+      let providerCreatedAt: number | undefined;
+      let rawUsage: OpenAI.CompletionUsage | undefined;
+      for await (const rawChunk of completionStream) {
+        const chunk = rawChunk as typeof rawChunk & { usage?: OpenAI.CompletionUsage | null };
+        const delta = chunk.choices[0]?.delta?.content;
+        if (typeof delta === "string" && delta.length > 0) {
+          content += delta;
+          args.onStreamDelta?.(content.length);
+        }
+        if (chunk.model) responseModel = chunk.model;
+        if (chunk.created) providerCreatedAt = chunk.created;
+        if (chunk.usage) rawUsage = chunk.usage;
+      }
+      const llmMs = Date.now() - started;
+      const usage = normalizeUsage(rawUsage);
+      const value = extractJson(content);
+      log(args.onLog, "response", `模型流式响应完成 ${llmMs}ms`, {
+        model: responseModel,
+        created: providerCreatedAt,
+        usage: rawUsage,
+        llmMs,
+        streamedChars: content.length,
+        responseShape: describeA2UIShape(value),
+        note: "created 是响应时间戳，不是服务端推理耗时",
+      });
+      return {
+        value,
+        model: responseModel,
+        llmMs,
+        usage,
+        providerCreatedAt,
+        cost: estimateCost(responseModel, usage),
+      };
+    } catch (error) {
+      const failedStreamMs = Date.now() - started;
+      log(args.onLog, "fallback", `流式请求失败 ${failedStreamMs}ms，自动回退非流式: ${error instanceof Error ? error.message : String(error)}`);
+      const fallback = await callJson({ ...args, stream: false, onStreamDelta: undefined });
+      return { ...fallback, llmMs: failedStreamMs + fallback.llmMs };
+    }
+  }
 
   try {
     const completion = await client.chat.completions.create(params);
@@ -855,7 +909,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   } else {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
     llm = await callJson({
-      ...selectedModel, ...sampling, onLog: input.onLog,
+      ...selectedModel, ...sampling, onLog: input.onLog, stream: input.stream, onStreamDelta: input.onStreamDelta,
       system: "你是 CardPlan 驱动的 A2UI 视觉规划器。必须为 CardPlan 的每张 card 生成且仅生成一个同 ID 的 surface，完整表达每个 block 和 action，不能把丰富内容压缩成几段普通 Text。每个 surface 写 sourceCardId、visualDirection、coveredBlockIndexes、coveredActionIds；coveredBlockIndexes 必须覆盖该卡所有 block 索引，coveredActionIds 必须覆盖所有 action.id。根据语义选择视觉方向 dashboard/timeline/checklist/comparison/hero。组件映射：hero/highlight→Hero；metric/chart→Metric 或 Metric Row；progress→Progress；status→Badge/Hero；list/table→List、Timeline 或 Badge 组合；choice→ChoicePicker；toggle/switch→CheckBox；tabs→Column；summary→层级化 Text/Row。可用组件：Card,Column,Row,List,Text,Button,Divider,Icon,Image,CheckBox,Slider,ChoicePicker,Hero,Metric,Progress,Badge,Timeline；兼容别名 Chart/Table/Tabs/Switch 会被安全映射。每个 CardPlan action 必须生成 Button/ChoicePicker：navigate 保留 goto，select/back 保留原事件；external-link 必须生成 Button，且 action 严格为 {functionCall:{call:'openUrl',args:{url: action.link 的原始精确值}}}，不得把外链改成 goto 或省略 URL。只生成嵌套组件对象，不生成组件 ID、扁平表或 JSONL。",
       user: { cardPlan: input.cardPlan },
       schemaHint: "{reasoning:string,a2uiBlueprint:{surfaces:[{id:string,sourceCardId:string,visualDirection:'dashboard'|'timeline'|'checklist'|'comparison'|'hero',coveredBlockIndexes:number[],coveredActionIds:string[],root:{component:'Card',tone?:string,children:[nested components]}}]}}；nested component 可含 component/text/title/subtitle/label/value/unit/tone/detail/items/options/variant/action/children；外链 Button.action={functionCall:{call:'openUrl',args:{url:string}}}",

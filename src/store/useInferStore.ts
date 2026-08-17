@@ -28,6 +28,7 @@ export interface StepState {
   modelProfile?: ModelProfile;
   tokens?: TokenUsage;
   cost?: number;
+  streamingChars: number;
   error: string | null;
   logs: StepLog[];
 }
@@ -36,6 +37,34 @@ interface SearchPrefetch {
   searchQuery: string;
   webSearchRaw: unknown;
   fetchedAt: number;
+}
+
+interface InferApiResponse {
+  error?: string;
+  _mock?: boolean;
+  _logs?: StepLog[];
+  reasoning?: string;
+  outputs?: Record<string, unknown>;
+  inferenceState?: InferenceState;
+  slots?: InferSlot[];
+  conflicts?: InferConflict[];
+  questions?: InferQuestion[];
+  result?: InferResult;
+  cardPlan?: CardPlan;
+  semanticMarkdown?: string;
+  reasoningGraph?: string;
+  a2uiJsonl?: unknown[];
+  a2uiBlueprint?: unknown;
+  durationMs?: number;
+  timing?: StepTiming;
+  model?: string;
+  modelProfile?: ModelProfile;
+  usage?: TokenUsage;
+  cost?: number;
+}
+
+interface RunStepOptions {
+  useCache?: boolean;
 }
 
 export const STEP_ORDER = PIPELINE_STEPS;
@@ -92,7 +121,7 @@ interface InferState {
   prefetchSearch: () => Promise<void>;
   continueGenerate: () => Promise<void>;
   enrichAndCompile: () => Promise<void>;
-  runStep: (name: StepName) => Promise<void>;
+  runStep: (name: StepName, options?: RunStepOptions) => Promise<void>;
   runAll: () => Promise<void>;
   reset: () => void;
 }
@@ -102,7 +131,7 @@ function pretty(value: unknown) {
 }
 
 function emptyStep(): StepState {
-  return { status: "pending", reasoning: "", outputs: {}, durationMs: 0, error: null, logs: [] };
+  return { status: "pending", reasoning: "", outputs: {}, durationMs: 0, streamingChars: 0, error: null, logs: [] };
 }
 
 function emptySteps(): Record<StepName, StepState> {
@@ -139,6 +168,74 @@ function clearedResult() {
 }
 
 let pendingProfileRequest: Promise<ProfileDigest | null> | null = null;
+const STEP_CACHE_LIMIT = 20;
+const stepCache = new Map<string, InferApiResponse>();
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`);
+    return `{${entries.join(",")}}`;
+  }
+  if (value === undefined) return "undefined";
+  const encoded = JSON.stringify(value);
+  return encoded === undefined ? String(value) : encoded;
+}
+
+function cacheGet(key: string): InferApiResponse | undefined {
+  const value = stepCache.get(key);
+  if (!value) return undefined;
+  stepCache.delete(key);
+  stepCache.set(key, value);
+  return value;
+}
+
+function cacheSet(key: string, value: InferApiResponse) {
+  stepCache.delete(key);
+  stepCache.set(key, value);
+  while (stepCache.size > STEP_CACHE_LIMIT) {
+    const oldest = stepCache.keys().next().value;
+    if (typeof oldest !== "string") break;
+    stepCache.delete(oldest);
+  }
+}
+
+async function readInferResponse(response: Response, onDelta: (chars: number) => void): Promise<InferApiResponse> {
+  if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+    return response.json() as Promise<InferApiResponse>;
+  }
+  if (!response.body) throw new Error("流式响应缺少 body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let donePayload: InferApiResponse | undefined;
+  const consumeFrame = (frame: string) => {
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of frame.split(/\r?\n/)) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    }
+    if (!dataLines.length) return;
+    const payload = JSON.parse(dataLines.join("\n")) as InferApiResponse & { chars?: number };
+    if (event === "delta" && typeof payload.chars === "number") onDelta(payload.chars);
+    if (event === "done") donePayload = payload;
+    if (event === "error") donePayload = payload;
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const frames = buffer.split(/\r?\n\r?\n/);
+    buffer = frames.pop() ?? "";
+    frames.forEach(consumeFrame);
+    if (done) break;
+  }
+  if (buffer.trim()) consumeFrame(buffer);
+  if (!donePayload) throw new Error("流式响应未收到 done 事件");
+  return donePayload;
+}
 
 export const useInferStore = create<InferState>((set, get) => ({
   query: DEFAULT_QUERY,
@@ -155,7 +252,10 @@ export const useInferStore = create<InferState>((set, get) => ({
   ...clearedResult(),
 
   setQuery: (query) => set({ query, prefetchedSearch: null, prefetchStatus: "idle" }),
-  setContextText: (contextText) => set({ contextText, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, steps: emptySteps(), ...clearedResult() }),
+  setContextText: (contextText) => {
+    stepCache.clear();
+    set({ contextText, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, steps: emptySteps(), ...clearedResult() });
+  },
   setCustomContextText: (text) => set({ customContextText: text }),
   answerQuestion: (index, value) => set((state) => ({ answers: { ...state.answers, [index]: value } })),
   setStepModel: (name, profile) => set((state) => ({
@@ -166,6 +266,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   selectPreset: (id) => {
     const preset = presets.find((item) => item.id === id);
     if (!preset) return;
+    stepCache.clear();
     set({ deviceContext: preset, contextText: pretty(preset.records), steps: emptySteps(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, ...clearedResult() });
     void get().ensureProfileDigest();
   },
@@ -269,7 +370,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     }
   },
 
-  runStep: async (name) => {
+  runStep: async (name, options = {}) => {
     const { query, contextText } = get();
     let deviceContext: Record<string, unknown>;
     try {
@@ -281,7 +382,7 @@ export const useInferStore = create<InferState>((set, get) => ({
 
     set((state) => ({
       ...(name === "card_plan_generate" ? { result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, a2uiJsonl: null, a2uiBlueprint: null, compiledArtifact: null, compileNotices: [], enrichStatus: "idle" as const } : {}),
-      steps: { ...state.steps, [name]: { ...state.steps[name], status: "loading", error: null, logs: [] } },
+      steps: { ...state.steps, [name]: { ...state.steps[name], status: "loading", streamingChars: 0, error: null, logs: [] } },
     }));
 
     try {
@@ -294,21 +395,43 @@ export const useInferStore = create<InferState>((set, get) => ({
       const freshPrefetch = state.prefetchedSearch && Date.now() - state.prefetchedSearch.fetchedAt <= 10 * 60 * 1000
         ? { searchQuery: state.prefetchedSearch.searchQuery, webSearchRaw: state.prefetchedSearch.webSearchRaw }
         : undefined;
-      const response = await fetch("/api/infer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query, deviceContext, step: name,
-          modelProfile: state.stepModels[name],
-          ...(name === "intent_analysis" ? { profileDigest: ensuredProfile } : {}),
-          inferenceState: state.inferenceState,
-          ...(name === "context_enrichment" || name === "card_plan_generate" ? { userAnswers: state.answers } : {}),
-          ...(name === "context_enrichment" && freshPrefetch ? { prefetchedSearch: freshPrefetch } : {}),
-          ...(name === "a2ui_generate" ? { cardPlan: state.cardPlan } : {}),
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
+      const requestBody = {
+        query, deviceContext, step: name,
+        modelProfile: state.stepModels[name],
+        ...(name === "intent_analysis" ? { profileDigest: ensuredProfile } : {}),
+        ...(name !== "intent_analysis" && name !== "a2ui_generate" ? { inferenceState: state.inferenceState } : {}),
+        ...(name === "context_enrichment" || name === "card_plan_generate" ? { userAnswers: state.answers } : {}),
+        ...(name === "context_enrichment" && freshPrefetch ? { prefetchedSearch: freshPrefetch } : {}),
+        ...(name === "a2ui_generate" ? { cardPlan: state.cardPlan, stream: true } : {}),
+      };
+      const cacheKey = `${name}|${state.stepModels[name]}|${stableStringify(requestBody)}`;
+      const cached = options.useCache ? cacheGet(cacheKey) : undefined;
+      let data: InferApiResponse;
+      let responseOk = true;
+      if (cached) {
+        data = {
+          ...cached,
+          _logs: [
+            ...(cached._logs ?? []),
+            { ts: new Date().toISOString(), phase: "response", message: "命中前端步骤缓存" },
+          ],
+        };
+      } else {
+        const response = await fetch("/api/infer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+        responseOk = response.ok;
+        data = await readInferResponse(response, (streamingChars) => set((current) => ({
+          steps: {
+            ...current.steps,
+            [name]: { ...current.steps[name], streamingChars },
+          },
+        })));
+        if (responseOk && !data.error && options.useCache) cacheSet(cacheKey, data);
+      }
+      if (!responseOk || data.error) {
         set((current) => ({ steps: { ...current.steps, [name]: { ...current.steps[name], status: "error", error: data.error ?? "推理失败", logs: data._logs ?? [] } } }));
         return;
       }
@@ -333,7 +456,7 @@ export const useInferStore = create<InferState>((set, get) => ({
             status: "done", reasoning: data.reasoning ?? "", outputs: data.outputs ?? {},
             durationMs: data.durationMs ?? data.timing?.totalMs ?? 0,
             timing: data.timing, model: data.model, modelProfile: data.modelProfile, tokens: data.usage,
-            cost: data.cost, error: null, logs: data._logs ?? [],
+            cost: data.cost, streamingChars: 0, error: null, logs: data._logs ?? [],
           },
         },
       }));
@@ -346,11 +469,11 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   runAll: async () => {
     set({ runAllPaused: false });
-    await get().runStep("intent_analysis");
+    await get().runStep("intent_analysis", { useCache: true });
     if (get().steps.intent_analysis.status === "error") return;
-    await get().runStep("evidence_resolution");
+    await get().runStep("evidence_resolution", { useCache: true });
     if (get().steps.evidence_resolution.status === "error") return;
-    await get().runStep("clarification");
+    await get().runStep("clarification", { useCache: true });
     if (get().steps.clarification.status === "error") return;
     const { questions, answers } = get();
     if (questions.some((_, index) => !answers[index])) {
@@ -358,20 +481,23 @@ export const useInferStore = create<InferState>((set, get) => ({
       void get().prefetchSearch();
       return;
     }
-    await get().runStep("context_enrichment");
+    await get().runStep("context_enrichment", { useCache: true });
     if (get().steps.context_enrichment.status === "error") return;
-    await get().runStep("card_plan_generate");
+    await get().runStep("card_plan_generate", { useCache: true });
     if (get().steps.card_plan_generate.status === "error") return;
-    await get().runStep("a2ui_generate");
+    await get().runStep("a2ui_generate", { useCache: true });
   },
 
   continueGenerate: async () => {
     set({ runAllPaused: false });
-    await get().runStep("context_enrichment");
+    await get().runStep("context_enrichment", { useCache: true });
     if (get().steps.context_enrichment.status === "error") return;
-    await get().runStep("card_plan_generate");
-    if (get().steps.card_plan_generate.status !== "error") await get().runStep("a2ui_generate");
+    await get().runStep("card_plan_generate", { useCache: true });
+    if (get().steps.card_plan_generate.status !== "error") await get().runStep("a2ui_generate", { useCache: true });
   },
 
-  reset: () => set({ query: DEFAULT_QUERY, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, ...clearedResult() }),
+  reset: () => {
+    stepCache.clear();
+    set({ query: DEFAULT_QUERY, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, ...clearedResult() });
+  },
 }));
