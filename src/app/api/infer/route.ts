@@ -40,6 +40,7 @@ export async function POST(request: Request) {
       cardPlan: body.cardPlan as CardPlan | undefined,
       profileDigest: body.profileDigest as ProfileDigest | undefined,
       modelProfile: isModelProfile(body.modelProfile) ? body.modelProfile : undefined,
+      prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
       mock: !process.env.LLM_API_KEY,
       onLog: (entry) => logs.push(entry),
     });

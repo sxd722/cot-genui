@@ -19,6 +19,10 @@ const COMPONENT_ALIASES: Record<string, string> = {
   highlight: "Hero",
   metric: "Metric",
   kpi: "Metric",
+  chart: "Metric",
+  table: "List",
+  tabs: "Column",
+  switch: "CheckBox",
   progress: "Progress",
   badge: "Badge",
   chip: "Badge",
@@ -144,6 +148,28 @@ function collectOpenUrls(value: unknown, found = new Set<string>()): Set<string>
   return found;
 }
 
+const CONTENT_FIELDS = new Set(["text", "title", "label", "value", "detail"]);
+
+function normalizeContent(value: unknown): string {
+  return String(value ?? "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function collectVisibleText(value: unknown, found: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectVisibleText(item, found));
+    return found;
+  }
+  const obj = record(value);
+  if (!obj) return found;
+  for (const [key, item] of Object.entries(obj)) {
+    if (CONTENT_FIELDS.has(key) && (typeof item === "string" || typeof item === "number")) {
+      found.push(String(item));
+    }
+    if (item && typeof item === "object") collectVisibleText(item, found);
+  }
+  return found;
+}
+
 /**
  * 接受模型较容易稳定生成的嵌套 Blueprint，确定性编译为 A2UI v0.9 扁平邻接表。
  * 同时兼容旧版模型直接返回的 A2UI 消息数组。
@@ -192,13 +218,21 @@ export function compileA2UIResponse(value: unknown, cardPlan?: CardPlan): A2UICo
         .filter((action) => typeof action.link !== "string" || !openUrls.has(action.link))
         .map((action) => `${action.id}=${String(action.link ?? "<missing URL>")}`);
       const surfaceText = JSON.stringify(surface.root ?? surface);
+      const normalizedSurfaceText = normalizeContent(collectVisibleText(surface.root ?? surface).join(" "));
       const missingListItems = card.blocks.flatMap((block, blockIndex) => block.kind === "list"
         ? (block.items ?? []).filter((item) => item.label && !surfaceText.includes(item.label)).map((item) => `${blockIndex}:${item.label}`)
         : []);
+      const missingContentBlocks = card.blocks.flatMap((block, blockIndex) => {
+        if (!["hero", "summary", "status", "metric"].includes(block.kind)) return [];
+        const title = String(block.title ?? "").trim();
+        if (title.length < 4) return [];
+        return normalizedSurfaceText.includes(normalizeContent(title)) ? [] : [blockIndex];
+      });
       if (missingBlocks.length) coverageErrors.push(`${card.id}: 缺少 block[${missingBlocks.join(",")}]`);
       if (missingActions.length) coverageErrors.push(`${card.id}: 缺少 action[${missingActions.join(",")}]`);
       if (missingExternalLinks.length) coverageErrors.push(`${card.id}: 外链未映射为精确 openUrl[${missingExternalLinks.join(",")}]`);
       if (missingListItems.length) coverageErrors.push(`${card.id}: 列表内容未进入组件树[${missingListItems.join(",")}]`);
+      if (missingContentBlocks.length) coverageErrors.push(`${card.id}: block[${missingContentBlocks.join(",")}] 内容未出现在组件树`);
       coveredBlocks += card.blocks.length;
       coveredActions += expectedActions.length;
     }

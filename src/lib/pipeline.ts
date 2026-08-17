@@ -28,6 +28,8 @@ interface RunInput {
   cardPlan?: CardPlan;
   profileDigest?: ProfileDigest;
   modelProfile?: ModelProfile;
+  /** 暂停期预取的搜索结果：searchQuery 与 ④ 最终计算一致时注入，跳过 tool 调用 */
+  prefetchedSearch?: { searchQuery: string; webSearchRaw: unknown };
   mock?: boolean;
   onLog?: (entry: CallLog) => void;
 }
@@ -601,26 +603,47 @@ function validCardPlan(value: unknown): value is CardPlan {
   return typeof plan.skillName === "string" && typeof plan.reasoning === "string" && Array.isArray(plan.cards) && plan.cards.length > 0;
 }
 
-function normalizeCardPlan(plan: CardPlan, allowedExternalUrls: Set<string>): CardPlan {
+function normalizeCardPlan(plan: CardPlan, allowedExternalUrls: Set<string>, validSlotNames: Set<string>): CardPlan {
   const validRoles = new Set(["primary", "secondary", "tertiary"]);
+  const validBlockKinds = new Set(["text", "hero", "summary", "list", "progress", "status", "metric", "choice", "toggle", "image", "chart", "infographic"]);
+  const usedCardIds = new Set<string>();
+  const cards = plan.cards.slice(0, 6).map((card, cardIndex) => {
+    const baseId = typeof card.id === "string" && card.id.trim() ? card.id.trim() : `card_${cardIndex + 1}`;
+    let id = baseId;
+    let suffix = 2;
+    while (usedCardIds.has(id)) id = `${baseId}_${suffix++}`;
+    usedCardIds.add(id);
+    return { ...card, id };
+  });
+  const cardIds = new Set(cards.map((card) => card.id));
+  const validSlot = (value: unknown): value is string => typeof value === "string" && validSlotNames.has(value);
   return {
     ...plan,
-    cards: plan.cards.slice(0, 6).map((card, cardIndex) => ({
+    cards: cards.map((card) => ({
       ...card,
-      id: typeof card.id === "string" && card.id.trim() ? card.id : `card_${cardIndex + 1}`,
-      blocks: (Array.isArray(card.blocks) ? card.blocks : []).map((block) => ({
+      sourceSlots: Array.isArray(card.sourceSlots) ? card.sourceSlots.filter(validSlot) : undefined,
+      blocks: (Array.isArray(card.blocks) ? card.blocks : []).slice(0, 5).map((block) => ({
         ...block,
+        kind: validBlockKinds.has(String(block.kind)) ? block.kind : "text",
+        valueFromSlot: validSlot(block.valueFromSlot) ? block.valueFromSlot : undefined,
+        itemsFromSlot: validSlot(block.itemsFromSlot) ? block.itemsFromSlot : undefined,
+        currentFromSlot: validSlot(block.currentFromSlot) ? block.currentFromSlot : undefined,
+        sourceSlots: Array.isArray(block.sourceSlots) ? block.sourceSlots.filter(validSlot) : undefined,
         items: Array.isArray(block.items) ? block.items.map((item) => {
           const raw = item as unknown as { label?: unknown; title?: unknown; detail?: unknown; onSelect?: typeof item.onSelect };
           return {
             label: String(raw.label ?? raw.title ?? "未命名项目"),
             ...(raw.detail ? { detail: String(raw.detail) } : {}),
-            ...(raw.onSelect ? { onSelect: raw.onSelect } : {}),
+            ...(raw.onSelect ? { onSelect: {
+              ...raw.onSelect,
+              ...(!raw.onSelect.thenGoTo || cardIds.has(raw.onSelect.thenGoTo) ? {} : { thenGoTo: undefined }),
+            } } : {}),
           };
         }) : undefined,
       })),
       actions: Array.isArray(card.actions) ? card.actions
         .filter((action) => action && typeof action.id === "string" && typeof action.label === "string")
+        .filter((action) => !action.targetCardId || cardIds.has(action.targetCardId))
         .filter((action) => action.type !== "external-link" || (!!validHttpUrl(action.link) && allowedExternalUrls.has(String(action.link).trim())))
         .map((action) => ({ ...action, role: validRoles.has(String(action.role)) ? action.role : "secondary" as const })) : undefined,
     })),
@@ -673,7 +696,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   if (input.name === "intent_analysis") {
     llm = await callJson({
       ...selectedModel, ...sampling, onLog: input.onLog,
-      system: "你负责根据用户请求和 query-independent 通用画像胶囊建立任务模型。taskType 必须是任务领域名称（如饮食推荐/职业决策/旅行规划），不能写 ideas/actionable；交付等级单独写 fulfillment。先判断用户最终要灵感、经验证的具体推荐，还是可执行动作；再从最终交付物反推所有会影响内容、排序、约束、个性化和外部检索的槽位。画像胶囊只用于发现可用领域和候选槽位，不可直接当作最终证据。必须输出 requestedDomains 和 retrievalRequests，让下一阶段按需回查原始记录。通常覆盖时间、地点、对象、预算、偏好、限制和交付方式；不要用固定槽位数量截断。对可能需要用户确认的槽位提供2-4个互斥 options。只把 query 明示内容写入 explicitValue。",
+      system: "你负责根据用户请求和 query-independent 通用画像胶囊建立任务模型。taskType 必须是任务领域名称（如饮食推荐/职业决策/旅行规划），不能写 ideas/actionable；交付等级单独写 fulfillment。先判断用户最终要灵感、经验证的具体推荐，还是可执行动作；再从最终交付物反推所有会影响内容、排序、约束、个性化和外部检索的槽位。画像胶囊只用于发现可用领域和候选槽位，不可直接当作最终证据。必须输出 requestedDomains 和 retrievalRequests，让下一阶段按需回查原始记录；每个 semanticQuery 必须同时包含中文关键词和对应英文关键词，以空格分隔，提升对中英文 JSON path/value 的召回。通常覆盖时间、地点、对象、预算、偏好、限制和交付方式；不要用固定槽位数量截断。对可能需要用户确认的槽位提供2-4个互斥 options。只把 query 明示内容写入 explicitValue。",
       user: { query: input.query, generalProfile: input.profileDigest },
       schemaHint: "{reasoning:string,taskType:string,fulfillment:{outcome:'ideas'|'verified_recommendations'|'actionable',requiresFreshData:boolean,requiresLocation:boolean,requiresActionLink:boolean},needsContext:boolean,requestedDomains:string[],retrievalRequests:[{slotNames:string[],domains:string[],sourcePaths?:string[],semanticQuery:string,recency?:string}],slotRequirements:[{name:string,label:string,description:string,weight:number,required:boolean,blocking:boolean,options?:string[2-4],explicitValue?:string}]} ",
     });
@@ -747,14 +770,36 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     const mergedState = refineFulfillment(applyConfirmedAnswers(input.inferenceState, answers), input.query);
     const searchQuery = buildTaskSearchQuery(mergedState);
     const shouldSearch = !!mergedState.fulfillment?.requiresFreshData || mergedState.fulfillment?.outcome !== "ideas";
+    // 暂停期预取只有在用户回答未改变最终 searchQuery 时才命中；否则安全回退到即时搜索。
+    const prefetchedHit = shouldSearch
+      && !!input.prefetchedSearch
+      && input.prefetchedSearch.searchQuery === searchQuery
+      && input.prefetchedSearch.webSearchRaw != null;
+    if (shouldSearch && input.prefetchedSearch && !prefetchedHit) {
+      log(input.onLog, "fallback", `预取搜索词与当前不一致（预取="${input.prefetchedSearch.searchQuery.slice(0, 50)}" / 当前="${searchQuery.slice(0, 50)}"），回退到即时搜索`);
+    }
+    if (prefetchedHit) {
+      log(input.onLog, "response", "命中暂停期预取搜索，跳过 web_search 工具调用");
+    }
     llm = await callJson({
-      ...selectedModel, ...sampling, webSearchQuery: shouldSearch ? searchQuery : undefined, onLog: input.onLog,
-      system: "你负责在方案生成前汇总已确认事实，并在需要时用唯一一次联网搜索取得最终交付所需的具体实体和可用入口。用户回答已由代码写回 slots，不得覆盖。搜索必须围绕任务、时间、地点、预算、偏好、限制和 fulfillment；不要把普通任务改写成政策/注意事项查询。对于餐饮等本地推荐，应优先返回真实具体的商家或菜品。sources/sourceUrl/actionUrl 只能原样来自搜索工具结果，禁止拼接或猜测。只有明确的交易深链才标 order/reserve，否则 actionKind=details。无法取得有效实体时透明降级，不得虚构。",
-      user: { currentDate: new Date().toISOString().slice(0, 10), query: input.query, inference: projectForModel(input.name, mergedState), confirmedAnswers: qa, publicSearchQuery: shouldSearch ? searchQuery : null, searchBudget: { used: shouldSearch ? 1 : 0, max: 1 } },
+      ...selectedModel, ...sampling, webSearchQuery: shouldSearch && !prefetchedHit ? searchQuery : undefined, onLog: input.onLog,
+      system: "你负责在方案生成前汇总已确认事实，并在需要时用唯一一次联网搜索取得最终交付所需的具体实体和可用入口。用户回答已由代码写回 slots，不得覆盖。搜索必须围绕任务、时间、地点、预算、偏好、限制和 fulfillment；不要把普通任务改写成政策/注意事项查询。对于餐饮等本地推荐，应优先返回真实具体的商家或菜品。sources/sourceUrl/actionUrl 只能原样来自搜索工具结果，禁止拼接或猜测。只有明确的交易深链才标 order/reserve，否则 actionKind=details。无法取得有效实体时透明降级，不得虚构。"
+        + (prefetchedHit ? "本次联网搜索结果已在 user.searchResults 中原样提供，无需也无法再次发起搜索；sources/sourceUrl/actionUrl 只能原样来自这份结果。" : ""),
+      user: {
+        currentDate: new Date().toISOString().slice(0, 10),
+        query: input.query,
+        inference: projectForModel(input.name, mergedState),
+        confirmedAnswers: qa,
+        publicSearchQuery: shouldSearch ? searchQuery : null,
+        searchBudget: { used: shouldSearch ? 1 : 0, max: 1 },
+        ...(prefetchedHit ? { searchResults: input.prefetchedSearch?.webSearchRaw } : {}),
+      },
       schemaHint: "{reasoning:string,summary:string,slots:[{name,value,evidence,source_record,confidence,status}],assumptions:string[],webFacts:[{query:string,summary:string,sources?:string[],entities?:[{name:string,category?:string,description:string,locality?:string,sourceUrl:string,actionUrl?:string,actionKind:'order'|'reserve'|'details'}]}],capabilityCalls:[{capability:'web_search'|'llm_reasoning',query:string,status:'success'|'skipped'|'error'}]} ",
     });
     const raw = llm.value as { reasoning?: string; summary?: string; slots?: InferSlot[]; assumptions?: string[]; webFacts?: InferenceState["webFacts"]; capabilityCalls?: InferenceState["capabilityCalls"] };
-    const providerSearchUrls = shouldSearch ? extractUrlsFromSearch(llm.webSearch) : [];
+    const providerSearchUrls = shouldSearch
+      ? extractUrlsFromSearch(prefetchedHit ? input.prefetchedSearch?.webSearchRaw : llm.webSearch)
+      : [];
     const state: InferenceState = {
       ...mergedState,
       slots: completeResolvedSlots(mergedState.slotRequirements, raw.slots),
@@ -766,7 +811,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     };
     const verifiedEntityCount = (state.webFacts ?? []).reduce((count, fact) => count + (fact.entities?.length ?? 0), 0);
     const actionableLinkCount = (state.webFacts ?? []).flatMap((fact) => fact.entities ?? []).filter((entity) => !!entity.actionUrl).length;
-    base = { name: input.name, reasoning: raw.reasoning ?? "完成上下文总结与任务型能力补齐", outputs: { summary: state.summary, searchQuery: shouldSearch ? searchQuery : null, searchBudgetUsed: shouldSearch ? 1 : 0, verifiedEntityCount, actionableLinkCount, providerUrlCount: providerSearchUrls.length, webFacts: state.webFacts, capabilityCalls: state.capabilityCalls, providerSearchResults: llm.webSearch }, inferenceState: state, slots: state.slots, questions: state.questions };
+    base = { name: input.name, reasoning: raw.reasoning ?? "完成上下文总结与任务型能力补齐", outputs: { summary: state.summary, searchQuery: shouldSearch ? searchQuery : null, searchBudgetUsed: shouldSearch ? 1 : 0, prefetchUsed: prefetchedHit, verifiedEntityCount, actionableLinkCount, providerUrlCount: providerSearchUrls.length, webFacts: state.webFacts, capabilityCalls: state.capabilityCalls, providerSearchResults: prefetchedHit ? input.prefetchedSearch?.webSearchRaw : llm.webSearch }, inferenceState: state, slots: state.slots, questions: state.questions };
   } else if (input.name === "card_plan_generate") {
     if (!input.inferenceState) throw new Error("缺少 evidence_resolution 的 inferenceState");
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
@@ -803,14 +848,15 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
           })),
         }
       : input.inferenceState;
-    const plan = integrateWebFactsIntoCardPlan(normalizeCardPlan(raw.cardPlan, allowedExternalUrls), integrationState);
+    const validSlotNames = new Set(input.inferenceState.slots.map((slot) => slot.name));
+    const plan = integrateWebFactsIntoCardPlan(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), integrationState);
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
     base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, semanticMarkdown: semanticFromPlan(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
     llm = await callJson({
       ...selectedModel, ...sampling, onLog: input.onLog,
-      system: "你是 CardPlan 驱动的 A2UI 视觉规划器。必须为 CardPlan 的每张 card 生成且仅生成一个同 ID 的 surface，完整表达每个 block 和 action，不能把丰富内容压缩成几段普通 Text。每个 surface 写 sourceCardId、visualDirection、coveredBlockIndexes、coveredActionIds；coveredBlockIndexes 必须覆盖该卡所有 block 索引，coveredActionIds 必须覆盖所有 action.id。根据语义选择视觉方向 dashboard/timeline/checklist/comparison/hero。组件映射：hero/highlight→Hero；metric→Metric 或 Metric Row；progress→Progress；status→Badge/Hero；list→List、Timeline 或 Badge 组合；choice→ChoicePicker；toggle→CheckBox；summary→层级化 Text/Row。可用组件：Card,Column,Row,List,Text,Button,Divider,Icon,Image,CheckBox,Slider,ChoicePicker,Hero,Metric,Progress,Badge,Timeline。每个 CardPlan action 必须生成 Button/ChoicePicker：navigate 保留 goto，select/back 保留原事件；external-link 必须生成 Button，且 action 严格为 {functionCall:{call:'openUrl',args:{url: action.link 的原始精确值}}}，不得把外链改成 goto 或省略 URL。只生成嵌套组件对象，不生成组件 ID、扁平表或 JSONL。",
+      system: "你是 CardPlan 驱动的 A2UI 视觉规划器。必须为 CardPlan 的每张 card 生成且仅生成一个同 ID 的 surface，完整表达每个 block 和 action，不能把丰富内容压缩成几段普通 Text。每个 surface 写 sourceCardId、visualDirection、coveredBlockIndexes、coveredActionIds；coveredBlockIndexes 必须覆盖该卡所有 block 索引，coveredActionIds 必须覆盖所有 action.id。根据语义选择视觉方向 dashboard/timeline/checklist/comparison/hero。组件映射：hero/highlight→Hero；metric/chart→Metric 或 Metric Row；progress→Progress；status→Badge/Hero；list/table→List、Timeline 或 Badge 组合；choice→ChoicePicker；toggle/switch→CheckBox；tabs→Column；summary→层级化 Text/Row。可用组件：Card,Column,Row,List,Text,Button,Divider,Icon,Image,CheckBox,Slider,ChoicePicker,Hero,Metric,Progress,Badge,Timeline；兼容别名 Chart/Table/Tabs/Switch 会被安全映射。每个 CardPlan action 必须生成 Button/ChoicePicker：navigate 保留 goto，select/back 保留原事件；external-link 必须生成 Button，且 action 严格为 {functionCall:{call:'openUrl',args:{url: action.link 的原始精确值}}}，不得把外链改成 goto 或省略 URL。只生成嵌套组件对象，不生成组件 ID、扁平表或 JSONL。",
       user: { cardPlan: input.cardPlan },
       schemaHint: "{reasoning:string,a2uiBlueprint:{surfaces:[{id:string,sourceCardId:string,visualDirection:'dashboard'|'timeline'|'checklist'|'comparison'|'hero',coveredBlockIndexes:number[],coveredActionIds:string[],root:{component:'Card',tone?:string,children:[nested components]}}]}}；nested component 可含 component/text/title/subtitle/label/value/unit/tone/detail/items/options/variant/action/children；外链 Button.action={functionCall:{call:'openUrl',args:{url:string}}}",
     });
@@ -857,4 +903,60 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   const totalMs = Math.max(1, Date.now() - started);
   const timing = { totalMs, llmMs: llm.llmMs, overheadMs: Math.max(0, totalMs - llm.llmMs), providerCreatedAt: llm.providerCreatedAt };
   return { ...base, model: llm.model, modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], usage: llm.usage, cost: llm.cost, durationMs: totalMs, timing };
+}
+
+/* ------------------------------------------------------------------ */
+/*  暂停期投机搜索                                                      */
+/*  ③ 完成暂停等用户答题时，后台提前执行 ④ 的联网搜索。                  */
+/*  buildTaskSearchQuery 只取置信度>=0.7 的槽位；用户答案若改变最终检索词， */
+/*  ④ 会拒绝预取并安全回退到即时搜索。                                  */
+/* ------------------------------------------------------------------ */
+
+export interface SearchPrefetchResult {
+  searchQuery: string;
+  shouldSearch: boolean;
+  webSearchRaw: unknown;
+  model?: string;
+  llmMs?: number;
+  usage?: TokenUsage;
+  cost?: number;
+  durationMs: number;
+  mock?: boolean;
+}
+
+export async function runSearchPrefetch(args: {
+  query: string;
+  inferenceState: InferenceState;
+  mock?: boolean;
+  onLog?: (entry: CallLog) => void;
+}): Promise<SearchPrefetchResult> {
+  const started = Date.now();
+  const base = refineFulfillment(args.inferenceState, args.query);
+  const searchQuery = buildTaskSearchQuery(base);
+  const shouldSearch = !!base.fulfillment?.requiresFreshData || base.fulfillment?.outcome !== "ideas";
+  if (!shouldSearch) {
+    return { searchQuery, shouldSearch: false, webSearchRaw: null, durationMs: Math.max(1, Date.now() - started) };
+  }
+  if (args.mock || !process.env.LLM_API_KEY) {
+    return { searchQuery, shouldSearch: true, webSearchRaw: null, durationMs: Math.max(1, Date.now() - started), mock: true };
+  }
+  log(args.onLog, "request", `预取搜索 POST /chat/completions tool=web_search query="${searchQuery.slice(0, 60)}"`);
+  const llm = await callJson({
+    model: "glm-5.2", thinking: false, temperature: 0.2, doSample: true,
+    webSearchQuery: searchQuery,
+    onLog: args.onLog,
+    system: "你负责执行一次任务型联网搜索。只围绕给定检索词整理可用来源，不做方案总结，不回答用户问题。",
+    user: { query: args.query, searchQuery },
+    schemaHint: "{reasoning:string,note:string}",
+  });
+  return {
+    searchQuery,
+    shouldSearch: true,
+    webSearchRaw: llm.webSearch ?? null,
+    model: llm.model,
+    llmMs: llm.llmMs,
+    usage: llm.usage,
+    cost: llm.cost,
+    durationMs: Math.max(1, Date.now() - started),
+  };
 }

@@ -184,6 +184,9 @@ function compileBlock(
 
   switch (ir.kind) {
     /* —— 直接映射的 block —— */
+    case "text":
+      return { block: { id, kind: "text", title: ir.title, text: ir.text ?? ir.value } };
+
     case "hero":
       return { block: { id, kind: "hero", title: ir.title, text: ir.text } };
 

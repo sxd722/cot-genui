@@ -32,6 +32,12 @@ export interface StepState {
   logs: StepLog[];
 }
 
+interface SearchPrefetch {
+  searchQuery: string;
+  webSearchRaw: unknown;
+  fetchedAt: number;
+}
+
 export const STEP_ORDER = PIPELINE_STEPS;
 export type StepName = PipelineStepName;
 
@@ -74,6 +80,8 @@ interface InferState {
   enrichResults: import("@/dsl/enrichPlan").EnrichResult[];
   answers: Record<number, string>;
   runAllPaused: boolean;
+  prefetchedSearch: SearchPrefetch | null;
+  prefetchStatus: "idle" | "loading" | "ready" | "error";
   setQuery: (query: string) => void;
   selectPreset: (id: string) => void;
   setContextText: (text: string) => void;
@@ -81,6 +89,7 @@ interface InferState {
   answerQuestion: (index: number, value: string) => void;
   setStepModel: (name: StepName, profile: ModelProfile) => void;
   ensureProfileDigest: () => Promise<ProfileDigest | null>;
+  prefetchSearch: () => Promise<void>;
   continueGenerate: () => Promise<void>;
   enrichAndCompile: () => Promise<void>;
   runStep: (name: StepName) => Promise<void>;
@@ -125,6 +134,7 @@ function clearedResult() {
     result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, a2uiJsonl: null, a2uiBlueprint: null,
     compiledArtifact: null, compileNotices: [] as CompileNotice[], enrichStatus: "idle" as const,
     enrichProgress: { done: 0, total: 0, current: "" }, enrichResults: [], answers: {}, runAllPaused: false,
+    prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
   };
 }
 
@@ -144,7 +154,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   customContextText: "",
   ...clearedResult(),
 
-  setQuery: (query) => set({ query }),
+  setQuery: (query) => set({ query, prefetchedSearch: null, prefetchStatus: "idle" }),
   setContextText: (contextText) => set({ contextText, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, steps: emptySteps(), ...clearedResult() }),
   setCustomContextText: (text) => set({ customContextText: text }),
   answerQuestion: (index, value) => set((state) => ({ answers: { ...state.answers, [index]: value } })),
@@ -204,6 +214,32 @@ export const useInferStore = create<InferState>((set, get) => ({
     return pendingProfileRequest;
   },
 
+  prefetchSearch: async () => {
+    const { query, inferenceState } = get();
+    if (!inferenceState) return;
+    set({ prefetchStatus: "loading" });
+    try {
+      const response = await fetch("/api/prefetch-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, inferenceState }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "预取搜索失败");
+      if (get().query !== query || get().inferenceState !== inferenceState) return;
+      if (data.shouldSearch && data.webSearchRaw != null) {
+        set({
+          prefetchedSearch: { searchQuery: data.searchQuery, webSearchRaw: data.webSearchRaw, fetchedAt: Date.now() },
+          prefetchStatus: "ready",
+        });
+      } else {
+        set({ prefetchedSearch: null, prefetchStatus: "idle" });
+      }
+    } catch {
+      if (get().query === query) set({ prefetchedSearch: null, prefetchStatus: "error" });
+    }
+  },
+
   enrichAndCompile: async () => {
     const plan = get().cardPlan;
     if (!plan) return;
@@ -249,12 +285,15 @@ export const useInferStore = create<InferState>((set, get) => ({
     }));
 
     try {
-      const ensuredProfile = name === "intent_analysis" ? await get().ensureProfileDigest() : get().profileDigest;
+      const ensuredProfile = await get().ensureProfileDigest();
       if (name === "intent_analysis" && !ensuredProfile) {
         set((current) => ({ steps: { ...current.steps, [name]: { ...current.steps[name], status: "error", error: get().profileError ?? "通用画像尚未就绪" } } }));
         return;
       }
       const state = get();
+      const freshPrefetch = state.prefetchedSearch && Date.now() - state.prefetchedSearch.fetchedAt <= 10 * 60 * 1000
+        ? { searchQuery: state.prefetchedSearch.searchQuery, webSearchRaw: state.prefetchedSearch.webSearchRaw }
+        : undefined;
       const response = await fetch("/api/infer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -264,6 +303,7 @@ export const useInferStore = create<InferState>((set, get) => ({
           ...(name === "intent_analysis" ? { profileDigest: ensuredProfile } : {}),
           inferenceState: state.inferenceState,
           ...(name === "context_enrichment" || name === "card_plan_generate" ? { userAnswers: state.answers } : {}),
+          ...(name === "context_enrichment" && freshPrefetch ? { prefetchedSearch: freshPrefetch } : {}),
           ...(name === "a2ui_generate" ? { cardPlan: state.cardPlan } : {}),
         }),
       });
@@ -298,7 +338,7 @@ export const useInferStore = create<InferState>((set, get) => ({
         },
       }));
 
-      if (name === "card_plan_generate" && data.cardPlan) void get().enrichAndCompile();
+      if (name === "card_plan_generate" && data.cardPlan) await get().enrichAndCompile();
     } catch (error) {
       set((current) => ({ steps: { ...current.steps, [name]: { ...current.steps[name], status: "error", error: error instanceof Error ? error.message : "网络错误" } } }));
     }
@@ -315,6 +355,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     const { questions, answers } = get();
     if (questions.some((_, index) => !answers[index])) {
       set({ runAllPaused: true });
+      void get().prefetchSearch();
       return;
     }
     await get().runStep("context_enrichment");

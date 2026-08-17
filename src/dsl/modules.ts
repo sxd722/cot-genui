@@ -52,6 +52,7 @@ export interface CardNode {
  * 编译器负责映射：能映射的映射，不能的降级 + 标记。
  */
 export type IRBlockKind =
+  | "text" // 通用文本（也用于未知 block 的安全降级）
   | "hero" // 大标题说明
   | "summary" // 主副摘要
   | "list" // 列表（项可带点击动作）

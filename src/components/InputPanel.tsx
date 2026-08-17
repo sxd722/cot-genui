@@ -110,7 +110,7 @@ export function InputPanel() {
           <p className="mt-0.5 text-[9px] text-zinc-400">至少输入 20 字符才能生成画像索引</p>
         )}
         {customContextText.trim().length > 20 && (
-          <p className="mt-0.5 text-[9px] text-indigo-400">已输入 {customContextText.trim().length} 字 · 点击"画像索引"用 GLM-5.2 thinking 深度分析</p>
+          <p className="mt-0.5 text-[9px] text-indigo-400">已输入 {customContextText.trim().length} 字 · 点击“画像索引”用 GLM-5.2 thinking 深度分析</p>
         )}
       </div>
 

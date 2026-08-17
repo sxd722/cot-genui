@@ -19,7 +19,7 @@ const MAX_CHUNKS = 8;
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`).join(",")}}`;
+    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`).join(",")}}`;
   }
   return JSON.stringify(value);
 }
@@ -124,7 +124,8 @@ async function jsonCompletion(system: string, user: unknown): Promise<Record<str
 /** 使用 GLM-5.2 thinking 对自由文本个人上下文做画像索引 */
 export async function compressFreeText(freeText: string): Promise<{ digest: ProfileDigest; cacheHit: boolean }> {
   const hash = createHash("sha256").update(freeText).digest("hex");
-  const cached = profileCache.get(hash);
+  const cacheKey = `freetext:${hash}`;
+  const cached = profileCache.get(cacheKey);
   if (cached) return { digest: cached, cacheHit: true };
 
   // 降级 digest：从文本中提取简单信息
@@ -149,7 +150,6 @@ export async function compressFreeText(freeText: string): Promise<{ digest: Prof
   };
 
   if (!process.env.LLM_API_KEY) {
-    profileCache.set(hash, fallback);
     return { digest: fallback, cacheHit: false };
   }
 
@@ -205,21 +205,20 @@ export async function compressFreeText(freeText: string): Promise<{ digest: Prof
       generatedAt: new Date().toISOString(),
       degraded: false,
     };
-    profileCache.set(hash, digest);
+    profileCache.set(cacheKey, digest);
     return { digest, cacheHit: false };
   } catch {
-    profileCache.set(hash, fallback);
     return { digest: fallback, cacheHit: false };
   }
 }
 
 export async function compressProfile(context: Record<string, unknown>): Promise<{ digest: ProfileDigest; cacheHit: boolean }> {
   const hash = contextHash(context);
-  const cached = profileCache.get(hash);
+  const cacheKey = `json:${hash}`;
+  const cached = profileCache.get(cacheKey);
   if (cached) return { digest: cached, cacheHit: true };
   const fallback = deterministicDigest(context, hash);
   if (!process.env.LLM_API_KEY) {
-    profileCache.set(hash, fallback);
     return { digest: fallback, cacheHit: false };
   }
 
@@ -243,10 +242,9 @@ export async function compressProfile(context: Record<string, unknown>): Promise
       generatedAt: new Date().toISOString(),
       degraded: false,
     };
-    profileCache.set(hash, digest);
+    profileCache.set(cacheKey, digest);
     return { digest, cacheHit: false };
   } catch {
-    profileCache.set(hash, fallback);
     return { digest: fallback, cacheHit: false };
   }
 }
