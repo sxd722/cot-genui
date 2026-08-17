@@ -205,6 +205,30 @@ async function callJson(args: {
   }
 }
 
+/**
+ * 每步发往模型的载荷投影：只保留该步 prompt 实际引用的字段。
+ * 返回给前端的完整 InferenceState 不受影响——这里只削减 token 开销。
+ * ProfileDigest 是最大单一对象（① 已消费），②-⑤ 一律不再随 inference 重传。
+ */
+function projectForModel(step: PipelineStepName, state: InferenceState): Partial<InferenceState> {
+  const pick = <K extends keyof InferenceState>(keys: K[]): Pick<InferenceState, K> =>
+    Object.fromEntries(keys.map((key) => [key, state[key]])) as Pick<InferenceState, K>;
+  switch (step) {
+    case "evidence_resolution":
+      // domainSummaries 由服务端从 digest 单独过滤传入，不随 task 重传 digest。
+      return pick(["taskType", "fulfillment", "needsContext", "slotRequirements", "slots", "retrievalRequests", "requestedDomains"]);
+    case "clarification":
+      return pick(["taskType", "fulfillment", "slotRequirements", "slots", "conflicts"]);
+    case "context_enrichment":
+      // questions 不传：confirmedAnswers(qa 数组) 已单独携带问题原文+槽位+回答。
+      return pick(["taskType", "fulfillment", "slotRequirements", "slots", "assumptions"]);
+    case "card_plan_generate":
+      return pick(["taskType", "fulfillment", "slotRequirements", "slots", "summary", "webFacts", "assumptions"]);
+    default:
+      return state;
+  }
+}
+
 function explicitSlots(requirements: InferenceState["slotRequirements"]): InferSlot[] {
   return requirements
     .filter((slot) => slot.explicitValue)
@@ -375,6 +399,32 @@ function validHttpUrl(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 从 provider 原始 web_search 返回结构中容错提取全部合法 URL。
+ * provider 字段名不保证稳定（link/url/source/icon 等），因此做全树字符串遍历；
+ * 该集合作为不可伪造的 source registry，约束 ⑤ 的 external-link allowlist。
+ */
+function extractUrlsFromSearch(webSearch: unknown): string[] {
+  const found = new Set<string>();
+  const walk = (value: unknown) => {
+    if (!value) return;
+    if (typeof value === "string") {
+      const url = validHttpUrl(value.includes("://") ? value : "");
+      if (url) found.add(url);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (typeof value === "object") {
+      Object.values(value as Record<string, unknown>).forEach(walk);
+    }
+  };
+  walk(webSearch);
+  return [...found];
 }
 
 function sourceScore(value: string): number {
@@ -654,7 +704,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       llm = await callJson({
         ...selectedModel, ...sampling, onLog: input.onLog,
         system: "你负责使用按需披露的领域摘要和原始证据完成槽位解析与冲突检测。必须返回每个 slotRequirements 槽位；允许发现并补充第一阶段遗漏、但会显著影响最终交付或检索的槽位。只有 retrievedEvidence 中的原始记录可作为最终事实证据；领域摘要只能帮助解释。用户明示值优先。本阶段不提问、不替用户选择偏好。",
-        user: { query: input.query, task: input.inferenceState, domainSummaries, retrievedEvidence },
+        user: { query: input.query, task: projectForModel(input.name, input.inferenceState), domainSummaries, retrievedEvidence },
         schemaHint: "{reasoning:string,slots:[{name,value,evidence,source_record,confidence,status}],discoveredRequirements?:[{name,label,description,weight,required,blocking,options?}],conflicts:[{slot,evidence_a,evidence_b,note}],assumptions:[string]} ",
       });
       const raw = llm.value as { reasoning?: string; slots?: InferSlot[]; discoveredRequirements?: InferenceState["slotRequirements"]; conflicts?: InferConflict[]; assumptions?: string[] };
@@ -675,7 +725,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       llm = await callJson({
         ...selectedModel, ...sampling, onLog: input.onLog,
         system: "你负责在生成方案前完成最小化澄清。只针对给定 uncertainSlotNames 提问；可以把高度相关槽位合并成一个问题，但 questions.slotNames 必须覆盖每个不确定槽位。所有问题都必须是选择题并提供2-4个简短、互斥、覆盖常见情况的 options，禁止填空题或省略 options；必要时加入“暂不限制/暂不确定”。不得把这些问题延迟到最终卡片或 A2UI。",
-        user: { query: input.query, inference: input.inferenceState, uncertainSlotNames: uncertainNames },
+        user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), uncertainSlotNames: uncertainNames },
         schemaHint: "{reasoning:string,questions:[{question:string,reason:string,blocking:true,slotNames:string[],options:string[2-4]}]} ",
       });
       const raw = llm.value as { reasoning?: string; questions?: InferQuestion[] };
@@ -700,10 +750,11 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     llm = await callJson({
       ...selectedModel, ...sampling, webSearchQuery: shouldSearch ? searchQuery : undefined, onLog: input.onLog,
       system: "你负责在方案生成前汇总已确认事实，并在需要时用唯一一次联网搜索取得最终交付所需的具体实体和可用入口。用户回答已由代码写回 slots，不得覆盖。搜索必须围绕任务、时间、地点、预算、偏好、限制和 fulfillment；不要把普通任务改写成政策/注意事项查询。对于餐饮等本地推荐，应优先返回真实具体的商家或菜品。sources/sourceUrl/actionUrl 只能原样来自搜索工具结果，禁止拼接或猜测。只有明确的交易深链才标 order/reserve，否则 actionKind=details。无法取得有效实体时透明降级，不得虚构。",
-      user: { currentDate: new Date().toISOString().slice(0, 10), query: input.query, inference: mergedState, confirmedAnswers: qa, publicSearchQuery: shouldSearch ? searchQuery : null, searchBudget: { used: shouldSearch ? 1 : 0, max: 1 } },
+      user: { currentDate: new Date().toISOString().slice(0, 10), query: input.query, inference: projectForModel(input.name, mergedState), confirmedAnswers: qa, publicSearchQuery: shouldSearch ? searchQuery : null, searchBudget: { used: shouldSearch ? 1 : 0, max: 1 } },
       schemaHint: "{reasoning:string,summary:string,slots:[{name,value,evidence,source_record,confidence,status}],assumptions:string[],webFacts:[{query:string,summary:string,sources?:string[],entities?:[{name:string,category?:string,description:string,locality?:string,sourceUrl:string,actionUrl?:string,actionKind:'order'|'reserve'|'details'}]}],capabilityCalls:[{capability:'web_search'|'llm_reasoning',query:string,status:'success'|'skipped'|'error'}]} ",
     });
     const raw = llm.value as { reasoning?: string; summary?: string; slots?: InferSlot[]; assumptions?: string[]; webFacts?: InferenceState["webFacts"]; capabilityCalls?: InferenceState["capabilityCalls"] };
+    const providerSearchUrls = shouldSearch ? extractUrlsFromSearch(llm.webSearch) : [];
     const state: InferenceState = {
       ...mergedState,
       slots: completeResolvedSlots(mergedState.slotRequirements, raw.slots),
@@ -711,26 +762,48 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       summary: raw.summary ?? "已汇总确认信息与公开事实",
       webFacts: raw.webFacts ?? [],
       capabilityCalls: raw.capabilityCalls ?? [{ capability: "web_search", query: searchQuery, status: shouldSearch ? "success" : "skipped" }],
+      providerSearchUrls,
     };
     const verifiedEntityCount = (state.webFacts ?? []).reduce((count, fact) => count + (fact.entities?.length ?? 0), 0);
     const actionableLinkCount = (state.webFacts ?? []).flatMap((fact) => fact.entities ?? []).filter((entity) => !!entity.actionUrl).length;
-    base = { name: input.name, reasoning: raw.reasoning ?? "完成上下文总结与任务型能力补齐", outputs: { summary: state.summary, searchQuery: shouldSearch ? searchQuery : null, searchBudgetUsed: shouldSearch ? 1 : 0, verifiedEntityCount, actionableLinkCount, webFacts: state.webFacts, capabilityCalls: state.capabilityCalls, providerSearchResults: llm.webSearch }, inferenceState: state, slots: state.slots, questions: state.questions };
+    base = { name: input.name, reasoning: raw.reasoning ?? "完成上下文总结与任务型能力补齐", outputs: { summary: state.summary, searchQuery: shouldSearch ? searchQuery : null, searchBudgetUsed: shouldSearch ? 1 : 0, verifiedEntityCount, actionableLinkCount, providerUrlCount: providerSearchUrls.length, webFacts: state.webFacts, capabilityCalls: state.capabilityCalls, providerSearchResults: llm.webSearch }, inferenceState: state, slots: state.slots, questions: state.questions };
   } else if (input.name === "card_plan_generate") {
     if (!input.inferenceState) throw new Error("缺少 evidence_resolution 的 inferenceState");
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
     llm = await callJson({
       ...selectedModel, ...sampling, onLog: input.onLog,
       system: "你是 CardPlan 规划器。基于已经过用户澄清、事实总结和能力补齐的推断状态生成可编译卡片计划。reasoning 控制在120字内；生成3-6张卡。block kind 只能是 hero/summary/list/progress/status/metric/choice/toggle/image/chart/infographic。list.items 每项必须使用 {label,detail?}，禁止使用 title 代替 label。每张卡/块用 sourceSlots 标记证据槽位。若 webFacts.entities 存在，必须把具体实体名称、推荐理由和 locality 放入业务推荐卡的列表，不可只生成泛化建议；可用 actionUrl/sourceUrl 原样复制为 external-link，order/reserve 才使用“下单/预订”文案，否则写“查看详情”。action role 只能是 primary/secondary/tertiary。不得把低置信槽位做成选项要求用户再次回答。不要生成 HTML、Markdown、A2UI 或 missingInfo。",
-      user: { query: input.query, inference: input.inferenceState, answers: input.userAnswers ?? {} },
+      user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
       schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,purpose,sourceSlots?,blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
     });
     const raw = llm.value as { reasoning?: string; cardPlan?: unknown };
     if (!validCardPlan(raw.cardPlan)) throw new Error("模型返回的 CardPlan 结构无效");
-    const allowedExternalUrls = new Set((input.inferenceState.webFacts ?? []).flatMap((fact) => [
+    // allowlist 优先采用 provider 原始搜索 URL（不可伪造）；
+    // provider 结果缺失时退回模型结构化的 webFacts URL 并在日志标注。
+    const webFactUrls = (input.inferenceState.webFacts ?? []).flatMap((fact) => [
       ...(fact.sources ?? []),
       ...(fact.entities ?? []).flatMap((entity) => [entity.sourceUrl, entity.actionUrl].filter((url): url is string => typeof url === "string")),
-    ]).map((url) => validHttpUrl(url)).filter((url): url is string => !!url));
-    const plan = integrateWebFactsIntoCardPlan(normalizeCardPlan(raw.cardPlan, allowedExternalUrls), input.inferenceState);
+    ]).map((url) => validHttpUrl(url)).filter((url): url is string => !!url);
+    const providerUrls = (input.inferenceState.providerSearchUrls ?? []).map((url) => validHttpUrl(url)).filter((url): url is string => !!url);
+    const useProviderRegistry = providerUrls.length > 0;
+    const allowedExternalUrls = new Set(useProviderRegistry ? providerUrls : webFactUrls);
+    log(input.onLog, "response", useProviderRegistry
+      ? `URL allowlist 使用 provider 原始结果（${providerUrls.length} 条），模型 webFacts 中 ${webFactUrls.length} 条将按此过滤`
+      : `URL allowlist 退回模型 webFacts（${webFactUrls.length} 条）——本次无 provider 原始搜索结果`);
+    // 集成 webFacts 时同样只保留 provider 可验证的实体/来源，避免"模型编造的实体链接"经确定性注入回流。
+    const integrationState: InferenceState = useProviderRegistry
+      ? {
+          ...input.inferenceState,
+          webFacts: (input.inferenceState.webFacts ?? []).map((fact) => ({
+            ...fact,
+            sources: (fact.sources ?? []).filter((source) => allowedExternalUrls.has(String(source).trim())),
+            entities: (fact.entities ?? []).filter((entity) =>
+              allowedExternalUrls.has(String(entity.sourceUrl ?? "").trim()) &&
+              (!entity.actionUrl || allowedExternalUrls.has(String(entity.actionUrl).trim()))),
+          })),
+        }
+      : input.inferenceState;
+    const plan = integrateWebFactsIntoCardPlan(normalizeCardPlan(raw.cardPlan, allowedExternalUrls), integrationState);
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
     base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, semanticMarkdown: semanticFromPlan(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else {

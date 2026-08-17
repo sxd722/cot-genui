@@ -67,6 +67,8 @@ export interface InferenceState {
     }>;
   }>;
   capabilityCalls?: Array<{ capability: string; query: string; status: "success" | "skipped" | "error" }>;
+  /** ④ 从 provider 原始 web_search 结果提取的 URL（不可被模型伪造），供 ⑤ 构建 allowlist */
+  providerSearchUrls?: string[];
 }
 
 export interface TokenUsage {

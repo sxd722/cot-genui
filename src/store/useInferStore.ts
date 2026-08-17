@@ -261,7 +261,7 @@ export const useInferStore = create<InferState>((set, get) => ({
         body: JSON.stringify({
           query, deviceContext, step: name,
           modelProfile: state.stepModels[name],
-          profileDigest: ensuredProfile,
+          ...(name === "intent_analysis" ? { profileDigest: ensuredProfile } : {}),
           inferenceState: state.inferenceState,
           ...(name === "context_enrichment" || name === "card_plan_generate" ? { userAnswers: state.answers } : {}),
           ...(name === "a2ui_generate" ? { cardPlan: state.cardPlan } : {}),
