@@ -106,6 +106,8 @@ export interface Action {
   /** 本地动作触发的事件；省略时用 action.id */
   event?: string;
   toolCall?: ToolCall;
+  /** 外部链接工具的字面量 URL；不经过 state binding，便于渲染器直接生成安全的 <a>。 */
+  externalUrl?: string;
   /** 用户可读确认语；不需要时省略 */
   confirmation?: string;
 }

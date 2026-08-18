@@ -1,28 +1,16 @@
 import { NextResponse } from "next/server";
-import {
-  runStep,
-  runInference,
-  STEP_NAMES,
-  type StepName,
-  type CallLog,
-  type StepOutput,
-} from "@/lib/llm";
-import type { InferResponse } from "@/lib/schemas";
+import { PIPELINE_STEPS, runPipelineStep, type PipelineStepName } from "@/lib/pipeline";
+import type { CallLog } from "@/lib/llm";
+import type { CardPlan } from "@/dsl/modules";
+import { MODEL_PROFILES, type InferenceState, type ModelProfile } from "@/lib/pipelineTypes";
+import type { ProfileDigest } from "@/lib/profileTypes";
+import { hasAnyLLMKey } from "@/lib/llm";
 
-/**
- * POST /api/infer
- *
- * 分步模式（推荐）:
- *   body: { query, deviceContext, step: "surface_parse", priorSteps: {...} }
- *   返回: { ...StepOutput, _mock }
- *
- * 全流程模式:
- *   body: { query, deviceContext }   // 不传 step
- *   返回: { ...InferResponse, _mock }
- */
+const isStepName = (value: string): value is PipelineStepName =>
+  (PIPELINE_STEPS as readonly string[]).includes(value);
 
-const isStepName = (s: string): s is StepName =>
-  (STEP_NAMES as readonly string[]).includes(s);
+const isModelProfile = (value: unknown): value is ModelProfile =>
+  typeof value === "string" && (MODEL_PROFILES as readonly string[]).includes(value);
 
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -32,48 +20,84 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
 
-  const query = body.query;
-  const deviceContext = body.deviceContext;
-  if (typeof query !== "string" || !query.trim()) {
+  if (typeof body.query !== "string" || !body.query.trim()) {
     return NextResponse.json({ error: "缺少 query" }, { status: 400 });
   }
-  if (!deviceContext || typeof deviceContext !== "object") {
+  if (!body.deviceContext || typeof body.deviceContext !== "object") {
     return NextResponse.json({ error: "缺少 deviceContext" }, { status: 400 });
   }
+  if (typeof body.step !== "string" || !isStepName(body.step)) {
+    return NextResponse.json({ error: "缺少或不支持 step" }, { status: 400 });
+  }
 
-  const useMock = !process.env.LLM_API_KEY;
   const logs: CallLog[] = [];
-  const onLog = (e: CallLog) => logs.push(e);
+  const run = (onStreamDelta?: (delta: string, cumulativeChars: number) => void) => runPipelineStep({
+    name: body.step as PipelineStepName,
+    query: body.query as string,
+    deviceContext: body.deviceContext as Record<string, unknown>,
+    inferenceState: body.inferenceState as InferenceState | undefined,
+    userAnswers: body.userAnswers as Record<number, string> | undefined,
+    cardPlan: body.cardPlan as CardPlan | undefined,
+    profileDigest: body.profileDigest as ProfileDigest | undefined,
+    modelProfile: isModelProfile(body.modelProfile) ? body.modelProfile : undefined,
+    prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
+    stream: body.step === "openui_generate" && body.stream === true,
+    onStreamDelta,
+    mock: !hasAnyLLMKey(),
+    onLog: (entry) => logs.push(entry),
+  });
+
+  if (body.step === "openui_generate" && body.stream === true) {
+    const encoder = new TextEncoder();
+    const encodeEvent = (event: string, data: unknown) =>
+      encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    let clientCanceled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const emit = (event: string, data: unknown) => {
+          if (clientCanceled) return;
+          try {
+            controller.enqueue(encodeEvent(event, data));
+          } catch {
+            clientCanceled = true;
+          }
+        };
+        void (async () => {
+          try {
+            const output = await run((delta, cumulativeChars) => {
+              emit("delta", { delta, chars: cumulativeChars });
+            });
+            emit("done", { ...output, _mock: !hasAnyLLMKey(), _logs: logs });
+          } catch (error) {
+            emit("error", {
+              error: error instanceof Error ? error.message : "推理失败",
+              _logs: logs,
+            });
+          } finally {
+            if (!clientCanceled) controller.close();
+          }
+        })();
+      },
+      cancel() {
+        clientCanceled = true;
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
 
   try {
-    // 分步模式
-    if (typeof body.step === "string" && isStepName(body.step)) {
-      const out: StepOutput = await runStep({
-        query,
-        deviceContext: deviceContext as Record<string, unknown>,
-        priorSteps: (body.priorSteps as Record<string, unknown>) ?? undefined,
-        userAnswers:
-          (body.userAnswers as Record<number, string> | undefined) ?? undefined,
-        genMode:
-          (body.genMode as "ir" | "semantic" | undefined) ?? undefined,
-        step7Result: body.step7Result,
-        name: body.step,
-        mock: useMock,
-        onLog,
-      });
-      return NextResponse.json({ ...out, _mock: useMock, _logs: logs });
-    }
-
-    // 全流程模式
-    const result: InferResponse = await runInference({
-      query,
-      deviceContext: deviceContext as Record<string, unknown>,
-      mock: useMock,
-      onLog,
-    });
-    return NextResponse.json({ ...result, _mock: useMock, _logs: logs });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "推理失败";
-    return NextResponse.json({ error: message, _logs: logs }, { status: 500 });
+    const output = await run();
+    return NextResponse.json({ ...output, _mock: !hasAnyLLMKey(), _logs: logs });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "推理失败", _logs: logs },
+      { status: 500 },
+    );
   }
 }

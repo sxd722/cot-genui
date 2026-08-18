@@ -35,6 +35,10 @@ export async function executeTool(ctx: ToolContext): Promise<ToolResult> {
   const adapter = action.toolCall?.adapterId ?? "";
   const op = action.toolCall?.operation ?? "";
 
+  if (adapter === "system.browser.open" && op === "open") {
+    return openExternalUrl(ctx);
+  }
+
   // 文件选择
   if (adapter === "system.file.pick" && op === "document") {
     return pickFile();
@@ -66,6 +70,25 @@ export async function executeTool(ctx: ToolContext): Promise<ToolResult> {
 /* ------------------------------------------------------------------ */
 /*  具体实现                                                           */
 /* ------------------------------------------------------------------ */
+
+function openExternalUrl(ctx: ToolContext): ToolResult {
+  try {
+    const url = new URL(String(ctx.action.externalUrl ?? ""));
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("不支持的 URL scheme");
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
+    return {
+      outcome: "success",
+      stateUpdates: { "strings.statusMessage": `已打开 ${url.hostname}` },
+      message: `已打开 ${url.hostname}`,
+    };
+  } catch {
+    return {
+      outcome: "error",
+      stateUpdates: { "strings.errorMessage": "外部链接无效" },
+      message: "外部链接无效",
+    };
+  }
+}
 
 /** 文件选择：打开文件选择器，返回文件名 */
 async function pickFile(): Promise<ToolResult> {

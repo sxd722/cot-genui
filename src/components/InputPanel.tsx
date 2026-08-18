@@ -11,6 +11,12 @@ export function InputPanel() {
     selectPreset,
     contextText,
     setContextText,
+    customContextText,
+    setCustomContextText,
+    profileStatus,
+    profileDigest,
+    profileError,
+    ensureProfileDigest,
     reset,
   } = useInferStore();
 
@@ -54,6 +60,58 @@ export function InputPanel() {
         <p className="text-[11px] leading-snug text-zinc-500 dark:text-zinc-500">
           {deviceContext.description}
         </p>
+      </div>
+
+      <div className="rounded-md border border-zinc-200 bg-white/70 p-2 text-[11px] dark:border-zinc-800 dark:bg-zinc-900/70">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">通用画像索引</span>
+          <button
+            onClick={() => void ensureProfileDigest()}
+            disabled={profileStatus === "compressing"}
+            className="rounded border border-zinc-300 px-2 py-0.5 text-[10px] text-zinc-600 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400"
+          >
+            {profileStatus === "compressing" ? "压缩中…" : profileStatus === "ready" ? "已缓存" : profileStatus === "degraded" ? "降级目录" : "生成画像"}
+          </button>
+        </div>
+        {profileError && <p className="mt-1 text-rose-500">{profileError}</p>}
+        {profileDigest && (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-zinc-500">{profileDigest.domains.length} 个领域 · {profileDigest.salientSignals.length} 条显著信号</summary>
+            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-zinc-100 p-1.5 text-[9px] dark:bg-zinc-950">{JSON.stringify(profileDigest, null, 2)}</pre>
+          </details>
+        )}
+      </div>
+
+      {/* 自定义上下文输入 */}
+      <div className="rounded-md border border-indigo-200 bg-indigo-50/50 p-2 dark:border-indigo-900 dark:bg-indigo-950/30">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-medium text-[11px] text-indigo-700 dark:text-indigo-400">
+            ✨ 自定义个人上下文（自由文本）
+          </span>
+          {customContextText.trim().length > 20 && (
+            <button
+              onClick={() => void ensureProfileDigest()}
+              disabled={profileStatus === "compressing"}
+              className="shrink-0 rounded border border-indigo-300 bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white disabled:opacity-50 dark:border-indigo-700"
+            >
+              {profileStatus === "compressing" ? "深度分析中…" : "🧠 画像索引"}
+            </button>
+          )}
+        </div>
+        <textarea
+          value={customContextText}
+          onChange={(e) => setCustomContextText(e.target.value)}
+          placeholder={"用自然语言描述你的个人上下文，例如：\n30岁前端工程师，在上海浦东工作7年，月入2.8万，已婚有个3岁女儿，有房贷，预算敏感但消费风格偏舒适…\n\n默认模型会深度分析这段文本并生成画像索引。"}
+          rows={5}
+          spellCheck={false}
+          className="mt-1.5 w-full resize-y rounded border border-indigo-200 bg-white/80 px-2 py-1.5 text-[11px] leading-relaxed text-zinc-800 outline-none focus:border-indigo-500 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-zinc-200"
+        />
+        {customContextText.trim().length > 0 && customContextText.trim().length <= 20 && (
+          <p className="mt-0.5 text-[9px] text-zinc-400">至少输入 20 字符才能生成画像索引</p>
+        )}
+        {customContextText.trim().length > 20 && (
+          <p className="mt-0.5 text-[9px] text-indigo-400">已输入 {customContextText.trim().length} 字 · 点击“画像索引”用默认 Groq 模型深度分析</p>
+        )}
       </div>
 
       {/* JSON 编辑 */}

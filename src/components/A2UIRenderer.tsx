@@ -26,6 +26,13 @@ interface A2UIComponent {
   options?: unknown[];
   tabs?: { title: string; child: string }[];
   weight?: number;
+  title?: string;
+  subtitle?: string;
+  detail?: string;
+  unit?: string;
+  tone?: string;
+  icon?: string;
+  items?: unknown[];
   [key: string]: unknown;
 }
 
@@ -69,6 +76,7 @@ export function A2UIRenderer({ messages }: { messages: unknown[] }) {
       const fc = action.functionCall;
       if (fc.call === "openUrl" && fc.args?.url) {
         setActionLog(`🔗 openUrl: ${fc.args.url}`);
+        window.open(String(fc.args.url), "_blank", "noopener,noreferrer");
       } else {
         setActionLog(`⚙️ ${fc.call}(${fc.args ? JSON.stringify(fc.args) : ""})`);
       }
@@ -204,6 +212,62 @@ function renderComponent(
       );
     }
 
+    case "Hero":
+      return (
+        <div key={comp.id} className="rounded-xl border border-cyan-300/15 bg-gradient-to-br from-cyan-300/15 via-indigo-400/10 to-transparent p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              {comp.label && <span className="text-[9px] uppercase tracking-[0.16em] text-cyan-300/70">{String(comp.label)}</span>}
+              <div className="mt-0.5 text-lg font-semibold leading-tight text-white">{String(comp.title ?? comp.text ?? "")}</div>
+              {comp.subtitle && <div className="mt-1 text-[11px] leading-relaxed text-white/60">{String(comp.subtitle)}</div>}
+            </div>
+            {comp.icon && <span className="text-2xl">{String(comp.icon)}</span>}
+          </div>
+        </div>
+      );
+
+    case "Metric":
+      return (
+        <div key={comp.id} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.06] p-2.5">
+          <div className="text-[9px] uppercase tracking-wide text-white/40">{String(comp.label ?? comp.title ?? "指标")}</div>
+          <div className="mt-0.5 text-xl font-semibold text-white">
+            {String(resolveDynamic(comp.value, dataModel) ?? "—")}
+            {comp.unit && <span className="ml-1 text-[10px] font-normal text-white/45">{String(comp.unit)}</span>}
+          </div>
+          {comp.detail && <div className="mt-0.5 text-[9px] text-white/45">{String(comp.detail)}</div>}
+        </div>
+      );
+
+    case "Progress": {
+      const value = Number(resolveDynamic(comp.value, dataModel) ?? 0);
+      const max = Number(comp.max ?? 100) || 100;
+      const percent = Math.max(0, Math.min(100, (value / max) * 100));
+      return (
+        <div key={comp.id} className="rounded-lg bg-white/[0.04] p-2.5">
+          <div className="mb-1.5 flex justify-between text-[10px] text-white/65">
+            <span>{String(comp.label ?? comp.title ?? "进度")}</span><span>{Math.round(percent)}%</span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-indigo-400" style={{ width: `${percent}%` }} /></div>
+          {comp.detail && <div className="mt-1 text-[9px] text-white/40">{String(comp.detail)}</div>}
+        </div>
+      );
+    }
+
+    case "Badge":
+      return <span key={comp.id} className="inline-flex w-fit rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[9px] font-medium text-cyan-200">{String(comp.text ?? comp.label ?? comp.value ?? "")}</span>;
+
+    case "Timeline": {
+      const items = Array.isArray(comp.items) ? comp.items : [];
+      return (
+        <div key={comp.id} className="space-y-2">
+          {items.map((item, index) => {
+            const row = item && typeof item === "object" ? item as Record<string, unknown> : { title: item };
+            return <div key={index} className="relative border-l border-cyan-300/25 pl-3"><span className="absolute -left-1 top-1 h-2 w-2 rounded-full bg-cyan-300"/><div className="text-[9px] text-cyan-300/70">{String(row.time ?? "")}</div><div className="text-[11px] font-medium text-white/85">{String(row.title ?? row.label ?? "")}</div>{row.detail != null && <div className="text-[9px] text-white/45">{String(row.detail)}</div>}</div>;
+          })}
+        </div>
+      );
+    }
+
     case "Button": {
       const variantCls = buttonVariant(comp.variant);
       return (
@@ -272,29 +336,45 @@ function renderComponent(
     }
 
     case "Tabs": {
-      const tabs = comp.tabs ?? [];
-      const [active, setActive] = useState(0);
-      return (
-        <div key={comp.id}>
-          <div className="flex gap-1 border-b border-white/10">
-            {tabs.map((t, i) => (
-              <button
-                key={i}
-                onClick={() => setActive(i)}
-                className={`px-2 py-1 text-[10px] ${i === active ? "border-b-2 border-[#D7AE59] text-[#D7AE59]" : "text-white/50"}`}
-              >
-                {t.title}
-              </button>
-            ))}
-          </div>
-          <div className="pt-1.5">{renderChild(tabs[active]?.child)}</div>
-        </div>
-      );
+      return <A2UITabs key={comp.id} comp={comp} all={all} dataModel={dataModel} onAction={onAction} />;
     }
 
     default:
       return <div key={comp.id} className="text-[9px] text-zinc-500">[{comp.component}]</div>;
   }
+}
+
+function A2UITabs({
+  comp,
+  all,
+  dataModel,
+  onAction,
+}: {
+  comp: A2UIComponent;
+  all: A2UIComponent[];
+  dataModel: Record<string, unknown>;
+  onAction: (action: A2UIComponent["action"]) => void;
+}) {
+  const tabs = comp.tabs ?? [];
+  const [active, setActive] = useState(0);
+  const selected = tabs[active];
+  const child = selected ? all.find((candidate) => candidate.id === selected.child) : undefined;
+  return (
+    <div>
+      <div className="flex gap-1 border-b border-white/10">
+        {tabs.map((tab, index) => (
+          <button
+            key={index}
+            onClick={() => setActive(index)}
+            className={`px-2 py-1 text-[10px] ${index === active ? "border-b-2 border-[#D7AE59] text-[#D7AE59]" : "text-white/50"}`}
+          >
+            {tab.title}
+          </button>
+        ))}
+      </div>
+      <div className="pt-1.5">{child ? renderComponent(child, all, dataModel, onAction) : null}</div>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -568,6 +648,36 @@ export function renderA2UIIframe(messages: unknown[]): string {
     color: #0a0c16; border-color: transparent;
     box-shadow: 0 0 12px var(--accent-glow);
   }
+
+  /* Rich semantic components compiled from CardPlan */
+  .a2ui-hero {
+    padding: 14px; border-radius: 18px;
+    border: 1px solid rgba(110,231,255,0.16);
+    background: linear-gradient(135deg, rgba(110,231,255,0.14), rgba(129,140,248,0.10) 55%, rgba(255,255,255,0.02));
+    box-shadow: inset 0 1px rgba(255,255,255,0.10);
+  }
+  .a2ui-hero-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+  .a2ui-hero-label { font-size: 9px; color: rgba(110,231,255,0.72); text-transform: uppercase; letter-spacing: .15em; }
+  .a2ui-hero-title { margin-top: 3px; font-size: 20px; line-height: 1.2; font-weight: 700; color: #fff; }
+  .a2ui-hero-subtitle { margin-top: 6px; font-size: 11px; line-height: 1.5; color: var(--on-glass-dim); }
+  .a2ui-hero-icon { font-size: 26px; }
+  .a2ui-metric { min-width: 0; flex: 1; padding: 10px; border-radius: 14px; background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.09); }
+  .a2ui-metric-label { font-size: 9px; color: var(--on-glass-muted); text-transform: uppercase; letter-spacing: .06em; }
+  .a2ui-metric-value { margin-top: 2px; font-size: 22px; font-weight: 700; color: #fff; }
+  .a2ui-metric-unit { margin-left: 4px; font-size: 10px; font-weight: 400; color: var(--on-glass-dim); }
+  .a2ui-metric-detail { margin-top: 2px; font-size: 9px; color: var(--on-glass-muted); }
+  .a2ui-progress { padding: 10px; border-radius: 14px; background: rgba(255,255,255,.04); }
+  .a2ui-progress-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 10px; color: var(--on-glass-dim); }
+  .a2ui-progress-track { height: 6px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.09); }
+  .a2ui-progress-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #818cf8); box-shadow: 0 0 10px var(--accent-glow); }
+  .a2ui-progress-detail { margin-top: 5px; font-size: 9px; color: var(--on-glass-muted); }
+  .a2ui-badge { display: inline-flex; width: fit-content; padding: 3px 9px; border-radius: 99px; border: 1px solid rgba(110,231,255,.20); background: rgba(110,231,255,.10); color: #bff6ff; font-size: 9px; font-weight: 600; }
+  .a2ui-timeline { display: flex; flex-direction: column; gap: 9px; }
+  .a2ui-timeline-item { position: relative; margin-left: 4px; padding-left: 13px; border-left: 1px solid rgba(110,231,255,.24); }
+  .a2ui-timeline-item::before { content: ''; position: absolute; left: -4px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+  .a2ui-timeline-time { font-size: 9px; color: rgba(110,231,255,.68); }
+  .a2ui-timeline-title { font-size: 11px; font-weight: 600; color: var(--on-glass); }
+  .a2ui-timeline-detail { margin-top: 1px; font-size: 9px; color: var(--on-glass-muted); }
 
   /* Toast — floating glass pill */
   #a2ui-toast {
@@ -891,6 +1001,54 @@ export function renderA2UIIframe(messages: unknown[]): string {
         var v = c.variant || 'body';
         el.className = 'a2ui-text' + (v !== 'body' ? '-' + v : '');
         el.textContent = String(resolveVal(c.text) ?? '');
+        return el;
+      }
+      case 'Hero': {
+        var el = document.createElement('div');
+        el.className = 'a2ui-hero';
+        var top = document.createElement('div');
+        top.className = 'a2ui-hero-top';
+        var copy = document.createElement('div');
+        if (c.label) { var label = document.createElement('div'); label.className = 'a2ui-hero-label'; label.textContent = String(c.label); copy.appendChild(label); }
+        var title = document.createElement('div'); title.className = 'a2ui-hero-title'; title.textContent = String(c.title || c.text || ''); copy.appendChild(title);
+        if (c.subtitle) { var subtitle = document.createElement('div'); subtitle.className = 'a2ui-hero-subtitle'; subtitle.textContent = String(c.subtitle); copy.appendChild(subtitle); }
+        top.appendChild(copy);
+        if (c.icon) { var icon = document.createElement('span'); icon.className = 'a2ui-hero-icon'; icon.textContent = String(c.icon); top.appendChild(icon); }
+        el.appendChild(top);
+        return el;
+      }
+      case 'Metric': {
+        var el = document.createElement('div'); el.className = 'a2ui-metric';
+        var label = document.createElement('div'); label.className = 'a2ui-metric-label'; label.textContent = String(c.label || c.title || '指标'); el.appendChild(label);
+        var value = document.createElement('div'); value.className = 'a2ui-metric-value'; value.textContent = String(resolveVal(c.value) ?? '—');
+        if (c.unit) { var unit = document.createElement('span'); unit.className = 'a2ui-metric-unit'; unit.textContent = String(c.unit); value.appendChild(unit); }
+        el.appendChild(value);
+        if (c.detail) { var detail = document.createElement('div'); detail.className = 'a2ui-metric-detail'; detail.textContent = String(c.detail); el.appendChild(detail); }
+        return el;
+      }
+      case 'Progress': {
+        var el = document.createElement('div'); el.className = 'a2ui-progress';
+        var numeric = Number(resolveVal(c.value) || 0); var max = Number(c.max || 100) || 100; var percent = Math.max(0, Math.min(100, numeric / max * 100));
+        var head = document.createElement('div'); head.className = 'a2ui-progress-head';
+        var label = document.createElement('span'); label.textContent = String(c.label || c.title || '进度');
+        var number = document.createElement('span'); number.textContent = Math.round(percent) + '%'; head.appendChild(label); head.appendChild(number); el.appendChild(head);
+        var track = document.createElement('div'); track.className = 'a2ui-progress-track'; var fill = document.createElement('div'); fill.className = 'a2ui-progress-fill'; fill.style.width = percent + '%'; track.appendChild(fill); el.appendChild(track);
+        if (c.detail) { var detail = document.createElement('div'); detail.className = 'a2ui-progress-detail'; detail.textContent = String(c.detail); el.appendChild(detail); }
+        return el;
+      }
+      case 'Badge': {
+        var el = document.createElement('span'); el.className = 'a2ui-badge'; el.textContent = String(c.text || c.label || resolveVal(c.value) || ''); return el;
+      }
+      case 'Timeline': {
+        var el = document.createElement('div'); el.className = 'a2ui-timeline';
+        (c.items || []).forEach(function(item) {
+          var row = typeof item === 'object' && item ? item : { title: item };
+          var node = document.createElement('div'); node.className = 'a2ui-timeline-item';
+          if (row.time) { var time = document.createElement('div'); time.className = 'a2ui-timeline-time'; time.textContent = String(row.time); node.appendChild(time); }
+          var title = document.createElement('div'); title.className = 'a2ui-timeline-title'; title.textContent = String(row.title || row.label || ''); node.appendChild(title);
+          if (row.detail) { var detail = document.createElement('div'); detail.className = 'a2ui-timeline-detail'; detail.textContent = String(row.detail); node.appendChild(detail); }
+          el.appendChild(node);
+        });
         return el;
       }
       case 'Button': {

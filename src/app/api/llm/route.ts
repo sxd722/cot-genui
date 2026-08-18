@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createLLMClient } from "@/lib/llm";
+import { createLLMClient, defaultLLMTarget, hasAnyLLMKey } from "@/lib/llm";
 
 /**
  * POST /api/llm
@@ -21,19 +21,20 @@ export async function POST(request: Request) {
   }
 
   // 无 API key 时返回 mock
-  if (!process.env.LLM_API_KEY) {
+  if (!hasAnyLLMKey()) {
     return NextResponse.json({
-      text: "（mock）当前为模拟回复。配置 LLM_API_KEY 后将调用真实模型。",
+      text: "（mock）当前为模拟回复。配置 GROQ_API_KEY 或 LLM_API_KEY 后将调用真实模型。",
     });
   }
 
   try {
-    const client = createLLMClient();
-    const model = process.env.LLM_MODEL ?? "gpt-4o-mini";
+    const target = defaultLLMTarget();
+    const client = createLLMClient(target.provider);
     const completion = await client.chat.completions.create({
-      model,
+      model: target.model,
       messages: [{ role: "user", content: prompt }],
       max_tokens: 300,
+      ...(target.provider === "groq" ? { reasoning_effort: "none" } : {}),
     });
     const text = completion.choices[0]?.message?.content ?? "";
     return NextResponse.json({ text });

@@ -141,8 +141,10 @@ function DslCardHostInner({ artifact }: { artifact: CardArtifact }) {
     const card = artifact.dsl.cards.find((c) => c.id === state.currentCardId);
     const action = card?.actions.find((x) => x.id === pendingAction);
     if (!action?.toolCall) return;
-    setToolMessage("执行中…");
     let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setToolMessage("执行中…");
+    });
     executeTool({ action, state: state.state, cardId: state.currentCardId })
       .then((result) => {
         if (cancelled) return;

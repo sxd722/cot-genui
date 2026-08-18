@@ -7,17 +7,29 @@
 
 import type {
   CardArtifact,
-  Card,
   Action,
   Binding,
   FlowCard,
 } from "./types";
 import { FLOW_VERSION, DSL_VERSION } from "./types";
-import { isKnownDataPath, findTool } from "./catalogs";
+import { findTool } from "./catalogs";
 import type { ValidationResult } from "./types";
 
-/** 主入口：校验一个 CardArtifact，返回 { valid, errors[] } */
+/**
+ * 主入口：校验器是渲染前的容错边界，任何畸形模型产物都只能返回诊断，不能让页面崩溃。
+ */
 export function validateArtifact(artifact: unknown): ValidationResult {
+  try {
+    return validateArtifactInternal(artifact);
+  } catch (error) {
+    return {
+      valid: false,
+      errors: [`校验器遇到畸形 artifact: ${error instanceof Error ? error.message : String(error)}`],
+    };
+  }
+}
+
+function validateArtifactInternal(artifact: unknown): ValidationResult {
   const errors: string[] = [];
 
   // 前置：必须是 object
@@ -121,10 +133,12 @@ export function validateArtifact(artifact: unknown): ValidationResult {
     if (c?.actions) {
       const blockIds = (c.blocks ?? []).map((b) => b?.id).filter(Boolean);
       const blockActionIds = new Set((c.blocks ?? []).map((b) => b?.actionId).filter(Boolean));
-      const isBlockInternal = (aid: string) =>
-        blockActionIds.has(aid) ||
-        blockIds.some((bid) => aid.startsWith(`${bid}-pick-`));
-      const visibleCount = c.actions.filter((a) => !isBlockInternal(a.id)).length;
+      const isBlockInternal = (aid: unknown) =>
+        typeof aid === "string" && (
+          blockActionIds.has(aid) ||
+          blockIds.some((bid) => typeof bid === "string" && aid.startsWith(`${bid}-pick-`))
+        );
+      const visibleCount = c.actions.filter((a) => !isBlockInternal(a?.id)).length;
       if (visibleCount > 3) {
         errors.push(`卡片 ${c.id}: 可见 action 数量 ${visibleCount} 超过上限 3`);
       }
@@ -187,6 +201,10 @@ const VALID_NAMESPACES = ["strings.", "numbers.", "booleans.", "stringLists.", "
 
 function checkBinding(b: Binding | undefined, label: string, errors: string[]) {
   if (!b || !b.path) return; // 省略或空 path 用默认值/fallback，不报错
+  if (typeof b.path !== "string") {
+    errors.push(`${label}: path 必须是字符串`);
+    return;
+  }
   // 命名空间格式校验：path 必须以合法命名空间开头（动态 state key 也合法）
   const nsOk = VALID_NAMESPACES.some((ns) => b.path.startsWith(ns));
   if (!nsOk) {
