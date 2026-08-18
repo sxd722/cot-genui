@@ -120,7 +120,7 @@ export interface IRMissingInfo {
 /** 列表项（核心：可带 onSelect 表达数据流） */
 export interface IRListItem {
   label: string;
-  /** 列表项的补充说明，A2UI 可展开为副文本。 */
+  /** 列表项的补充说明，OpenUI 可展开为副文本。 */
   detail?: string;
   /** 点击这一项发生什么——这是动态数据流的来源 */
   onSelect?: IRSelectFlow;

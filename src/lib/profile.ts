@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import type OpenAI from "openai";
-import { createLLMClient, extractJson } from "@/lib/llm";
+import { createLLMClient, defaultLLMTarget, extractJson, hasAnyLLMKey } from "@/lib/llm";
 import type { ProfileDigest, ProfileDomain, RetrievedEvidence, RetrievalRequest } from "@/lib/profileTypes";
 
 interface FlatRecord {
@@ -105,23 +105,25 @@ function deterministicDigest(context: Record<string, unknown>, hash: string): Pr
 }
 
 async function jsonCompletion(system: string, user: unknown): Promise<Record<string, unknown>> {
-  const client = createLLMClient();
+  const target = defaultLLMTarget();
+  const client = createLLMClient(target.provider);
   const params = {
-    model: "glm-5.2",
+    model: target.model,
     messages: [
       { role: "system" as const, content: `${system}\n只返回合法 JSON，不要输出 markdown。` },
       { role: "user" as const, content: JSON.stringify(user) },
     ],
     response_format: { type: "json_object" as const },
     temperature: 0.1,
-    thinking: { type: "disabled" },
-    do_sample: true,
+    ...(target.provider === "groq"
+      ? { reasoning_effort: "none" }
+      : { thinking: { type: "disabled" }, do_sample: true }),
   } as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming;
   const completion = await client.chat.completions.create(params);
   return extractJson(completion.choices[0]?.message?.content ?? "") as Record<string, unknown>;
 }
 
-/** 使用 GLM-5.2 thinking 对自由文本个人上下文做画像索引 */
+/** 使用默认 provider 的 reasoning 模式对自由文本个人上下文做画像索引 */
 export async function compressFreeText(freeText: string): Promise<{ digest: ProfileDigest; cacheHit: boolean }> {
   const hash = createHash("sha256").update(freeText).digest("hex");
   const cacheKey = `freetext:${hash}`;
@@ -149,14 +151,15 @@ export async function compressFreeText(freeText: string): Promise<{ digest: Prof
     degraded: true,
   };
 
-  if (!process.env.LLM_API_KEY) {
+  if (!hasAnyLLMKey()) {
     return { digest: fallback, cacheHit: false };
   }
 
   try {
-    const client = createLLMClient();
+    const target = defaultLLMTarget();
+    const client = createLLMClient(target.provider);
     const params = {
-      model: "glm-5.2",
+      model: target.model,
       messages: [
         {
           role: "system" as const,
@@ -191,7 +194,9 @@ export async function compressFreeText(freeText: string): Promise<{ digest: Prof
       ],
       response_format: { type: "json_object" as const },
       temperature: 0.15,
-      thinking: { type: "enabled", include_braincontent: false },
+      ...(target.provider === "groq"
+        ? { reasoning_effort: "default", reasoning_format: "hidden" }
+        : { thinking: { type: "enabled", include_braincontent: false } }),
     } as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming;
 
     const completion = await client.chat.completions.create(params);
@@ -218,7 +223,7 @@ export async function compressProfile(context: Record<string, unknown>): Promise
   const cached = profileCache.get(cacheKey);
   if (cached) return { digest: cached, cacheHit: true };
   const fallback = deterministicDigest(context, hash);
-  if (!process.env.LLM_API_KEY) {
+  if (!hasAnyLLMKey()) {
     return { digest: fallback, cacheHit: false };
   }
 

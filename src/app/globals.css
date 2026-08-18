@@ -24,3 +24,30 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* OpenUI 官方组件内部会读取通用 foreground/background 变量。右侧预览固定
+   使用浅色画布，因此在这里隔离宿主主题，避免系统深色模式产生白底白字。 */
+.openui-host {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --openui-background: #f4f4f5;
+  --openui-foreground: #ffffff;
+  --openui-popover-background: #ffffff;
+  --openui-sunk-light: rgb(24 24 27 / 0.02);
+  --openui-sunk: rgb(24 24 27 / 0.04);
+  --openui-sunk-deep: rgb(24 24 27 / 0.08);
+  --openui-highlight-subtle: rgb(24 24 27 / 0.02);
+  --openui-highlight: rgb(24 24 27 / 0.04);
+  --openui-text-neutral-primary: #18181b;
+  --openui-text-neutral-secondary: rgb(24 24 27 / 0.62);
+  --openui-text-neutral-tertiary: rgb(24 24 27 / 0.36);
+  --openui-text-neutral-link: #18181b;
+  --openui-text-info-primary: #1d4ed8;
+  --openui-text-success-primary: #15803d;
+  --openui-text-alert-primary: #a16207;
+  --openui-text-danger-primary: #be123c;
+  --openui-border-default: rgb(24 24 27 / 0.08);
+  --openui-border-interactive: rgb(24 24 27 / 0.14);
+  --openui-border-interactive-emphasis: rgb(24 24 27 / 0.32);
+  color-scheme: light;
+}

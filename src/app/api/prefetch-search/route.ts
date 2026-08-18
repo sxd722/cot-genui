@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { runSearchPrefetch } from "@/lib/pipeline";
-import type { CallLog } from "@/lib/llm";
+import { hasAnyLLMKey, type CallLog } from "@/lib/llm";
 import type { InferenceState } from "@/lib/pipelineTypes";
 
 /**
@@ -30,10 +30,10 @@ export async function POST(request: Request) {
     const result = await runSearchPrefetch({
       query: body.query,
       inferenceState: body.inferenceState as InferenceState,
-      mock: !process.env.LLM_API_KEY,
+      mock: !hasAnyLLMKey(),
       onLog: (entry) => logs.push(entry),
     });
-    return NextResponse.json({ ...result, _mock: !process.env.LLM_API_KEY, _logs: logs });
+    return NextResponse.json({ ...result, _mock: !hasAnyLLMKey(), _logs: logs });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "预取搜索失败", _logs: logs },

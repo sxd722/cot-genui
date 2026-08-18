@@ -4,6 +4,7 @@ import type { CallLog } from "@/lib/llm";
 import type { CardPlan } from "@/dsl/modules";
 import { MODEL_PROFILES, type InferenceState, type ModelProfile } from "@/lib/pipelineTypes";
 import type { ProfileDigest } from "@/lib/profileTypes";
+import { hasAnyLLMKey } from "@/lib/llm";
 
 const isStepName = (value: string): value is PipelineStepName =>
   (PIPELINE_STEPS as readonly string[]).includes(value);
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
   }
 
   const logs: CallLog[] = [];
-  const run = (onStreamDelta?: (cumulativeChars: number) => void) => runPipelineStep({
+  const run = (onStreamDelta?: (delta: string, cumulativeChars: number) => void) => runPipelineStep({
     name: body.step as PipelineStepName,
     query: body.query as string,
     deviceContext: body.deviceContext as Record<string, unknown>,
@@ -40,13 +41,13 @@ export async function POST(request: Request) {
     profileDigest: body.profileDigest as ProfileDigest | undefined,
     modelProfile: isModelProfile(body.modelProfile) ? body.modelProfile : undefined,
     prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
-    stream: body.step === "a2ui_generate" && body.stream === true,
+    stream: body.step === "openui_generate" && body.stream === true,
     onStreamDelta,
-    mock: !process.env.LLM_API_KEY,
+    mock: !hasAnyLLMKey(),
     onLog: (entry) => logs.push(entry),
   });
 
-  if (body.step === "a2ui_generate" && body.stream === true) {
+  if (body.step === "openui_generate" && body.stream === true) {
     const encoder = new TextEncoder();
     const encodeEvent = (event: string, data: unknown) =>
       encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -63,10 +64,10 @@ export async function POST(request: Request) {
         };
         void (async () => {
           try {
-            const output = await run((cumulativeChars) => {
-              emit("delta", { chars: cumulativeChars });
+            const output = await run((delta, cumulativeChars) => {
+              emit("delta", { delta, chars: cumulativeChars });
             });
-            emit("done", { ...output, _mock: !process.env.LLM_API_KEY, _logs: logs });
+            emit("done", { ...output, _mock: !hasAnyLLMKey(), _logs: logs });
           } catch (error) {
             emit("error", {
               error: error instanceof Error ? error.message : "推理失败",
@@ -92,7 +93,7 @@ export async function POST(request: Request) {
 
   try {
     const output = await run();
-    return NextResponse.json({ ...output, _mock: !process.env.LLM_API_KEY, _logs: logs });
+    return NextResponse.json({ ...output, _mock: !hasAnyLLMKey(), _logs: logs });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "推理失败", _logs: logs },

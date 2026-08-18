@@ -101,7 +101,7 @@ export function InputPanel() {
         <textarea
           value={customContextText}
           onChange={(e) => setCustomContextText(e.target.value)}
-          placeholder={"用自然语言描述你的个人上下文，例如：\n30岁前端工程师，在上海浦东工作7年，月入2.8万，已婚有个3岁女儿，有房贷，预算敏感但消费风格偏舒适…\n\nGLM-5.2 thinking 会深度分析这段文本生成画像索引。"}
+          placeholder={"用自然语言描述你的个人上下文，例如：\n30岁前端工程师，在上海浦东工作7年，月入2.8万，已婚有个3岁女儿，有房贷，预算敏感但消费风格偏舒适…\n\n默认模型会深度分析这段文本并生成画像索引。"}
           rows={5}
           spellCheck={false}
           className="mt-1.5 w-full resize-y rounded border border-indigo-200 bg-white/80 px-2 py-1.5 text-[11px] leading-relaxed text-zinc-800 outline-none focus:border-indigo-500 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-zinc-200"
@@ -110,7 +110,7 @@ export function InputPanel() {
           <p className="mt-0.5 text-[9px] text-zinc-400">至少输入 20 字符才能生成画像索引</p>
         )}
         {customContextText.trim().length > 20 && (
-          <p className="mt-0.5 text-[9px] text-indigo-400">已输入 {customContextText.trim().length} 字 · 点击“画像索引”用 GLM-5.2 thinking 深度分析</p>
+          <p className="mt-0.5 text-[9px] text-indigo-400">已输入 {customContextText.trim().length} 字 · 点击“画像索引”用默认 Groq 模型深度分析</p>
         )}
       </div>
 

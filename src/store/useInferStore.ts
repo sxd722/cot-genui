@@ -10,6 +10,7 @@ import type { CardPlan, CompileNotice } from "@/dsl/modules";
 import type { ProfileDigest } from "@/lib/profileTypes";
 
 export type StepStatus = "pending" | "loading" | "done" | "error";
+export type ResultView = "dsl" | "cards" | "raw" | "semantic" | "blueprint" | "openui-source" | "openui";
 
 export interface StepLog {
   ts: string;
@@ -53,8 +54,12 @@ interface InferApiResponse {
   cardPlan?: CardPlan;
   semanticMarkdown?: string;
   reasoningGraph?: string;
-  a2uiJsonl?: unknown[];
-  a2uiBlueprint?: unknown;
+  openuiCode?: string;
+  openuiDiagnostics?: {
+    coverage: { required: number; matched: number; missing: string[] };
+    parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
+    repaired: boolean;
+  };
   durationMs?: number;
   timing?: StepTiming;
   model?: string;
@@ -76,7 +81,7 @@ export const STEP_LABEL: Record<StepName, string> = {
   clarification: "③ 不确定性提问",
   context_enrichment: "④ 总结与能力补齐",
   card_plan_generate: "⑤ CardPlan 生成",
-  a2ui_generate: "⑥ A2UI 生成",
+  openui_generate: "⑥ OpenUI 生成",
 };
 
 interface InferState {
@@ -100,8 +105,9 @@ interface InferState {
   cardPlan: CardPlan | null;
   semanticMarkdown: string | null;
   reasoningGraph: string | null;
-  a2uiJsonl: unknown[] | null;
-  a2uiBlueprint: unknown | null;
+  openuiCode: string | null;
+  openuiDiagnostics: InferApiResponse["openuiDiagnostics"] | null;
+  rightView: ResultView | null;
   compiledArtifact: unknown | null;
   compileNotices: CompileNotice[];
   enrichStatus: "idle" | "scanning" | "enriching" | "done" | "skipped";
@@ -117,6 +123,7 @@ interface InferState {
   setCustomContextText: (text: string) => void;
   answerQuestion: (index: number, value: string) => void;
   setStepModel: (name: StepName, profile: ModelProfile) => void;
+  setRightView: (view: ResultView) => void;
   ensureProfileDigest: () => Promise<ProfileDigest | null>;
   prefetchSearch: () => Promise<void>;
   continueGenerate: () => Promise<void>;
@@ -141,18 +148,18 @@ function emptySteps(): Record<StepName, StepState> {
     clarification: emptyStep(),
     context_enrichment: emptyStep(),
     card_plan_generate: emptyStep(),
-    a2ui_generate: emptyStep(),
+    openui_generate: emptyStep(),
   };
 }
 
 function defaultStepModels(): Record<StepName, ModelProfile> {
   return {
-    intent_analysis: "glm_4_7_flash",
-    evidence_resolution: "glm_4_7_flash",
-    clarification: "glm_5_2",
-    context_enrichment: "glm_5_2",
-    card_plan_generate: "glm_5_2_thinking",
-    a2ui_generate: "glm_5_2_thinking",
+    intent_analysis: "groq_qwen_3_6_27b",
+    evidence_resolution: "groq_qwen_3_6_27b",
+    clarification: "groq_qwen_3_6_27b",
+    context_enrichment: "groq_qwen_3_6_27b",
+    card_plan_generate: "groq_qwen_3_6_27b",
+    openui_generate: "groq_qwen_3_6_27b",
   };
 }
 
@@ -160,7 +167,7 @@ function clearedResult() {
   return {
     inferenceState: null,
     slots: [] as InferSlot[], conflicts: [] as InferConflict[], questions: [] as InferQuestion[],
-    result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, a2uiJsonl: null, a2uiBlueprint: null,
+    result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, rightView: null as ResultView | null,
     compiledArtifact: null, compileNotices: [] as CompileNotice[], enrichStatus: "idle" as const,
     enrichProgress: { done: 0, total: 0, current: "" }, enrichResults: [], answers: {}, runAllPaused: false,
     prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
@@ -202,7 +209,7 @@ function cacheSet(key: string, value: InferApiResponse) {
   }
 }
 
-async function readInferResponse(response: Response, onDelta: (chars: number) => void): Promise<InferApiResponse> {
+async function readInferResponse(response: Response, onDelta: (delta: string, chars: number) => void): Promise<InferApiResponse> {
   if (!response.headers.get("content-type")?.includes("text/event-stream")) {
     return response.json() as Promise<InferApiResponse>;
   }
@@ -219,8 +226,8 @@ async function readInferResponse(response: Response, onDelta: (chars: number) =>
       if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
     }
     if (!dataLines.length) return;
-    const payload = JSON.parse(dataLines.join("\n")) as InferApiResponse & { chars?: number };
-    if (event === "delta" && typeof payload.chars === "number") onDelta(payload.chars);
+    const payload = JSON.parse(dataLines.join("\n")) as InferApiResponse & { delta?: string; chars?: number };
+    if (event === "delta" && typeof payload.delta === "string" && typeof payload.chars === "number") onDelta(payload.delta, payload.chars);
     if (event === "done") donePayload = payload;
     if (event === "error") donePayload = payload;
   };
@@ -262,6 +269,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     stepModels: { ...state.stepModels, [name]: profile },
     steps: { ...state.steps, [name]: emptyStep() },
   })),
+  setRightView: (rightView) => set({ rightView }),
 
   selectPreset: (id) => {
     const preset = presets.find((item) => item.id === id);
@@ -381,7 +389,8 @@ export const useInferStore = create<InferState>((set, get) => ({
     }
 
     set((state) => ({
-      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, a2uiJsonl: null, a2uiBlueprint: null, compiledArtifact: null, compileNotices: [], enrichStatus: "idle" as const } : {}),
+      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, rightView: "dsl" as const, compiledArtifact: null, compileNotices: [], enrichStatus: "idle" as const } : {}),
+      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, rightView: "openui" as const } : {}),
       steps: { ...state.steps, [name]: { ...state.steps[name], status: "loading", streamingChars: 0, error: null, logs: [] } },
     }));
 
@@ -399,10 +408,10 @@ export const useInferStore = create<InferState>((set, get) => ({
         query, deviceContext, step: name,
         modelProfile: state.stepModels[name],
         ...(name === "intent_analysis" ? { profileDigest: ensuredProfile } : {}),
-        ...(name !== "intent_analysis" && name !== "a2ui_generate" ? { inferenceState: state.inferenceState } : {}),
+        ...(name !== "intent_analysis" && name !== "openui_generate" ? { inferenceState: state.inferenceState } : {}),
         ...(name === "context_enrichment" || name === "card_plan_generate" ? { userAnswers: state.answers } : {}),
         ...(name === "context_enrichment" && freshPrefetch ? { prefetchedSearch: freshPrefetch } : {}),
-        ...(name === "a2ui_generate" ? { cardPlan: state.cardPlan, stream: true } : {}),
+        ...(name === "openui_generate" ? { cardPlan: state.cardPlan, stream: true } : {}),
       };
       const cacheKey = `${name}|${state.stepModels[name]}|${stableStringify(requestBody)}`;
       const cached = options.useCache ? cacheGet(cacheKey) : undefined;
@@ -423,7 +432,8 @@ export const useInferStore = create<InferState>((set, get) => ({
           body: JSON.stringify(requestBody),
         });
         responseOk = response.ok;
-        data = await readInferResponse(response, (streamingChars) => set((current) => ({
+        data = await readInferResponse(response, (delta, streamingChars) => set((current) => ({
+          openuiCode: name === "openui_generate" ? `${current.openuiCode ?? ""}${delta}` : current.openuiCode,
           steps: {
             ...current.steps,
             [name]: { ...current.steps[name], streamingChars },
@@ -446,8 +456,8 @@ export const useInferStore = create<InferState>((set, get) => ({
         cardPlan: data.cardPlan ?? current.cardPlan,
         semanticMarkdown: data.semanticMarkdown ?? current.semanticMarkdown,
         reasoningGraph: data.reasoningGraph ?? current.reasoningGraph,
-        a2uiJsonl: data.a2uiJsonl ?? current.a2uiJsonl,
-        a2uiBlueprint: data.a2uiBlueprint ?? current.a2uiBlueprint,
+        openuiCode: data.openuiCode ?? current.openuiCode,
+        openuiDiagnostics: data.openuiDiagnostics ?? current.openuiDiagnostics,
         ...(name === "clarification" ? { answers: {} } : {}),
         ...(name === "card_plan_generate" && data.cardPlan ? { enrichStatus: "scanning" as const } : {}),
         steps: {
@@ -485,7 +495,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     if (get().steps.context_enrichment.status === "error") return;
     await get().runStep("card_plan_generate", { useCache: true });
     if (get().steps.card_plan_generate.status === "error") return;
-    await get().runStep("a2ui_generate", { useCache: true });
+    await get().runStep("openui_generate", { useCache: true });
   },
 
   continueGenerate: async () => {
@@ -493,7 +503,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     await get().runStep("context_enrichment", { useCache: true });
     if (get().steps.context_enrichment.status === "error") return;
     await get().runStep("card_plan_generate", { useCache: true });
-    if (get().steps.card_plan_generate.status !== "error") await get().runStep("a2ui_generate", { useCache: true });
+    if (get().steps.card_plan_generate.status !== "error") await get().runStep("openui_generate", { useCache: true });
   },
 
   reset: () => {

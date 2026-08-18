@@ -1,10 +1,16 @@
 import "server-only";
 
 import OpenAI from "openai";
-import { createLLMClient, extractJson, type CallLog } from "@/lib/llm";
+import { createLLMClient, extractJson, hasAnyLLMKey, type CallLog, type LLMProvider } from "@/lib/llm";
 import type { CardPlan } from "@/dsl/modules";
 import type { InferConflict, InferQuestion, InferSlot } from "@/lib/schemas";
-import { compileA2UIResponse, describeA2UIShape } from "@/lib/a2uiBlueprint";
+import {
+  buildOpenUIActionBindings,
+  mockOpenUIFromCardPlan,
+  normalizeOpenUIOutput,
+  OPENUI_SYSTEM_PROMPT,
+  validateOpenUIArtifact,
+} from "@/lib/openui";
 import { retrieveProfileEvidence } from "@/lib/profile";
 import type { ProfileDigest } from "@/lib/profileTypes";
 import {
@@ -31,7 +37,7 @@ interface RunInput {
   /** 暂停期预取的搜索结果：searchQuery 与 ④ 最终计算一致时注入，跳过 tool 调用 */
   prefetchedSearch?: { searchQuery: string; webSearchRaw: unknown };
   stream?: boolean;
-  onStreamDelta?: (cumulativeChars: number) => void;
+  onStreamDelta?: (delta: string, cumulativeChars: number) => void;
   mock?: boolean;
   onLog?: (entry: CallLog) => void;
 }
@@ -47,12 +53,12 @@ interface LLMResult {
 }
 
 const DEFAULT_PROFILES: Record<PipelineStepName, ModelProfile> = {
-  intent_analysis: "glm_4_7_flash",
-  evidence_resolution: "glm_4_7_flash",
-  clarification: "glm_5_2",
-  context_enrichment: "glm_5_2",
-  card_plan_generate: "glm_5_2_thinking",
-  a2ui_generate: "glm_5_2_thinking",
+  intent_analysis: "groq_qwen_3_6_27b",
+  evidence_resolution: "groq_qwen_3_6_27b",
+  clarification: "groq_qwen_3_6_27b",
+  context_enrichment: "groq_qwen_3_6_27b",
+  card_plan_generate: "groq_qwen_3_6_27b",
+  openui_generate: "groq_qwen_3_6_27b",
 };
 
 const STEP_SAMPLING: Record<PipelineStepName, { temperature: number; doSample: boolean }> = {
@@ -64,18 +70,20 @@ const STEP_SAMPLING: Record<PipelineStepName, { temperature: number; doSample: b
   context_enrichment: { temperature: 0.2, doSample: true },
   // 协议生成阶段优先结构稳定性。
   card_plan_generate: { temperature: 0, doSample: false },
-  // 视觉规划与 CardPlan 一样需要一定创造性；结构正确性由覆盖校验和编译器兜底。
-  a2ui_generate: { temperature: 0.4, doSample: true },
+  // OpenUI 需要适度视觉变化，同时优先保证语法稳定与低时延。
+  openui_generate: { temperature: 0.2, doSample: true },
 };
 
-function resolveModel(profile: ModelProfile): { model: string; thinking: boolean } {
+function resolveModel(profile: ModelProfile): { model: string; thinking: boolean; provider: LLMProvider } {
   switch (profile) {
+    case "groq_qwen_3_6_27b":
+      return { model: "qwen/qwen3.6-27b", thinking: false, provider: "groq" };
     case "glm_5_2_thinking":
-      return { model: "glm-5.2", thinking: true };
+      return { model: "glm-5.2", thinking: true, provider: "glm" };
     case "glm_5_2":
-      return { model: "glm-5.2", thinking: false };
+      return { model: "glm-5.2", thinking: false, provider: "glm" };
     case "glm_4_7_flash":
-      return { model: "glm-4.7-flash", thinking: false };
+      return { model: "glm-4.7-flash", thinking: false, provider: "glm" };
   }
 }
 
@@ -99,6 +107,7 @@ function estimateCost(model: string, usage?: TokenUsage): number | undefined {
   const configured = process.env.LLM_PRICING_JSON;
   let prices: Record<string, { input: number; output: number; cachedInput?: number }> = {
     "glm-4.7-flash": { input: 0, output: 0 },
+    "qwen/qwen3.6-27b": { input: 0.6, output: 3.0 },
   };
   if (configured) {
     try {
@@ -117,7 +126,14 @@ function estimateCost(model: string, usage?: TokenUsage): number | undefined {
   ) / 1_000_000;
 }
 
+function describeResponseShape(value: unknown): unknown {
+  if (Array.isArray(value)) return { kind: "array", length: value.length };
+  if (value && typeof value === "object") return { kind: "object", keys: Object.keys(value as Record<string, unknown>).slice(0, 20) };
+  return { kind: typeof value };
+}
+
 async function callJson(args: {
+  provider: LLMProvider;
   model: string;
   system: string;
   user: unknown;
@@ -129,19 +145,109 @@ async function callJson(args: {
   onLog?: RunInput["onLog"];
   allowModelFallback?: boolean;
   stream?: boolean;
-  onStreamDelta?: (cumulativeChars: number) => void;
+  onStreamDelta?: (delta: string, cumulativeChars: number) => void;
 }): Promise<LLMResult> {
-  const client = createLLMClient();
+  const client = createLLMClient(args.provider);
   const started = Date.now();
-  const isGlm = args.model.toLowerCase().startsWith("glm-") ||
-    (process.env.LLM_BASE_URL ?? "").toLowerCase().includes("bigmodel");
-  log(args.onLog, "request", `POST /chat/completions model=${args.model} thinking=${args.thinking ? "enabled" : "disabled"} temperature=${args.temperature} do_sample=${args.doSample}${args.webSearchQuery ? " tool=web_search" : ""}${args.stream ? " stream=true" : ""}`);
+  const isGlm = args.provider === "glm";
+  let providerSearch: unknown;
+  let searchUsage: TokenUsage | undefined;
+  let searchCost: number | undefined;
+  if (args.provider === "groq" && args.webSearchQuery) {
+    const searchStarted = Date.now();
+    log(args.onLog, "request", `Groq Compound web_search query="${args.webSearchQuery.slice(0, 60)}"`);
+    try {
+      const searchCompletion = await client.chat.completions.create({
+        model: "groq/compound",
+        messages: [
+          { role: "system", content: "Perform a current web search. Return concrete facts, entities, source URLs, and actionable official links. Do not invent URLs." },
+          { role: "user", content: args.webSearchQuery },
+        ],
+        temperature: 0.2,
+      });
+      const searchMessage = searchCompletion.choices[0]?.message as typeof searchCompletion.choices[0]["message"] & { executed_tools?: unknown };
+      searchUsage = normalizeUsage(searchCompletion.usage);
+      searchCost = estimateCost(searchCompletion.model || "groq/compound", searchUsage);
+      providerSearch = {
+        provider: "groq",
+        model: searchCompletion.model || "groq/compound",
+        content: searchMessage?.content ?? "",
+        executedTools: searchMessage?.executed_tools,
+      };
+      log(args.onLog, "response", `Groq Compound 搜索完成 ${Date.now() - searchStarted}ms`, {
+        model: searchCompletion.model,
+        usage: searchCompletion.usage,
+        executedTools: searchMessage?.executed_tools,
+      });
+    } catch (compoundError) {
+      log(args.onLog, "fallback", "Groq Compound 不可用，尝试使用 GLM 仅执行联网检索；主推理仍由 Groq Qwen 完成", {
+        error: compoundError instanceof Error ? compoundError.message : String(compoundError),
+      });
+      if (process.env.LLM_API_KEY) {
+        const glmSearchStarted = Date.now();
+        try {
+          const glmClient = createLLMClient("glm");
+          const glmSearchCompletion = await glmClient.chat.completions.create({
+            model: "glm-5.2",
+            messages: [
+              {
+                role: "system",
+                content: "你只负责执行一次当前信息联网检索。返回具体事实、实体、来源 URL 和可操作的官方链接；禁止编造 URL。只返回合法 JSON。",
+              },
+              { role: "user", content: args.webSearchQuery },
+            ],
+            response_format: { type: "json_object" },
+            temperature: 0.2,
+            thinking: { type: "disabled" },
+            do_sample: true,
+            tools: [{
+              type: "web_search",
+              web_search: {
+                enable: true,
+                search_query: args.webSearchQuery,
+                search_result: true,
+                count: 5,
+                content_size: "medium",
+              },
+            }],
+            tool_choice: "auto",
+          } as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming & {
+            thinking: { type: "disabled" };
+            do_sample: boolean;
+          });
+          const glmSearchUsage = normalizeUsage(glmSearchCompletion.usage);
+          searchUsage = addUsage(searchUsage, glmSearchUsage);
+          searchCost = (searchCost ?? 0) + (estimateCost(glmSearchCompletion.model || "glm-5.2", glmSearchUsage) ?? 0);
+          providerSearch = {
+            provider: "glm",
+            model: glmSearchCompletion.model || "glm-5.2",
+            content: glmSearchCompletion.choices[0]?.message?.content ?? "",
+            raw: (glmSearchCompletion as unknown as { web_search?: unknown }).web_search,
+          };
+          log(args.onLog, "response", `GLM 联网检索降级完成 ${Date.now() - glmSearchStarted}ms；继续交给 Groq Qwen 归纳`, {
+            model: glmSearchCompletion.model,
+            usage: glmSearchCompletion.usage,
+          });
+        } catch (glmSearchError) {
+          log(args.onLog, "fallback", "联网检索能力当前均不可用；跳过新鲜信息检索并继续 Groq Qwen 主流程", {
+            error: glmSearchError instanceof Error ? glmSearchError.message : String(glmSearchError),
+          });
+        }
+      } else {
+        log(args.onLog, "fallback", "未配置 GLM 搜索备用能力；跳过新鲜信息检索并继续 Groq Qwen 主流程");
+      }
+    }
+  }
+  const effectiveUser = providerSearch
+    ? { request: args.user, providerSearchResults: providerSearch }
+    : args.user;
+  log(args.onLog, "request", `POST /chat/completions provider=${args.provider} model=${args.model} thinking=${args.thinking ? "enabled" : "disabled"} temperature=${args.temperature} do_sample=${args.doSample}${args.webSearchQuery ? args.provider === "groq" ? providerSearch ? " search=provider-injected" : " search=unavailable" : " tool=web_search" : ""}${args.stream ? " stream=true" : ""}`);
 
   const params = {
     model: args.model,
     messages: [
       { role: "system" as const, content: `${args.system}\n只返回合法 JSON。输出结构：${args.schemaHint}` },
-      { role: "user" as const, content: JSON.stringify(args.user) },
+      { role: "user" as const, content: JSON.stringify(effectiveUser) },
     ],
     response_format: isGlm
       ? { type: "json_object" as const }
@@ -154,7 +260,10 @@ async function callJson(args: {
           ...(args.thinking ? { reasoning_effort: "high" } : {}),
         }
       : {}),
-    ...(args.webSearchQuery
+    ...(!isGlm
+      ? { reasoning_effort: args.thinking ? "default" : "none" }
+      : {}),
+    ...(isGlm && args.webSearchQuery
       ? {
           tools: [{
             type: "web_search",
@@ -191,14 +300,14 @@ async function callJson(args: {
         const delta = chunk.choices[0]?.delta?.content;
         if (typeof delta === "string" && delta.length > 0) {
           content += delta;
-          args.onStreamDelta?.(content.length);
+          args.onStreamDelta?.(delta, content.length);
         }
         if (chunk.model) responseModel = chunk.model;
         if (chunk.created) providerCreatedAt = chunk.created;
         if (chunk.usage) rawUsage = chunk.usage;
       }
       const llmMs = Date.now() - started;
-      const usage = normalizeUsage(rawUsage);
+      const usage = addUsage(searchUsage, normalizeUsage(rawUsage));
       const value = extractJson(content);
       log(args.onLog, "response", `模型流式响应完成 ${llmMs}ms`, {
         model: responseModel,
@@ -206,7 +315,7 @@ async function callJson(args: {
         usage: rawUsage,
         llmMs,
         streamedChars: content.length,
-        responseShape: describeA2UIShape(value),
+        responseShape: describeResponseShape(value),
         note: "created 是响应时间戳，不是服务端推理耗时",
       });
       return {
@@ -215,7 +324,8 @@ async function callJson(args: {
         llmMs,
         usage,
         providerCreatedAt,
-        cost: estimateCost(responseModel, usage),
+        cost: (searchCost ?? 0) + (estimateCost(responseModel, normalizeUsage(rawUsage)) ?? 0),
+        webSearch: providerSearch,
       };
     } catch (error) {
       const failedStreamMs = Date.now() - started;
@@ -228,7 +338,8 @@ async function callJson(args: {
   try {
     const completion = await client.chat.completions.create(params);
     const llmMs = Date.now() - started;
-    const usage = normalizeUsage(completion.usage);
+    const primaryUsage = normalizeUsage(completion.usage);
+    const usage = addUsage(searchUsage, primaryUsage);
     const content = completion.choices[0]?.message?.content ?? "";
     const value = extractJson(content);
     log(args.onLog, "response", `模型响应完成 ${llmMs}ms`, {
@@ -236,7 +347,7 @@ async function callJson(args: {
       created: completion.created,
       usage: completion.usage,
       llmMs,
-      responseShape: describeA2UIShape(value),
+      responseShape: describeResponseShape(value),
       webSearch: (completion as unknown as { web_search?: unknown }).web_search,
       note: "created 是响应时间戳，不是服务端推理耗时",
     });
@@ -246,8 +357,8 @@ async function callJson(args: {
       llmMs,
       usage,
       providerCreatedAt: completion.created,
-      cost: estimateCost(completion.model || args.model, usage),
-      webSearch: (completion as unknown as { web_search?: unknown }).web_search,
+      cost: (searchCost ?? 0) + (estimateCost(completion.model || args.model, primaryUsage) ?? 0),
+      webSearch: providerSearch ?? (completion as unknown as { web_search?: unknown }).web_search,
     };
   } catch (error) {
     const llmMs = Date.now() - started;
@@ -255,7 +366,121 @@ async function callJson(args: {
     const message = error instanceof Error ? error.message : String(error);
     if (args.model === "glm-4.7-flash" && args.allowModelFallback !== false && /429|访问量过大|rate.?limit/i.test(message)) {
       log(args.onLog, "fallback", "glm-4.7-flash 服务繁忙，自动改用 glm-5.2（thinking disabled）重试一次");
-      return callJson({ ...args, model: "glm-5.2", thinking: false, allowModelFallback: false });
+      return callJson({ ...args, provider: "glm", model: "glm-5.2", thinking: false, allowModelFallback: false });
+    }
+    throw error;
+  }
+}
+
+async function callText(args: {
+  provider: LLMProvider;
+  model: string;
+  system: string;
+  user: unknown;
+  thinking: boolean;
+  temperature: number;
+  doSample: boolean;
+  onLog?: RunInput["onLog"];
+  allowModelFallback?: boolean;
+  stream?: boolean;
+  onStreamDelta?: RunInput["onStreamDelta"];
+}): Promise<LLMResult> {
+  const client = createLLMClient(args.provider);
+  const started = Date.now();
+  const isGlm = args.provider === "glm";
+  log(args.onLog, "request", `POST /chat/completions provider=${args.provider} model=${args.model} thinking=${args.thinking ? "enabled" : "disabled"} temperature=${args.temperature} do_sample=${args.doSample}${args.stream ? " stream=true format=openui-lang" : " format=openui-lang"}`);
+  const params = {
+    model: args.model,
+    messages: [
+      { role: "system" as const, content: args.system },
+      { role: "user" as const, content: JSON.stringify(args.user) },
+    ],
+    temperature: args.temperature,
+    ...(isGlm
+      ? {
+          thinking: { type: args.thinking ? "enabled" : "disabled" },
+          do_sample: args.doSample,
+          ...(args.thinking ? { reasoning_effort: "high" } : {}),
+        }
+      : {}),
+    ...(!isGlm
+      ? { reasoning_effort: args.thinking ? "default" : "none" }
+      : {}),
+  } as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming & {
+    thinking?: { type: "enabled" | "disabled" };
+    do_sample?: boolean;
+    reasoning_effort?: string;
+  };
+
+  try {
+    if (args.stream) {
+      const completionStream = await client.chat.completions.create({
+        ...params,
+        stream: true,
+        stream_options: { include_usage: true },
+      } as unknown as OpenAI.ChatCompletionCreateParamsStreaming);
+      let content = "";
+      let responseModel = args.model;
+      let providerCreatedAt: number | undefined;
+      let rawUsage: OpenAI.CompletionUsage | undefined;
+      for await (const rawChunk of completionStream) {
+        const chunk = rawChunk as typeof rawChunk & { usage?: OpenAI.CompletionUsage | null };
+        const delta = chunk.choices[0]?.delta?.content;
+        if (typeof delta === "string" && delta.length > 0) {
+          content += delta;
+          args.onStreamDelta?.(delta, content.length);
+        }
+        if (chunk.model) responseModel = chunk.model;
+        if (chunk.created) providerCreatedAt = chunk.created;
+        if (chunk.usage) rawUsage = chunk.usage;
+      }
+      const llmMs = Date.now() - started;
+      const usage = normalizeUsage(rawUsage);
+      log(args.onLog, "response", `模型流式 OpenUI 响应完成 ${llmMs}ms`, {
+        model: responseModel,
+        created: providerCreatedAt,
+        usage: rawUsage,
+        llmMs,
+        streamedChars: content.length,
+      });
+      return { value: content, model: responseModel, llmMs, usage, providerCreatedAt, cost: estimateCost(responseModel, usage) };
+    }
+
+    const completion = await client.chat.completions.create(params);
+    const llmMs = Date.now() - started;
+    const usage = normalizeUsage(completion.usage);
+    const content = completion.choices[0]?.message?.content ?? "";
+    log(args.onLog, "response", `模型 OpenUI 响应完成 ${llmMs}ms`, {
+      model: completion.model,
+      created: completion.created,
+      usage: completion.usage,
+      llmMs,
+      chars: content.length,
+    });
+    return {
+      value: content,
+      model: completion.model || args.model,
+      llmMs,
+      usage,
+      providerCreatedAt: completion.created,
+      cost: estimateCost(completion.model || args.model, usage),
+    };
+  } catch (error) {
+    const failedMs = Date.now() - started;
+    const message = error instanceof Error ? error.message : String(error);
+    log(args.onLog, "error", `OpenUI 模型请求失败 ${failedMs}ms: ${message}`);
+    const rateLimited = /429|访问量过大|使用上限|rate.?limit/i.test(message);
+    if (rateLimited) {
+      if (args.model === "glm-4.7-flash" && args.allowModelFallback !== false) {
+        log(args.onLog, "fallback", "glm-4.7-flash 服务繁忙，自动改用 glm-5.2（thinking disabled）重试一次");
+        return callText({ ...args, provider: "glm", model: "glm-5.2", thinking: false, allowModelFallback: false });
+      }
+      throw error;
+    }
+    if (args.stream) {
+      log(args.onLog, "fallback", "OpenUI 流式请求失败，自动回退非流式调用");
+      const fallback = await callText({ ...args, stream: false, onStreamDelta: undefined });
+      return { ...fallback, llmMs: failedMs + fallback.llmMs };
     }
     throw error;
   }
@@ -532,7 +757,7 @@ function compactResourceLabel(query: string, actionKind?: WebResource["actionKin
 
 /**
  * 把联网总结确定性写入 CardPlan。模型即使漏抄 webFacts，公开事实和精确 URL 也不会
- * 在 CardPlan → DSL → A2UI 的链路中消失。
+ * 在 CardPlan → DSL / OpenUI 的链路中消失。
  */
 export function integrateWebFactsIntoCardPlan(plan: CardPlan, state: InferenceState): CardPlan {
   const cards = plan.cards.map((card) => ({
@@ -722,14 +947,33 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
     slotRequirements: [{ name: "request", description: "用户目标", required: true, explicitValue: input.query }],
     slots: [slot], conflicts: [], questions: [], assumptions: [],
   };
-  const plan: CardPlan = input.cardPlan ?? { skillName: input.query, iconText: "S", reasoning: "基于明确需求生成方案", cards: [{ id: "overview", purpose: "方案概览", sourceSlots: ["request"], blocks: [{ kind: "hero", title: input.query, text: "方案已生成", sourceSlots: ["request"] }] }] };
+  const plan: CardPlan = input.cardPlan ?? {
+    skillName: input.query,
+    iconText: "S",
+    reasoning: "基于明确需求生成多卡方案",
+    cards: [
+      { id: "overview", purpose: "方案概览", sourceSlots: ["request"], blocks: [{ kind: "hero", title: input.query, text: "已整理目标与推荐方向", sourceSlots: ["request"] }] },
+      { id: "details", purpose: "核心内容", sourceSlots: ["request"], blocks: [{ kind: "list", title: "执行要点", items: [{ label: "先确认最重要的目标" }, { label: "再按优先级推进" }], sourceSlots: ["request"] }] },
+      { id: "next-steps", purpose: "下一步", sourceSlots: ["request"], blocks: [{ kind: "summary", title: "行动建议", text: "从第一项开始执行，并根据结果继续调整。", sourceSlots: ["request"] }] },
+    ],
+  };
   const table: Record<PipelineStepName, Omit<PipelineStepOutput, "durationMs" | "timing" | "model">> = {
     intent_analysis: { name: input.name, reasoning: "识别任务及最小槽位（mock）", outputs: { taskType: state.taskType, needsContext: false }, inferenceState: state, slots: state.slots },
     evidence_resolution: { name: input.name, reasoning: "无需额外上下文（mock）", outputs: {}, inferenceState: input.inferenceState ?? state, slots: (input.inferenceState ?? state).slots, conflicts: [], questions: [] },
     clarification: { name: input.name, reasoning: "没有需要澄清的关键槽位（mock）", outputs: { questionCount: 0 }, inferenceState: input.inferenceState ?? state, slots: (input.inferenceState ?? state).slots, questions: [] },
     context_enrichment: { name: input.name, reasoning: "完成总结与能力补齐（mock）", outputs: { summary: "mock summary", capabilityCalls: [] }, inferenceState: { ...(input.inferenceState ?? state), summary: "mock summary", webFacts: [], capabilityCalls: [] }, slots: (input.inferenceState ?? state).slots },
     card_plan_generate: { name: input.name, reasoning: plan.reasoning, outputs: { cardCount: plan.cards.length }, cardPlan: plan, semanticMarkdown: semanticFromPlan(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState?.slots ?? [slot]), result: { summary: plan.skillName, assumptions: input.inferenceState?.assumptions ?? [] } },
-    a2ui_generate: { name: input.name, reasoning: "由模型生成 A2UI（mock）", outputs: {}, a2uiJsonl: [{ version: "v0.9", createSurface: { surfaceId: "mock" } }, { version: "v0.9", updateComponents: { surfaceId: "mock", components: [{ id: "root", component: "Card", child: "text" }, { id: "text", component: "Text", text: plan.skillName, variant: "h3" }] } }] },
+    openui_generate: {
+      name: input.name,
+      reasoning: "生成可编译 OpenUI Lang（mock）",
+      outputs: { mock: true },
+      openuiCode: mockOpenUIFromCardPlan(plan),
+      openuiDiagnostics: {
+        coverage: { required: 0, matched: 0, missing: [] },
+        parser: { statements: plan.cards.length * 3 + 2, unresolved: [], orphaned: [], incomplete: false },
+        repaired: false,
+      },
+    },
   };
   return table[input.name];
 }
@@ -740,6 +984,15 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   const sampling = STEP_SAMPLING[input.name];
   if (input.mock) {
     const base = mockResult(input);
+    if (input.name === "openui_generate" && input.stream && base.openuiCode && input.onStreamDelta) {
+      let cumulativeChars = 0;
+      const chunks = base.openuiCode.match(/[^\n]*\n|[^\n]+$/g) ?? [base.openuiCode];
+      for (const chunk of chunks) {
+        cumulativeChars += chunk.length;
+        input.onStreamDelta(chunk, cumulativeChars);
+        await new Promise((resolve) => setTimeout(resolve, 35));
+      }
+    }
     const totalMs = Math.max(1, Date.now() - started);
     return { ...base, model: "mock", modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], durationMs: totalMs, timing: { totalMs, llmMs: 0, overheadMs: totalMs } };
   }
@@ -801,7 +1054,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     } else {
       llm = await callJson({
         ...selectedModel, ...sampling, onLog: input.onLog,
-        system: "你负责在生成方案前完成最小化澄清。只针对给定 uncertainSlotNames 提问；可以把高度相关槽位合并成一个问题，但 questions.slotNames 必须覆盖每个不确定槽位。所有问题都必须是选择题并提供2-4个简短、互斥、覆盖常见情况的 options，禁止填空题或省略 options；必要时加入“暂不限制/暂不确定”。不得把这些问题延迟到最终卡片或 A2UI。",
+        system: "你负责在生成方案前完成最小化澄清。只针对给定 uncertainSlotNames 提问；可以把高度相关槽位合并成一个问题，但 questions.slotNames 必须覆盖每个不确定槽位。所有问题都必须是选择题并提供2-4个简短、互斥、覆盖常见情况的 options，禁止填空题或省略 options；必要时加入“暂不限制/暂不确定”。不得把这些问题延迟到最终卡片或 OpenUI。",
         user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), uncertainSlotNames: uncertainNames },
         schemaHint: "{reasoning:string,questions:[{question:string,reason:string,blocking:true,slotNames:string[],options:string[2-4]}]} ",
       });
@@ -871,7 +1124,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
     llm = await callJson({
       ...selectedModel, ...sampling, onLog: input.onLog,
-      system: "你是 CardPlan 规划器。基于已经过用户澄清、事实总结和能力补齐的推断状态生成可编译卡片计划。reasoning 控制在120字内；生成3-6张卡。block kind 只能是 hero/summary/list/progress/status/metric/choice/toggle/image/chart/infographic。list.items 每项必须使用 {label,detail?}，禁止使用 title 代替 label。每张卡/块用 sourceSlots 标记证据槽位。若 webFacts.entities 存在，必须把具体实体名称、推荐理由和 locality 放入业务推荐卡的列表，不可只生成泛化建议；可用 actionUrl/sourceUrl 原样复制为 external-link，order/reserve 才使用“下单/预订”文案，否则写“查看详情”。action role 只能是 primary/secondary/tertiary。不得把低置信槽位做成选项要求用户再次回答。不要生成 HTML、Markdown、A2UI 或 missingInfo。",
+      system: "你是 CardPlan 规划器。基于已经过用户澄清、事实总结和能力补齐的推断状态生成可编译卡片计划。reasoning 控制在120字内；生成3-6张卡。block kind 只能是 hero/summary/list/progress/status/metric/choice/toggle/image/chart/infographic。list.items 每项必须使用 {label,detail?}，禁止使用 title 代替 label。每张卡/块用 sourceSlots 标记证据槽位。若 webFacts.entities 存在，必须把具体实体名称、推荐理由和 locality 放入业务推荐卡的列表，不可只生成泛化建议；可用 actionUrl/sourceUrl 原样复制为 external-link，order/reserve 才使用“下单/预订”文案，否则写“查看详情”。action role 只能是 primary/secondary/tertiary。不得把低置信槽位做成选项要求用户再次回答。不要生成 HTML、Markdown、OpenUI 或 missingInfo。",
       user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
       schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,purpose,sourceSlots?,blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
     });
@@ -906,52 +1159,89 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     const plan = integrateWebFactsIntoCardPlan(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), integrationState);
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
     base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, semanticMarkdown: semanticFromPlan(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
-  } else {
+  } else if (input.name === "openui_generate") {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
-    llm = await callJson({
-      ...selectedModel, ...sampling, onLog: input.onLog, stream: input.stream, onStreamDelta: input.onStreamDelta,
-      system: "你是 CardPlan 驱动的 A2UI 视觉规划器。必须为 CardPlan 的每张 card 生成且仅生成一个同 ID 的 surface，完整表达每个 block 和 action，不能把丰富内容压缩成几段普通 Text。每个 surface 写 sourceCardId、visualDirection、coveredBlockIndexes、coveredActionIds；coveredBlockIndexes 必须覆盖该卡所有 block 索引，coveredActionIds 必须覆盖所有 action.id。根据语义选择视觉方向 dashboard/timeline/checklist/comparison/hero。组件映射：hero/highlight→Hero；metric/chart→Metric 或 Metric Row；progress→Progress；status→Badge/Hero；list/table→List、Timeline 或 Badge 组合；choice→ChoicePicker；toggle/switch→CheckBox；tabs→Column；summary→层级化 Text/Row。可用组件：Card,Column,Row,List,Text,Button,Divider,Icon,Image,CheckBox,Slider,ChoicePicker,Hero,Metric,Progress,Badge,Timeline；兼容别名 Chart/Table/Tabs/Switch 会被安全映射。每个 CardPlan action 必须生成 Button/ChoicePicker：navigate 保留 goto，select/back 保留原事件；external-link 必须生成 Button，且 action 严格为 {functionCall:{call:'openUrl',args:{url: action.link 的原始精确值}}}，不得把外链改成 goto 或省略 URL。只生成嵌套组件对象，不生成组件 ID、扁平表或 JSONL。",
-      user: { cardPlan: input.cardPlan },
-      schemaHint: "{reasoning:string,a2uiBlueprint:{surfaces:[{id:string,sourceCardId:string,visualDirection:'dashboard'|'timeline'|'checklist'|'comparison'|'hero',coveredBlockIndexes:number[],coveredActionIds:string[],root:{component:'Card',tone?:string,children:[nested components]}}]}}；nested component 可含 component/text/title/subtitle/label/value/unit/tone/detail/items/options/variant/action/children；外链 Button.action={functionCall:{call:'openUrl',args:{url:string}}}",
+    const actionBindings = buildOpenUIActionBindings(input.cardPlan);
+    llm = await callText({
+      ...selectedModel,
+      ...sampling,
+      onLog: input.onLog,
+      stream: input.stream,
+      onStreamDelta: input.onStreamDelta,
+      system: OPENUI_SYSTEM_PROMPT,
+      user: {
+        cardPlan: input.cardPlan,
+        actionBindings,
+        acceptance: {
+          protocol: "OpenUI Lang v0.5",
+          root: "Stack",
+          expectedCardCount: input.cardPlan.cards.length,
+          oneDistinctCardPerCardPlanCard: true,
+          preserveCardOrder: true,
+          forbidMergedOrNestedCards: true,
+          allCardPlanContentRequired: true,
+          actionSyntax: "Button(label, Action([@ToAssistant(ref)]), variant)",
+        },
+      },
     });
-    let compiled;
-    try {
-      compiled = compileA2UIResponse(llm.value, input.cardPlan);
-    } catch (firstError) {
-      const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
-      const repairModel = "glm-5.2";
-      log(input.onLog, "fallback", `A2UI Blueprint 覆盖/结构校验失败，定向修复一次: ${firstMessage}`, {
-        responseShape: describeA2UIShape(llm.value),
+    let openuiCode = normalizeOpenUIOutput(String(llm.value ?? ""));
+    let validation = validateOpenUIArtifact(openuiCode, input.cardPlan);
+    let repaired = false;
+    if (!validation.valid) {
+      repaired = true;
+      log(input.onLog, "fallback", `OpenUI parser/覆盖校验失败，使用当前 provider 的非 Thinking 模型定向修复一次`, {
+        errors: validation.errors,
+        coverage: validation.coverage,
       });
-      const repair = await callJson({
-        model: repairModel, thinking: false, temperature: 0, doSample: false, onLog: input.onLog,
-        system: "你负责修复 A2UI 视觉 Blueprint。保留上一版有价值的视觉设计，但必须补齐校验信息指出的 card/block/action。每个 CardPlan card 对应一个同 ID surface；填写 sourceCardId、visualDirection、完整 coveredBlockIndexes/coveredActionIds；root 为 Card，child/children 必须是内联组件对象。external-link 必须是 Button.action.functionCall，call=openUrl，args.url 原样等于 CardPlan action.link。不要输出扁平 JSONL 或组件 ID。",
-        user: { cardPlan: input.cardPlan, previousOutput: llm.value, validationFailure: firstMessage },
-        schemaHint: "{reasoning:string,a2uiBlueprint:{surfaces:[{id:string,sourceCardId:string,visualDirection:string,coveredBlockIndexes:number[],coveredActionIds:string[],root:{component:'Card',children:[nested components]}}]}}",
+      const repair = await callText({
+        provider: selectedModel.provider,
+        model: selectedModel.provider === "groq" ? "qwen/qwen3.6-27b" : "glm-5.2",
+        thinking: false,
+        temperature: 0,
+        doSample: false,
+        onLog: input.onLog,
+        system: `${OPENUI_SYSTEM_PROMPT}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure.`,
+        user: {
+          cardPlan: input.cardPlan,
+          actionBindings,
+          previousOpenUI: openuiCode,
+          expectedCardCount: input.cardPlan.cards.length,
+          validationErrors: validation.errors,
+          missingCoverage: validation.coverage.missing,
+        },
       });
-      const fast = llm;
+      const first = llm;
       llm = {
         ...repair,
-        model: `${fast.model} → ${repair.model}`,
-        llmMs: fast.llmMs + repair.llmMs,
-        usage: addUsage(fast.usage, repair.usage),
-        cost: (fast.cost ?? 0) + (repair.cost ?? 0),
+        model: `${first.model} → ${repair.model}`,
+        llmMs: first.llmMs + repair.llmMs,
+        usage: addUsage(first.usage, repair.usage),
+        cost: (first.cost ?? 0) + (repair.cost ?? 0),
       };
-      try {
-        compiled = compileA2UIResponse(repair.value, input.cardPlan);
-      } catch (repairError) {
-        throw new Error(`A2UI Blueprint 两次均不可编译：${repairError instanceof Error ? repairError.message : String(repairError)}`);
+      openuiCode = normalizeOpenUIOutput(String(repair.value ?? ""));
+      validation = validateOpenUIArtifact(openuiCode, input.cardPlan);
+      if (!validation.valid) {
+        throw new Error(`OpenUI 两次均不可编译：${validation.errors.join("；")}`);
       }
     }
-    const raw = llm.value as { reasoning?: string };
-    const rawObject = llm.value && typeof llm.value === "object" ? llm.value as Record<string, unknown> : {};
     base = {
       name: input.name,
-      reasoning: raw.reasoning ?? "完成 A2UI Blueprint 生成与确定性编译",
-      outputs: { messageCount: compiled.messages.length, coverage: compiled.coverage, compileWarnings: compiled.warnings },
-      a2uiBlueprint: rawObject.a2uiBlueprint ?? rawObject.blueprint ?? llm.value,
-      a2uiJsonl: compiled.messages,
+      reasoning: repaired ? "OpenUI 初稿经 parser 与 CardPlan 覆盖校验后完成一次定向修复" : "模型直接生成了可编译且完整覆盖 CardPlan 的 OpenUI Lang",
+      outputs: {
+        protocol: "OpenUI Lang v0.5",
+        statements: validation.parser.statements,
+        coverage: validation.coverage,
+        repaired,
+      },
+      openuiCode,
+      openuiDiagnostics: {
+        coverage: validation.coverage,
+        parser: validation.parser,
+        repaired,
+      },
     };
+  } else {
+    throw new Error(`不支持的管线步骤: ${input.name}`);
   }
 
   const totalMs = Math.max(1, Date.now() - started);
@@ -991,12 +1281,14 @@ export async function runSearchPrefetch(args: {
   if (!shouldSearch) {
     return { searchQuery, shouldSearch: false, webSearchRaw: null, durationMs: Math.max(1, Date.now() - started) };
   }
-  if (args.mock || !process.env.LLM_API_KEY) {
+  if (args.mock || !hasAnyLLMKey()) {
     return { searchQuery, shouldSearch: true, webSearchRaw: null, durationMs: Math.max(1, Date.now() - started), mock: true };
   }
   log(args.onLog, "request", `预取搜索 POST /chat/completions tool=web_search query="${searchQuery.slice(0, 60)}"`);
   const llm = await callJson({
-    model: "glm-5.2", thinking: false, temperature: 0.2, doSample: true,
+    provider: process.env.GROQ_API_KEY ? "groq" : "glm",
+    model: process.env.GROQ_API_KEY ? (process.env.GROQ_MODEL ?? "qwen/qwen3.6-27b") : "glm-5.2",
+    thinking: false, temperature: 0.2, doSample: true,
     webSearchQuery: searchQuery,
     onLog: args.onLog,
     system: "你负责执行一次任务型联网搜索。只围绕给定检索词整理可用来源，不做方案总结，不回答用户问题。",

@@ -8,15 +8,16 @@ export const PIPELINE_STEPS = [
   "clarification",
   "context_enrichment",
   "card_plan_generate",
-  "a2ui_generate",
+  "openui_generate",
 ] as const;
 
 export type PipelineStepName = (typeof PIPELINE_STEPS)[number];
 
-export const MODEL_PROFILES = ["glm_5_2_thinking", "glm_5_2", "glm_4_7_flash"] as const;
+export const MODEL_PROFILES = ["groq_qwen_3_6_27b", "glm_5_2_thinking", "glm_5_2", "glm_4_7_flash"] as const;
 export type ModelProfile = (typeof MODEL_PROFILES)[number];
 
 export const MODEL_PROFILE_LABELS: Record<ModelProfile, string> = {
+  groq_qwen_3_6_27b: "Groq · Qwen3.6-27B",
   glm_5_2_thinking: "glm-5.2 · Thinking",
   glm_5_2: "glm-5.2",
   glm_4_7_flash: "glm-4.7-flash",
@@ -104,8 +105,13 @@ export interface PipelineStepOutput {
   cardPlan?: CardPlan;
   semanticMarkdown?: string;
   reasoningGraph?: string;
-  a2uiJsonl?: unknown[];
-  a2uiBlueprint?: unknown;
+  /** 第⑥步模型直接生成、通过 OpenUI parser 校验的 OpenUI Lang 源码 */
+  openuiCode?: string;
+  openuiDiagnostics?: {
+    coverage: { required: number; matched: number; missing: string[] };
+    parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
+    repaired: boolean;
+  };
   durationMs: number;
   timing: StepTiming;
   model: string;

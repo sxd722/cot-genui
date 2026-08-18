@@ -1,23 +1,45 @@
 import "server-only";
 import OpenAI from "openai";
 
+export type LLMProvider = "glm" | "groq";
+
+export interface LLMTarget {
+  provider: LLMProvider;
+  model: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  LLM 客户端                                                         */
 /*  六步推理在 src/lib/pipeline.ts；画像在 src/lib/profile.ts。         */
 /*  这里只保留共享的客户端、JSON 容错解析和调用日志类型。               */
 /* ------------------------------------------------------------------ */
 
-export function createLLMClient(): OpenAI {
-  const apiKey = process.env.LLM_API_KEY;
+export function createLLMClient(provider: LLMProvider = "glm"): OpenAI {
+  const apiKey = provider === "groq" ? process.env.GROQ_API_KEY : process.env.LLM_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "缺少 LLM_API_KEY 环境变量。请在 .env.local 中配置（可指向 OpenAI/GLM 等兼容端点）。",
+      provider === "groq"
+        ? "缺少 GROQ_API_KEY 环境变量。请在 .env.local 中配置。"
+        : "缺少 LLM_API_KEY 环境变量。请在 .env.local 中配置（可指向 OpenAI/GLM 等兼容端点）。",
     );
   }
   return new OpenAI({
     apiKey,
-    baseURL: process.env.LLM_BASE_URL,
+    baseURL: provider === "groq"
+      ? (process.env.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1")
+      : process.env.LLM_BASE_URL,
   });
+}
+
+export function hasAnyLLMKey(): boolean {
+  return !!(process.env.GROQ_API_KEY || process.env.LLM_API_KEY);
+}
+
+export function defaultLLMTarget(): LLMTarget {
+  if (process.env.GROQ_API_KEY) {
+    return { provider: "groq", model: process.env.GROQ_MODEL ?? "qwen/qwen3.6-27b" };
+  }
+  return { provider: "glm", model: process.env.LLM_MODEL ?? "glm-5.2" };
 }
 
 /**

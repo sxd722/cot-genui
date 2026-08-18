@@ -1,7 +1,7 @@
 # cot-genui 当前全流程说明
 
 > 实现基线：2026-08-17 工作区代码  
-> 当前协议：ProfileDigest + CardPlan 单一协议 + A2UI Blueprint  
+> 当前协议：ProfileDigest + CardPlan 单一协议 + OpenUI Lang v0.5
 > 主流程：画像预处理 + 6 个可独立执行的推理阶段
 
 本文描述当前代码实际执行的链路。`docs/DESIGN-DOC.md` 记录的是较早的 9 步设计，其中部分步骤、生成模式和文件职责已经发生变化；调试当前页面时应以本文和代码为准。
@@ -24,7 +24,7 @@
 - 在生成前以选择题确认关键不确定项；
 - 汇总已确认事实，并在需要时进行一次任务型联网搜索；
 - 生成唯一的中间协议 CardPlan；
-- 从同一份 CardPlan 分别生成 DSL CardArtifact 和 A2UI；
+- 从同一份 CardPlan 分别生成 DSL CardArtifact 和 OpenUI Lang；
 - 校验结构、内容覆盖率、动作和外链，必要时降级或修复。
 
 ---
@@ -58,12 +58,12 @@ flowchart TD
   CP --> DSL["确定性 CardPlan → CardArtifact 编译"]
   DSL --> DV["DSL 校验与交互渲染"]
 
-  CP --> A2["⑥ A2UI Blueprint 生成"]
-  A2 --> AC["覆盖校验与确定性扁平化"]
-  AC --> AV["A2UI JSONL / iframe 渲染"]
+  CP --> OUI["⑥ 模型生成 OpenUI Lang"]
+  OUI --> OC["OpenUI parser + CardPlan 覆盖校验"]
+  OC --> OV["官方 React Renderer 渐进渲染"]
 ```
 
-关键设计是：CardPlan 是 DSL 和 A2UI 的共同内容源。A2UI 不再绕开 CardPlan 独立构思业务内容，只负责把 CardPlan 做视觉编排。
+关键设计是：CardPlan 是 DSL 和 OpenUI 的共同内容源。第⑥步模型只负责视觉编排，不能重新决定业务事实、实体或外链。
 
 ---
 
@@ -86,14 +86,14 @@ flowchart TD
 - `slots / conflicts / questions / answers`：解释性推理信息；
 - `cardPlan`：唯一业务卡片中间协议；
 - `compiledArtifact`：CardPlan 编译后的 DSL；
-- `a2uiBlueprint / a2uiJsonl`：A2UI 原始视觉规划和编译结果；
+- `openuiCode / openuiDiagnostics`：OpenUI Lang 流式源码、parser 和覆盖校验结果；
 - `steps`：每一步状态、模型、耗时、token、费用和调用日志。
 - `prefetchedSearch`：暂停期搜索词、provider 原始结果和获取时间；
 - 模块级步骤缓存：最多 20 项的前端 LRU，只供“一键全部/继续生成”复用。
 
 ### 3.2 修改输入时的失效规则
 
-- 修改 JSON 上下文会清空画像、六步结果、CardPlan、DSL 和 A2UI；
+- 修改 JSON 上下文会清空画像、六步结果、CardPlan、DSL 和 OpenUI；
 - 修改 JSON 上下文、切换预设或“重置全部”也会清空步骤 LRU；
 - 切换预设会清空旧结果，并异步预热画像；如果仍保留超过 20 字的自由文本，画像入口优先使用自由文本而不是新预设 JSON；
 - 修改某一步模型会把该步骤重置为 `pending`，但不会自动重跑后续步骤；
@@ -123,16 +123,16 @@ flowchart TD
 
 | 参数 | 当前值 |
 |---|---|
-| 模型 | `glm-5.2` |
-| Thinking | disabled |
+| 模型 | `qwen/qwen3.6-27b`（Groq，缺少 Groq key 时回退 `LLM_MODEL`） |
+| Reasoning | `none` |
 | temperature | `0.1` |
-| do_sample | `true` |
+| JSON mode | `json_object` |
 
 ### 4.2 自由文本画像
 
 入口：`POST /api/profile/compress-free-text`
 
-页面在自由文本超过 20 字时优先走该入口。服务端最低校验是 10 字。当前固定使用 `glm-5.2 Thinking`、`temperature=0.15`，提取 core、traits、domains、salientSignals 和 conflicts；失败时返回只含 `free_text` 领域的降级摘要。
+页面在自由文本超过 20 字时优先走该入口。服务端最低校验是 10 字。默认使用 Groq `qwen/qwen3.6-27b` 的 reasoning 模式、`temperature=0.15`，提取 core、traits、domains、salientSignals 和 conflicts；Groq 未配置时回退原 `LLM_MODEL`，失败则返回只含 `free_text` 领域的降级摘要。
 
 ### 4.3 ProfileDigest 结构
 
@@ -175,20 +175,21 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 
 | 步骤 | 默认模型 | Thinking | temperature | do_sample |
 |---|---|---:|---:|---:|
-| ① 意图建模 | `glm-4.7-flash` | 关闭 | 0.8 | true |
-| ② 证据解析 | `glm-4.7-flash` | 关闭 | 0.35 | true |
-| ③ 不确定性提问 | `glm-5.2` | 关闭 | 0.25 | true |
-| ④ 总结与能力补齐 | `glm-5.2` | 关闭 | 0.2 | true |
-| ⑤ CardPlan 生成 | `glm-5.2` | high | 0 | false |
-| ⑥ A2UI 生成 | `glm-5.2` | high | 0.4 | true |
+| ① 意图建模 | Groq `qwen/qwen3.6-27b` | 关闭 | 0.8 | provider 默认 |
+| ② 证据解析 | Groq `qwen/qwen3.6-27b` | 关闭 | 0.35 | provider 默认 |
+| ③ 不确定性提问 | Groq `qwen/qwen3.6-27b` | 关闭 | 0.25 | provider 默认 |
+| ④ 总结与能力补齐 | Groq `qwen/qwen3.6-27b` | 关闭 | 0.2 | provider 默认 |
+| ⑤ CardPlan 生成 | Groq `qwen/qwen3.6-27b` | 关闭 | 0 | provider 默认 |
+| ⑥ OpenUI 生成 | Groq `qwen/qwen3.6-27b` | 关闭 | 0.2 | provider 默认 |
 
 页面允许把任意一步切换为：
 
+- `Groq · Qwen3.6-27B`（默认）；
 - `glm-5.2 · Thinking`；
 - `glm-5.2`；
 - `glm-4.7-flash`。
 
-选择 Thinking 时请求额外携带 `reasoning_effort: high`。如果 Flash 遇到 429、访问量过大或 rate limit，服务端自动用 `glm-5.2`、Thinking disabled 重试一次。
+Groq Qwen 默认携带 `reasoning_effort: none`，优先低时延。GLM Thinking 档位仍携带 `reasoning_effort: high`。如果 Flash 遇到 429、访问量过大或 rate limit，服务端仍自动用 `glm-5.2`、Thinking disabled 重试一次。
 
 ### 5.2 模型载荷投影
 
@@ -264,7 +265,7 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 - 可以把高度相关的槽位合并成一题；
 - 最多保留 6 题；
 - 模型漏问或输出无效选项时，代码为未覆盖槽位补默认选择题；
-- 不允许把澄清延迟到最终 CardPlan/A2UI。
+- 不允许把澄清延迟到最终 CardPlan/OpenUI。
 
 ### 5.6 暂停和继续
 
@@ -276,7 +277,7 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 
 第四步也会再次校验，任何未回答问题都会阻止继续。
 
-进入暂停时，前端会后台调用 `POST /api/prefetch-search`。服务端只使用置信度 `>=0.7` 的已有槽位构造任务搜索词，通过 `glm-5.2` 非 Thinking 请求一次 `web_search`，前端以 `searchQuery` 为键保存 10 分钟。继续生成时：
+进入暂停时，前端会后台调用 `POST /api/prefetch-search`。服务端只使用置信度 `>=0.7` 的已有槽位构造任务搜索词。Groq 默认路径先由 `groq/compound` 执行内置 web search，再由 Qwen 结构化轻量结果；若项目未启用 Compound，则仅搜索阶段尝试 GLM 原生 `web_search`，主推理仍由 Qwen 完成；两种搜索能力都不可用时记录降级日志并继续无搜索流程，不让整条管线失败。前端以 `searchQuery` 为键保存 10 分钟。继续生成时：
 
 - 若第四步重新计算出的搜索词完全一致，原始结果作为 `searchResults` 注入 user 载荷，本次不再挂搜索工具；
 - 若答案改变了搜索词、缓存过期或预取失败，自动回退到第四步即时工具调用；
@@ -297,7 +298,12 @@ ProfileDigest 的职责是告诉第一步“用户大致是谁、有哪些领域
 - 外卖、订餐、预约、购买、酒店等 → `actionable`；
 - 推荐、吃什么、去哪、买什么等 → `verified_recommendations`。
 
-若需要新鲜数据，或 outcome 不是 `ideas`，本步最多触发一次 GLM `web_search` 工具调用：
+若需要新鲜数据，或 outcome 不是 `ideas`，Groq 默认路径会执行：
+
+1. `groq/compound` 获取实时搜索内容、来源和工具结果；
+2. 将原始结果注入 `qwen/qwen3.6-27b`，生成结构化 `webFacts/entities`。
+
+若用户在本步切换到 GLM，则维持单次 GLM `web_search` 工具调用。共同约束为：
 
 - 搜索词由任务类型、最多 10 个置信度 `>=0.7` 的槽位和交付目标组成；
 - 请求搜索结果数量为 5，内容尺寸为 medium；
@@ -339,45 +345,38 @@ CardPlan
 8. 丢弃不存在的 `targetCardId` action，移除不存在的槽位引用，每卡最多保留 5 个 block；未知 block kind 确定性降为 text；
 9. 派生 Semantic Markdown 和 Mermaid 推理 DAG。
 
-### 5.9 ⑥ A2UI 生成
+### 5.9 ⑥ OpenUI 生成
 
-输入只包含 CardPlan。模型负责视觉规划，不应重新决定业务事实。
+输入只包含 CardPlan 和由宿主确定性生成的 action bindings。所选模型直接返回 OpenUI Lang v0.5 纯文本，不使用 JSON `response_format`，也不再经过 A2UI Blueprint/JSONL。
 
-每张 CardPlan card 必须对应一个同 ID surface，并声明：
+服务端使用一组与官方 React UI 同名、同参数顺序的精简组件 schema 生成系统提示词并校验，当前允许：
 
-- `sourceCardId`；
-- `visualDirection`；
-- `coveredBlockIndexes`；
-- `coveredActionIds`；
-- `root` 嵌套组件树。
+- 布局：Stack、Card、CardHeader、Separator；
+- 内容：TextContent、Callout、TextCallout、Tag/TagBlock、Steps、ImageBlock；
+- 数据：Table、BarChart、LineChart；
+- 动作：Buttons、Button。
 
-允许的主要组件包括 Card、Column、Row、List、Text、Button、Image、ChoicePicker、Hero、Metric、Progress、Badge 和 Timeline。
+精简 schema 避免把整套 React 客户端组件加载进 API Route，也减少第⑥步系统提示词。浏览器仍由官方 `@openuidev/react-ui` 完整组件库渲染。
 
-确定性编译器会校验：
+模型产物必须满足：
 
-- 每张 CardPlan 卡是否有对应 surface；
-- 所有 block index 是否覆盖；
-- 所有 action id 是否覆盖；
-- CardPlan list 的每个 label 是否实际进入组件树；
-- hero / summary / status / metric 的标题（归一化后至少 4 字）是否实际进入组件树；
-- external-link 是否精确转换为 `openUrl(action.link)`；
-- chart / table / tabs / switch 安全别名是否分别降级为 Metric / List / Column / CheckBox；
-- 其余未知组件是否需要忽略并产生 warning。
+- 存在单一 `root = Stack(...)`；
+- OpenUI parser 无缺失参数、未知组件、截断或未解析引用；
+- CardPlan 的卡片用途、块标题/正文、列表项、指标、选项和动作标签均进入源码；
+- 每个 CardPlan action 使用 `Action([@ToAssistant("plan:...")])` 引用宿主动作；
+- 禁止 Query、Mutation、`@Run`、`@OpenUrl` 和模型自造 URL。
 
-通过后把嵌套 Blueprint 扁平化为 A2UI v0.9 消息：
+外链不会复制到模型动作中。用户点击 Button 后，宿主用 `cardId + actionId` 回查已经过 provider allowlist 过滤的 CardPlan action，再校验 `http/https` 并打开。这使 OpenUI 只负责表现，不成为新的 URL 信任边界。
 
-- `createSurface`；
-- `updateComponents`。
+若初稿校验失败，系统使用当前 provider 的非 Thinking 模型、temperature 0，连同 parser 错误和缺失覆盖项定向修复一次。第二次仍失败时第⑥步报错，不接受不可编译产物。
 
-若第一次 Blueprint 结构或覆盖率校验失败，系统固定使用 `glm-5.2`、Thinking disabled、temperature 0 定向修复一次。第二次仍失败时，第六步返回错误，不渲染无效 A2UI。
-
-第六步默认通过 SSE 流式传输。服务端向前端发送 `delta`（当前累计 JSON 字符数）和最终 `done`（完整步骤结果）；模型流式调用失败时，服务端自动回退到普通非流式调用。页面执行徽章会显示“生成中 · N 字”。
+第⑥步通过 SSE 传输真实文本增量：`delta` 同时包含新增源码和累计字符数，`done` 返回最终已校验（或已修复）的完整源码。前端将增量直接交给 OpenUI Renderer 渐进解析；流式请求失败时自动回退非流式调用。
 
 ---
 
 ## 6. CardPlan 到 DSL 的旁路
 
-CardPlan 完成后，前端会 `await enrichAndCompile()`，完成补齐/编译后才允许进入 A2UI：
+CardPlan 完成后，前端会 `await enrichAndCompile()`，完成补齐/编译后才进入 OpenUI：
 
 ```text
 CardPlan
@@ -410,13 +409,13 @@ CardPlan
 正常六步主链路的联网发生在第四步：
 
 ```text
-GLM web_search 原始结果
+Groq Compound / GLM web_search 原始结果
   → 深度提取合法 link/url/source → providerSearchUrls
   → 模型结构化为 webFacts/entities
   → CardPlan URL allowlist（webFacts URL ∩ providerSearchUrls）
   → external-link
   → DSL tool openUrl
-  → A2UI functionCall openUrl
+  → OpenUI action ref → 宿主回查 CardPlan → window.open
 ```
 
 URL 只接受 `http` 或 `https`。第四步会从 provider 原始搜索对象全树提取 `link / url / source` 等字段中的合法 URL，写入 `InferenceState.providerSearchUrls`。第五步有原始结果时，只接受同时出现在模型 `webFacts` 和 provider registry 中的 URL；模型自行注入的链接不会进入 CardPlan。provider 原始结果缺失时，为保证流程可用性才回退到 `webFacts` URL 集合，并在日志明确标注。资源卡优先使用 actionUrl，其次 sourceUrl，并根据 `order / reserve / details` 生成“去下单 / 去预订 / 查看”标签。
@@ -434,7 +433,7 @@ URL 只接受 `http` 或 `https`。第四步会从 provider 原始搜索对象�
 | 字段 | 含义 |
 |---|---|
 | `durationMs` / `timing.totalMs` | API route 内该步骤端到端墙钟时间 |
-| `timing.llmMs` | 本步骤模型请求墙钟时间；A2UI 修复时为两次请求之和 |
+| `timing.llmMs` | 本步骤模型请求墙钟时间；OpenUI 修复时为两次请求之和 |
 | `timing.overheadMs` | `totalMs - llmMs`，包括编排、解析、校验和派生处理 |
 | `providerCreatedAt` | 模型响应时间戳，不是推理耗时 |
 | `usage.prompt` | 输入 token |
@@ -442,7 +441,7 @@ URL 只接受 `http` 或 `https`。第四步会从 provider 原始搜索对象�
 | `usage.cached` | provider 报告的缓存输入 token |
 | `cost` | 按 `LLM_PRICING_JSON` 计算的估算费用 |
 
-①–⑤ 当前仍是非流式请求；⑥ 使用 SSE 输出累计正文字符。provider 没有提供服务端纯推理耗时或首个 reasoning token 指标，因此 `timeToFirstReasoningMs` 和 `timeToFirstContentMs` 仍只是预留字段；页面展示的“LLM 请求”是应用侧测得的请求墙钟时间。
+①–⑤ 当前仍是非流式请求；⑥ 使用 SSE 输出新增 OpenUI 源码和累计正文字符。provider 没有提供服务端纯推理耗时或首个 reasoning token 指标，因此 `timeToFirstReasoningMs` 和 `timeToFirstContentMs` 仍只是预留字段；页面展示的“LLM 请求”是应用侧测得的请求墙钟时间。
 
 每一步日志包含 request、response、error 和 fallback，页面展开步骤后可以查看模型、Thinking、temperature、do_sample、调用耗时、usage、响应形状和搜索元数据。
 
@@ -475,7 +474,7 @@ idle
   → ④ context_enrichment（命中预取，或即时一次 web_search）
   → ⑤ card_plan_generate
        ├─ await CardPlan → DSL 编译
-       └─ ⑥ a2ui_generate（SSE）
+       └─ ⑥ openui_generate（SSE）
   → done
 ```
 
@@ -501,7 +500,7 @@ idle
   "query": "国庆带父母去北京怎么安排",
   "deviceContext": {},
   "step": "intent_analysis",
-  "modelProfile": "glm_4_7_flash",
+  "modelProfile": "groq_qwen_3_6_27b",
   "profileDigest": {},
   "inferenceState": {},
   "userAnswers": {},
@@ -511,7 +510,7 @@ idle
 }
 ```
 
-接口会根据 step 使用需要的字段。`stream` 只对 `a2ui_generate` 生效，此时响应类型为 `text/event-stream`；其余步骤返回 JSON。没有配置 `LLM_API_KEY` 时，六步返回 mock 结果以便调试页面。
+接口会根据 step 使用需要的字段。`stream` 只对 `openui_generate` 生效，此时响应类型为 `text/event-stream`；其余步骤返回 JSON。`GROQ_API_KEY` 和 `LLM_API_KEY` 均未配置时，六步返回 mock 结果以便调试页面。
 
 ---
 
@@ -525,9 +524,9 @@ idle
 | 堆叠卡片 | `result.cards` | 兼容旧结果结构；当前通常没有数据 |
 | Semantic Markdown | `semanticMarkdown` | 从 CardPlan 确定性派生的可读文档 |
 | CardPlan JSON | `cardPlan` | 当前唯一业务 IR |
-| A2UI Visual Blueprint | `a2uiBlueprint` | 模型生成、编译前的嵌套视觉规划 |
-| A2UI 卡片渲染 | `a2uiJsonl` | 编译后的 A2UI v0.9 消息渲染 |
-| GLM Raw IR | `cardPlan` | CardPlan 原始 JSON 调试视图 |
+| OpenUI 渲染 | `openuiCode` | 官方 React Renderer 对 OpenUI Lang 渐进渲染 |
+| OpenUI Lang 源码 | `openuiCode / openuiDiagnostics` | 模型原文及 parser/覆盖率诊断 |
+| Model Raw IR | `cardPlan` | CardPlan 原始 JSON 调试视图 |
 
 中栏同时展示：
 
@@ -545,9 +544,12 @@ idle
 
 | 变量 | 用途 |
 |---|---|
-| `LLM_API_KEY` | 未配置时主流程使用 mock |
+| `GROQ_API_KEY` | 默认 Groq provider 的密钥 |
+| `GROQ_BASE_URL` | 默认 `https://api.groq.com/openai/v1` |
+| `GROQ_MODEL` | 默认 `qwen/qwen3.6-27b` |
+| `LLM_API_KEY` | 备用 GLM provider 密钥；Groq/GLM 均未配置时使用 mock |
 | `LLM_BASE_URL` | OpenAI-compatible 服务地址，例如 GLM endpoint |
-| `LLM_MODEL` | `/api/llm` 和 `/api/search` 兼容旁路的默认模型 |
+| `LLM_MODEL` | 未配置 Groq 时画像与兼容旁路使用的模型 |
 | `LLM_PRICING_JSON` | 按模型配置输入、输出、缓存 token 单价 |
 
 `LLM_PRICING_JSON` 示例：
@@ -562,7 +564,7 @@ idle
 }
 ```
 
-价格单位为美元/百万 token。`glm-4.7-flash` 当前内置了 0/0 占位价格，因此会显示 0；其他未配置价格的模型只展示 token，不猜测费用。
+价格单位为美元/百万 token。`qwen/qwen3.6-27b` 内置当前 Groq 公开价格（输入 $0.60、输出 $3.00），`glm-4.7-flash` 仍为 0/0 占位价格；其他模型按 `LLM_PRICING_JSON` 配置。
 
 ---
 
@@ -573,7 +575,7 @@ idle
 3. **通用画像可能压缩掉反向信号**：当前只有 `conflicts`，尚未单独建模 tensions/counterSignals。
 4. **provider URL registry 不等于链接验真**：它阻止模型注入搜索结果之外的 URL，但没有执行 HTTP 可达性、官方域名评级和页面内容二次核验；provider 缺失时仍会降级使用 `webFacts`。
 5. **实时搜索预算仍固定为一次**：预取只是把等待时间前移，不增加搜索轮数；复杂任务不能自动做实体补查和交叉验证。
-6. **A2UI 只有一次定向修复机会**：SSE 改善可见进度和传输等待，不会缩短模型生成本身。
+6. **OpenUI 只有一次定向修复机会**：SSE 改善首屏可见时间和传输等待，不会缩短模型生成本身；精简 schema 才会减少提示词输入。
 7. **旁路 `/api/search` 不是实时搜索**：生产使用时应替换为真实搜索服务。
 8. **自由文本状态不会随“重置全部”清空**：它持续具有高于 JSON 预设的画像优先级；切换预设前应手动清空，或在后续实现中修正 reset 行为。
 
@@ -592,8 +594,8 @@ idle
 | `src/dsl/compiler.ts` | CardPlan → CardArtifact 确定性编译 |
 | `src/dsl/validate.ts` | CardArtifact 渲染前不变量校验和异常边界 |
 | `src/dsl/enrichPlan.ts` | 旧 missingInfo 兼容补齐旁路 |
-| `src/lib/a2uiBlueprint.ts` | A2UI Blueprint 覆盖校验和 v0.9 编译 |
-| `src/components/A2UIRenderer.tsx` | A2UI 多 surface 卡片渲染和动作执行 |
+| `src/lib/openui.ts` | server-safe OpenUI schema、系统提示词、parser 与 CardPlan 覆盖校验 |
+| `src/components/OpenUIRenderer.tsx` | 官方 OpenUI 渐进渲染和 CardPlan action 安全执行 |
 | `src/components/CotTrace.tsx` | 六步状态、耗时、日志、问题和 DAG 展示 |
 | `src/app/api/infer/route.ts` | 六步统一 API 入口 |
 | `src/app/api/prefetch-search/route.ts` | 暂停期投机搜索入口 |
