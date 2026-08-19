@@ -10,7 +10,16 @@ import {
 import type { CardPlan, IRAction } from "@/dsl/modules";
 import { buildOpenUIBootstrap } from "@/openui/bootstrap";
 import librarySpecJson from "@/openui/generated/system-prompt.spec.json";
+import compactGeneralSpecJson from "@/openui/generated/compact-general.spec.json";
+import compactPlanningSpecJson from "@/openui/generated/compact-planning.spec.json";
+import compactRecommendationSpecJson from "@/openui/generated/compact-recommendation.spec.json";
+import compactAnalysisSpecJson from "@/openui/generated/compact-analysis.spec.json";
+import expandedSpecJson from "@/openui/generated/expanded.spec.json";
 import { cotGenUIPromptOptions } from "@/openui/promptOptions";
+import type { TaskFamily } from "@/lib/adaptive/types";
+import type { ModelProfile } from "@/lib/pipelineTypes";
+import { openUIPromptTierFor } from "@/openui/modelCapabilities";
+import { paletteNameForTaskFamily } from "@/openui/palettes";
 
 const librarySpec = librarySpecJson as LibrarySpec;
 
@@ -18,6 +27,23 @@ export const OPENUI_SYSTEM_PROMPT = generateSystemPrompt({
   library: librarySpec,
   promptOptions: cotGenUIPromptOptions,
 });
+
+const promptSpecs = {
+  general: compactGeneralSpecJson as LibrarySpec,
+  planning: compactPlanningSpecJson as LibrarySpec,
+  recommendation: compactRecommendationSpecJson as LibrarySpec,
+  analysis: compactAnalysisSpecJson as LibrarySpec,
+  expanded: expandedSpecJson as LibrarySpec,
+};
+
+export function openUISystemPromptFor(args: { taskFamily: TaskFamily; modelProfile: ModelProfile }): { prompt: string; promptProfile: string } {
+  const tier = openUIPromptTierFor(args.modelProfile);
+  const palette = tier === "expanded" ? "expanded" : paletteNameForTaskFamily(args.taskFamily);
+  return {
+    prompt: generateSystemPrompt({ library: promptSpecs[palette], promptOptions: cotGenUIPromptOptions }),
+    promptProfile: `${tier}:${tier === "expanded" ? "general" : palette}`,
+  };
+}
 
 export interface OpenUIActionBinding {
   ref: string;

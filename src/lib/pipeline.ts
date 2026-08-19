@@ -7,7 +7,7 @@ import type { InferConflict, InferQuestion, InferSlot } from "@/lib/schemas";
 import {
   mockOpenUIFromCardPlan,
   normalizeOpenUIOutput,
-  OPENUI_SYSTEM_PROMPT,
+  openUISystemPromptFor,
   validateOpenUIArtifact,
 } from "@/lib/openui";
 import { buildOpenUIGenerationPayload, buildOpenUIRepairPayload } from "@/openui/payload";
@@ -1120,6 +1120,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else if (input.name === "openui_generate") {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
+    const promptRoute = openUISystemPromptFor({ taskFamily: classification.taskFamily, modelProfile: input.modelProfile ?? DEFAULT_PROFILES.openui_generate });
     const assetManifest = FEATURE_FLAGS.OPENUI_ASSETS ? await resolveAssetManifest(input.cardPlan) : { requests: [], assets: [] };
     const generationPayload = buildOpenUIGenerationPayload(input.cardPlan, assetManifest);
     llm = await callText({
@@ -1129,7 +1130,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       onLog: input.onLog,
       stream: input.stream,
       onStreamDelta: input.onStreamDelta,
-      system: OPENUI_SYSTEM_PROMPT,
+      system: promptRoute.prompt,
       user: generationPayload,
     });
     let openuiCode = normalizeOpenUIOutput(String(llm.value ?? ""));
@@ -1156,7 +1157,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         doSample: false,
         steeringHint: input.adaptiveContext?.stepHint,
         onLog: input.onLog,
-        system: `${OPENUI_SYSTEM_PROMPT}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure.`,
+        system: `${promptRoute.prompt}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure.`,
         user: buildOpenUIRepairPayload(input.cardPlan, openuiCode, validation),
       });
       repairMs = repair.llmMs;
@@ -1188,6 +1189,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         repairTriggered: repaired,
         repairMs,
         quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
+        promptProfile: promptRoute.promptProfile,
       },
       openuiCode,
       assetManifest,
@@ -1198,6 +1200,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         repairTriggered: repaired,
         repairMs,
         quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
+        promptProfile: promptRoute.promptProfile,
         assetManifest,
       },
     };
