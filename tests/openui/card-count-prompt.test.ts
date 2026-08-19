@@ -12,6 +12,8 @@ describe("adaptive CardPlan card count", () => {
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("1、2、3、4、5、6");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("概览 / 详情 / 下一步");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("先判断需要几个独立用户界面");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("1张也不是默认值");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("增加认知负担");
     expect(CARD_PLAN_SYSTEM_PROMPT).not.toContain("生成3-6张卡");
   });
 

@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { normalizeAssetRequest } from "../../src/lib/cardPlanNormalize";
 import { buildOpenUIGenerationPayload } from "../../src/openui/payload";
 import { collectAssetRequests, isPrivateHostname, resolveAssetManifest } from "../../src/openui/assetResolver";
+import { invalidAssetRefsInTree } from "../../src/openui/assetTypes";
+import { createParser, type LibraryJSONSchema, type LibrarySpec } from "@openuidev/lang-core";
+import librarySpec from "../../src/openui/generated/system-prompt.spec.json";
 import { sampleCardPlan } from "./fixtures";
 
 const mediaPlan = {
@@ -30,5 +33,11 @@ describe("host-owned OpenUI assets", () => {
   it("rejects local and private network targets before fetching", () => {
     for (const host of ["localhost", "127.0.0.1", "10.1.2.3", "172.20.1.2", "192.168.1.1", "::1", "service.local"]) expect(isPrivateHostname(host)).toBe(true);
     expect(isPrivateHostname("8.8.8.8")).toBe(false);
+  });
+
+  it("detects model-invented asset refs against the host manifest", () => {
+    const parsed = createParser((librarySpec as LibrarySpec).schema as LibraryJSONSchema).parse('root = CardDeck([card], "auto")\ncard = GeneratedCard("a", "A", [image])\nimage = AssetImage("asset_invented")');
+    expect(invalidAssetRefsInTree(parsed.root, { requests: [], assets: [] })).toEqual(["asset_invented"]);
+    expect(invalidAssetRefsInTree(parsed.root, { requests: [], assets: [{ id: "asset_invented", kind: "image", src: "https://safe.example/a.jpg", alt: "A" }] })).toEqual([]);
   });
 });

@@ -791,7 +791,7 @@ function graphFromPlan(plan: CardPlan, slots: InferSlot[]): string {
   const slotIds = new Map(slots.map((slot, index) => [slot.name, `S${index}`]));
   slots.forEach((slot, index) => lines.push(`  S${index}["${slot.name}=${String(slot.value).replaceAll('"', "'")}"]`));
   plan.cards.forEach((card, cardIndex) => {
-    lines.push(`  C${cardIndex}["${card.purpose.replaceAll('"', "'")}"]`);
+    lines.push(`  C${cardIndex}["${String(card.purpose ?? `卡片 ${cardIndex + 1}`).replaceAll('"', "'")}"]`);
     const refs = new Set<string>(card.sourceSlots ?? []);
     card.blocks.forEach((block) => {
       if (block.valueFromSlot) refs.add(block.valueFromSlot);
@@ -831,6 +831,9 @@ function normalizeCardPlan(plan: CardPlan, allowedExternalUrls: Set<string>, val
     ...plan,
     cards: cards.map((card) => ({
       ...card,
+      purpose: typeof card.purpose === "string" && card.purpose.trim()
+        ? card.purpose.trim()
+        : "未命名卡片",
       presentation: normalizeCardPresentation(card.presentation),
       sourceSlots: Array.isArray(card.sourceSlots) ? card.sourceSlots.filter(validSlot) : undefined,
       blocks: (Array.isArray(card.blocks) ? card.blocks : []).slice(0, 5).map((block) => ({
@@ -1134,7 +1137,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       user: generationPayload,
     });
     let openuiCode = normalizeOpenUIOutput(String(llm.value ?? ""));
-    let validation = validateOpenUIArtifact(openuiCode, input.cardPlan);
+    let validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest);
     let repaired = false;
     let repairMs: number | undefined;
     if (!validation.valid) {
@@ -1172,7 +1175,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         timeToFirstModelStatementMs: first.timeToFirstModelStatementMs,
       };
       openuiCode = normalizeOpenUIOutput(String(repair.value ?? ""));
-      validation = validateOpenUIArtifact(openuiCode, input.cardPlan);
+      validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest);
       if (!validation.valid) {
         throw new Error(`OpenUI 两次均不可编译：${validation.errors.join("；")}`);
       }
