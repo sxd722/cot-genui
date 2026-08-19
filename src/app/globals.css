@@ -233,6 +233,43 @@ body {
 .openui-action-item:disabled,
 .openui-media-action:disabled { cursor: wait; opacity: 0.55; }
 
+.openui-metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; }
+.openui-metric-row > div { border-radius: 14px; background: rgb(24 24 27 / 0.045); padding: 11px; }
+.openui-metric-row dt { color: rgb(24 24 27 / 0.5); font-size: 9px; }
+.openui-metric-row dd { margin-top: 4px; color: #18181b; font-size: 18px; font-weight: 780; letter-spacing: -0.03em; }
+.openui-metric-row small { display: block; margin-top: 3px; color: rgb(24 24 27 / 0.48); font-size: 9px; }
+.openui-timeline { display: grid; gap: 0; }
+.openui-timeline li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; min-height: 58px; list-style: none; }
+.openui-timeline li > span { display: grid; z-index: 1; width: 24px; height: 24px; place-items: center; border-radius: 999px; background: #0e7490; color: white; font-size: 9px; font-weight: 800; }
+.openui-timeline li:not(:last-child)::after { content: ""; grid-column: 1; grid-row: 1; width: 1px; height: 100%; margin-left: 12px; background: rgb(8 145 178 / 0.22); }
+.openui-timeline li > div { grid-column: 2; grid-row: 1; padding-bottom: 15px; }
+.openui-timeline strong, .openui-timeline small, .openui-timeline p { display: block; }
+.openui-timeline small { color: #0891b2; font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.openui-timeline strong { margin-top: 2px; font-size: 12px; }
+.openui-timeline p { margin-top: 3px; color: rgb(24 24 27 / 0.58); font-size: 10px; }
+.openui-recommendation-grid, .openui-comparison-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 9px; }
+.openui-recommendation-grid > article, .openui-comparison-grid > section { overflow: hidden; border: 1px solid rgb(24 24 27 / 0.08); border-radius: 15px; background: white; }
+.openui-recommendation-grid > article > div:last-child, .openui-comparison-grid > section { padding: 12px; }
+.openui-recommendation-grid span, .openui-comparison-grid header span { display: inline-block; margin-bottom: 6px; border-radius: 999px; background: #ecfeff; padding: 3px 7px; color: #0e7490; font-size: 8px; font-weight: 800; }
+.openui-recommendation-grid strong, .openui-recommendation-grid p { display: block; }
+.openui-recommendation-grid p { margin-top: 4px; color: rgb(24 24 27 / 0.58); font-size: 10px; }
+.openui-semantic-media-placeholder { display: grid; min-height: 76px; place-items: center; background: linear-gradient(135deg, #cffafe, #e4e4e7); color: rgb(14 116 144 / 0.55); font-size: 8px; font-weight: 900; letter-spacing: 0.16em; }
+.openui-comparison-grid header strong { display: block; font-size: 12px; }
+.openui-comparison-grid dl { display: grid; margin-top: 8px; gap: 6px; }
+.openui-comparison-grid dl > div { display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid rgb(24 24 27 / 0.06); padding-top: 6px; font-size: 9px; }
+.openui-comparison-grid dt { color: rgb(24 24 27 / 0.5); }
+.openui-comparison-grid dd { font-weight: 700; text-align: right; }
+.openui-media-hero { display: flex; min-height: 170px; align-items: end; background: radial-gradient(circle at 85% 5%, rgb(34 211 238 / 0.34), transparent 44%), linear-gradient(145deg, #164e63, #0e7490); padding: 22px; color: white; }
+.openui-media-hero--pending { background: radial-gradient(circle at 85% 5%, rgb(255 255 255 / 0.22), transparent 44%), linear-gradient(145deg, #164e63, #0e7490); }
+.openui-media-hero p { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.openui-media-hero p span { border-radius: 999px; background: rgb(255 255 255 / 0.16); padding: 3px 7px; font-size: 8px; }
+.openui-media-hero strong { display: block; max-width: 90%; font-size: 22px; line-height: 1.08; }
+.openui-media-hero small { display: block; margin-top: 6px; opacity: 0.72; }
+.openui-action-panel { border: 1px solid rgb(8 145 178 / 0.16); border-radius: 16px; background: #ecfeff; padding: 13px; }
+.openui-action-panel > strong { font-size: 12px; }
+.openui-action-panel > p { margin-top: 3px; color: rgb(14 116 144 / 0.7); font-size: 10px; }
+.openui-action-panel > div { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+
 @keyframes openui-card-shimmer {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }

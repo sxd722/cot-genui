@@ -225,6 +225,30 @@
       "signature": "CardDeck(children: GeneratedCard[], layout?: \"auto\" | \"deck\" | \"grid\" | \"featured\")",
       "description": "The only OpenUI root. Lays out GeneratedCard peers as a horizontal snap deck in narrow containers and a responsive grid in wide containers."
     },
+    "MetricRow": {
+      "signature": "MetricRow(items: {label: string, value: string, detail?: string}[])",
+      "description": "A compact row of key metrics. Prefer this over manually stacking labels and values."
+    },
+    "Timeline": {
+      "signature": "Timeline(items: {title: string, detail?: string, meta?: string}[])",
+      "description": "A chronological or sequential set of milestones with optional detail and metadata."
+    },
+    "RecommendationGrid": {
+      "signature": "RecommendationGrid(items: {title: string, detail?: string, badge?: string, assetRef?: string}[])",
+      "description": "A scan-friendly grid of recommendations. assetRef is an optional host-owned asset ID, never a URL."
+    },
+    "ComparisonGrid": {
+      "signature": "ComparisonGrid(columns: {title: string, rows: {label: string, value: string}[], badge?: string}[])",
+      "description": "Side-by-side option columns with consistently labeled comparison rows."
+    },
+    "MediaHero": {
+      "signature": "MediaHero(title: string, subtitle?: string, assetRef?: string, badges?: string[])",
+      "description": "A prominent editorial hero with an optional host-owned assetRef. Never pass a URL."
+    },
+    "ActionPanel": {
+      "signature": "ActionPanel(title?: string, description?: string, actions: (HostActionChip | HostActionItem)[])",
+      "description": "A focused host-action region. Its children must be supplied HostActionChip or HostActionItem refs."
+    },
     "HostActionChip": {
       "signature": "HostActionChip(label: string, actionRef: string)",
       "description": "Compact host-side action affordance. actionRef must be copied exactly from CardPlan Markdown."
@@ -401,6 +425,12 @@
       "components": [
         "CardDeck",
         "GeneratedCard",
+        "MetricRow",
+        "Timeline",
+        "RecommendationGrid",
+        "ComparisonGrid",
+        "MediaHero",
+        "ActionPanel",
         "HostActionChip",
         "HostActionItem",
         "HostActionMenu",
@@ -410,7 +440,8 @@
       "notes": [
         "CardDeck is the only root.",
         "GeneratedCard is the only peer card boundary.",
-        "HostAction components must receive actionRef values supplied by the host."
+        "HostAction components must receive actionRef values supplied by the host.",
+        "Prefer a semantic component when it directly represents the content pattern."
       ]
     }
   ],
@@ -586,6 +617,24 @@
       "CardDeck": {
         "$ref": "#/$defs/CardDeck"
       },
+      "MetricRow": {
+        "$ref": "#/$defs/MetricRow"
+      },
+      "Timeline": {
+        "$ref": "#/$defs/Timeline"
+      },
+      "RecommendationGrid": {
+        "$ref": "#/$defs/RecommendationGrid"
+      },
+      "ComparisonGrid": {
+        "$ref": "#/$defs/ComparisonGrid"
+      },
+      "MediaHero": {
+        "$ref": "#/$defs/MediaHero"
+      },
+      "ActionPanel": {
+        "$ref": "#/$defs/ActionPanel"
+      },
       "HostActionChip": {
         "$ref": "#/$defs/HostActionChip"
       },
@@ -659,6 +708,12 @@
       "Modal",
       "GeneratedCard",
       "CardDeck",
+      "MetricRow",
+      "Timeline",
+      "RecommendationGrid",
+      "ComparisonGrid",
+      "MediaHero",
+      "ActionPanel",
       "HostActionChip",
       "HostActionItem",
       "HostActionMenu",
@@ -2746,6 +2801,205 @@
         ],
         "additionalProperties": false,
         "description": "The only OpenUI root. Lays out GeneratedCard peers as a horizontal snap deck in narrow containers and a responsive grid in wide containers."
+      },
+      "MetricRow": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "A compact row of key metrics. Prefer this over manually stacking labels and values."
+      },
+      "Timeline": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "meta": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "A chronological or sequential set of milestones with optional detail and metadata."
+      },
+      "RecommendationGrid": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "badge": {
+                  "type": "string"
+                },
+                "assetRef": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "A scan-friendly grid of recommendations. assetRef is an optional host-owned asset ID, never a URL."
+      },
+      "ComparisonGrid": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "badge": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "rows"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "columns"
+        ],
+        "additionalProperties": false,
+        "description": "Side-by-side option columns with consistently labeled comparison rows."
+      },
+      "MediaHero": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": "string"
+          },
+          "assetRef": {
+            "type": "string"
+          },
+          "badges": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false,
+        "description": "A prominent editorial hero with an optional host-owned assetRef. Never pass a URL."
+      },
+      "ActionPanel": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HostActionChip"
+                },
+                {
+                  "$ref": "#/$defs/HostActionItem"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "additionalProperties": false,
+        "description": "A focused host-action region. Its children must be supplied HostActionChip or HostActionItem refs."
       },
       "HostActionChip": {
         "type": "object",

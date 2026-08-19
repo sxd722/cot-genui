@@ -13,6 +13,7 @@ export const cotGenUIPromptOptions: PromptOptions = {
     "Copy every line from requiredShell exactly as the first statements of the complete program, then define every referenced body statement.",
     "Do not add, remove, merge, reorder, or nest GeneratedCard components.",
     "Inside each GeneratedCard, compose freely with the available content, layout, chart, table, tabs, accordion, callout, and data-display components. Do not use Card as another card boundary.",
+    "When one semantic component directly represents the content, prefer it over manually rebuilding the same pattern with many Stack/Card/TextContent statements. Semantic components are not mandatory; use generic OpenUI components when they express the result more naturally.",
     "Use each supplied actionRef exactly once through Button + @ToAssistant or an approved HostAction component. Never show an actionRef as visible text.",
     "Never use Query, Mutation, @Run, @OpenUrl, or invented URLs. The host owns all side effects.",
     "Return only a complete OpenUI Lang program. Do not return Markdown fences, JSON, HTML, comments, or prose.",

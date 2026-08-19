@@ -8,6 +8,9 @@ describe("cot-genui OpenUI library", () => {
     expect(cotGenUILibrary.components.GeneratedCard).toBeDefined();
     expect(cotGenUILibrary.components.HostActionMenu).toBeDefined();
     expect(cotGenUILibrary.components.MediaActionTile).toBeDefined();
+    for (const name of ["MetricRow", "Timeline", "RecommendationGrid", "ComparisonGrid", "MediaHero", "ActionPanel"]) {
+      expect(cotGenUILibrary.components[name]).toBeDefined();
+    }
   });
 
   it("keeps the generated backend spec aligned with the browser library", () => {
