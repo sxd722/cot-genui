@@ -218,11 +218,11 @@
       "description": "Modal dialog. open is a reactive $boolean binding — set to true to open, X/Escape/backdrop auto-closes. Put Form with buttons inside children."
     },
     "GeneratedCard": {
-      "signature": "GeneratedCard(cardId: string, title: string, children: any[], subtitle?: string)",
+      "signature": "GeneratedCard(cardId: string, title: string, children: any[], variant?: \"standard\" | \"hero\" | \"editorial\" | \"comparison\" | \"timeline\" | \"data\" | \"action\" | \"media\", density?: \"compact\" | \"balanced\" | \"immersive\", subtitle?: string)",
       "description": "One peer card in a CardDeck. The host supplies cardId and title; compose its children freely without adding another card boundary."
     },
     "CardDeck": {
-      "signature": "CardDeck(children: GeneratedCard[])",
+      "signature": "CardDeck(children: GeneratedCard[], layout?: \"auto\" | \"deck\" | \"grid\" | \"featured\")",
       "description": "The only OpenUI root. Lays out GeneratedCard peers as a horizontal snap deck in narrow containers and a responsive grid in wide containers."
     },
     "HostActionChip": {
@@ -2689,6 +2689,27 @@
             "type": "array",
             "items": {}
           },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "hero",
+              "editorial",
+              "comparison",
+              "timeline",
+              "data",
+              "action",
+              "media"
+            ]
+          },
+          "density": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "balanced",
+              "immersive"
+            ]
+          },
           "subtitle": {
             "type": "string"
           }
@@ -2709,6 +2730,15 @@
             "items": {
               "$ref": "#/$defs/GeneratedCard"
             }
+          },
+          "layout": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "deck",
+              "grid",
+              "featured"
+            ]
           }
         },
         "required": [

@@ -11,15 +11,19 @@ export const GeneratedCard = defineComponent({
     cardId: z.string().describe("Stable CardPlan card ID"),
     title: z.string().describe("Host-provided card title"),
     children: z.array(z.any()).describe("Freely composed card content"),
+    variant: z.enum(["standard", "hero", "editorial", "comparison", "timeline", "data", "action", "media"]).optional(),
+    density: z.enum(["compact", "balanced", "immersive"]).optional(),
     subtitle: z.string().optional(),
   }),
   component: function GeneratedCardRenderer({ props, renderNode }) {
     const isStreaming = useIsStreaming();
     const renderedChildren = renderNode(props.children);
     const isEmpty = Children.toArray(renderedChildren).length === 0;
+    const variant = props.variant ?? "standard";
+    const density = props.density ?? "balanced";
 
     return (
-      <article className="openui-generated-card" data-card-id={props.cardId}>
+      <article className={`openui-generated-card openui-generated-card--${variant} openui-generated-card--density-${density}`} data-card-id={props.cardId}>
         <header className="openui-generated-card__header">
           <span className="openui-generated-card__eyebrow">{props.cardId}</span>
           <h2>{props.title}</h2>

@@ -112,6 +112,35 @@ body {
   padding: 18px 20px 22px;
 }
 
+.openui-generated-card--density-compact { min-height: 300px; }
+.openui-generated-card--density-compact .openui-generated-card__header { padding: 15px 17px 11px; }
+.openui-generated-card--density-compact .openui-generated-card__body { padding: 14px 17px 17px; }
+.openui-generated-card--density-immersive { min-height: 470px; }
+.openui-generated-card--density-immersive .openui-generated-card__header { padding: 28px 24px 18px; }
+.openui-generated-card--density-immersive .openui-generated-card__body { padding: 22px 24px 28px; }
+
+.openui-generated-card--hero {
+  background: radial-gradient(circle at 85% 5%, rgb(34 211 238 / 0.26), transparent 42%), linear-gradient(155deg, #ecfeff, #fff 58%, #f4f4f5);
+}
+.openui-generated-card--hero .openui-generated-card__header h2 { max-width: 85%; font-size: 25px; line-height: 1.08; }
+.openui-generated-card--editorial { background: #fff; box-shadow: 0 12px 34px rgb(24 24 27 / 0.05); }
+.openui-generated-card--editorial .openui-generated-card__header { border-bottom: 0; padding-bottom: 6px; }
+.openui-generated-card--editorial .openui-generated-card__header h2 { font-family: Georgia, serif; font-size: 23px; line-height: 1.18; }
+.openui-generated-card--comparison { background: linear-gradient(180deg, #fff, #f8fafc); }
+.openui-generated-card--comparison .openui-generated-card__body > * + * { border-top: 1px solid rgb(24 24 27 / 0.08); padding-top: 12px; }
+.openui-generated-card--timeline { background: linear-gradient(90deg, rgb(6 182 212 / 0.05), transparent 22%), #fff; }
+.openui-generated-card--timeline .openui-generated-card__body { padding-left: 26px; }
+.openui-generated-card--data { background: #fafafa; box-shadow: 0 10px 28px rgb(24 24 27 / 0.05); }
+.openui-generated-card--data .openui-generated-card__header { padding-bottom: 10px; }
+.openui-generated-card--action .openui-generated-card__body { display: flex; min-height: 260px; flex-direction: column; justify-content: space-between; }
+.openui-generated-card--action .openui-action-group:last-child { margin-top: 22px; border-top: 1px solid rgb(24 24 27 / 0.08); padding-top: 14px; }
+.openui-generated-card--media .openui-generated-card__header { border-bottom: 0; background: rgb(255 255 255 / 0.82); }
+.openui-generated-card--media .openui-generated-card__body { padding: 0 0 20px; }
+.openui-generated-card--media .openui-generated-card__body > :not(.openui-asset-image):not(.openui-asset-gallery):not(.openui-media-hero) { margin-inline: 20px; }
+
+.openui-card-deck--grid { grid-auto-flow: row; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); overflow-x: visible; }
+.openui-card-deck--featured { grid-template-rows: auto; }
+
 .openui-generated-card__skeleton {
   display: grid;
   gap: 10px;
@@ -218,6 +247,9 @@ body {
     padding-right: 1px;
     scroll-snap-type: none;
   }
+
+  .openui-card-deck--featured { grid-template-columns: minmax(360px, 1.35fr) repeat(2, minmax(260px, 1fr)); }
+  .openui-card-deck--featured > :first-child { grid-row: span 2; }
 }
 
 .openui-host--targeting {
