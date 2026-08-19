@@ -29,7 +29,6 @@ import type {
   CardNode,
   IRBlock,
   IRAction,
-  IRListItem,
   CompileResult,
   CompileNotice,
 } from "./modules";
@@ -60,7 +59,7 @@ export function compileCardPlan(plan: CardPlan): CompileResult {
   }
 
   // 收集 initialState（从 IR 的 slot 引用 + 直接值）
-  const initialState = collectInitialState(plan, notices);
+  const initialState = collectInitialState(plan);
 
   // 编译每张卡
   const dslCards: Card[] = [];
@@ -68,7 +67,7 @@ export function compileCardPlan(plan: CardPlan): CompileResult {
 
   for (let i = 0; i < plan.cards.length; i++) {
     const node = plan.cards[i];
-    const { card, extraTransitions, extraActions } = compileCard(
+    const { card, extraTransitions } = compileCard(
       node,
       i,
       plan.cards.length,
@@ -125,7 +124,7 @@ function compileCard(
   total: number,
   plan: CardPlan,
   notices: CompileNotice[],
-): { card: Card; extraTransitions: FlowTransition[]; extraActions: Action[] } {
+): { card: Card; extraTransitions: FlowTransition[] } {
   const header: Header = {
     skillName: plan.skillName,
     stepLabel: `${index + 1} / ${total} · ${node.purpose}`,
@@ -164,7 +163,6 @@ function compileCard(
   return {
     card: { id: node.id, template, header, blocks, actions: uniqueActions },
     extraTransitions,
-    extraActions: extraActions,
   };
 }
 
@@ -643,7 +641,7 @@ function collectTransitions(
 /*  initialState 收集                                                  */
 /* ------------------------------------------------------------------ */
 
-function collectInitialState(plan: CardPlan, notices: CompileNotice[]): InitialState {
+function collectInitialState(plan: CardPlan): InitialState {
   const strings: Record<string, string> = {};
   const numbers: Record<string, number> = {};
   const booleans: Record<string, boolean> = {};

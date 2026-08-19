@@ -13,9 +13,9 @@ export function ResultPanel() {
       {!result ? (
         <div className="flex flex-1 items-center justify-center">
           <p className="text-center text-xs text-zinc-400">
-            执行「⑦ 生成」步骤后，
+            执行「⑤ CardPlan 生成」后，
             <br />
-            推断画像与行程会显示在这里
+            CardPlan 与 OpenUI 产物会显示在这里
           </p>
         </div>
       ) : (

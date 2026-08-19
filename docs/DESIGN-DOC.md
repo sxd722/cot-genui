@@ -33,7 +33,7 @@ cot-genui 是一个 **意图消歧 + 卡片生成** 的全链路可视化工具�
 │    ├─ ⑥ clarifying_questions 最小化提问（暂停等用户回答）          │
 │    ├─ ⑦ generate           生成方案（IR模式/语义Markdown模式）      │
 │    │    ├─ cardPlan (IR)   → 编译器 → DSL → 校验 → 渲染            │
-│    │    ├─ semanticMarkdown → 纯markdown描述                      │
+│    │    ├─ cardPlanMarkdown → 纯markdown描述                      │
 │    │    ├─ reasoningGraph  → 推理DAG (mermaid)                    │
 │    │    └─ enrich          → missingInfo自动补齐                   │
 │    └─ ⑧ a2ui_generate      将⑦结果翻译为A2UI JSONL               │
@@ -116,7 +116,7 @@ CardPlan IR → enrichCardPlan(补齐missingInfo) → compileCardPlan → valida
 ### 3.4 A2UI 卡片生成（第 8 步）
 
 ```
-第7步产出（semanticMarkdown / cardPlan）
+第7步产出（cardPlanMarkdown / cardPlan）
   → 拼接 prompt（注入第7步结果 + A2UI 组件规范 + 2x4约束）
   → GLM 生成 A2UI JSONL（createSurface + updateComponents）
   → renderA2UIIframe（iframe 内 Liquid Glass 渲染）
@@ -175,8 +175,8 @@ CardPlan IR → enrichCardPlan(补齐missingInfo) → compileCardPlan → valida
 |---|---|---|
 | 📋 DSL 卡片渲染 | compiledArtifact | 编译后的 CardArtifact → DslCardHost 交互 |
 | 🎴 堆叠卡片 | result.cards | 旧的 StackedCards（翻转动效） |
-| 📝 语义描述 | semanticMarkdown | 混写 markdown 渲染（@引用/action链接高亮） |
-| 📦 Blueprint JSON | semanticMarkdown / cardPlan | 原始 JSON，可复制给后续 LLM |
+| 📝 语义描述 | cardPlanMarkdown | 混写 markdown 渲染（@引用/action链接高亮） |
+| 📦 Blueprint JSON | cardPlanMarkdown / cardPlan | 原始 JSON，可复制给后续 LLM |
 | 📱 A2UI 渲染 | a2uiJsonl | iframe 内 Liquid Glass 卡片 |
 | 🔧 Raw IR | cardPlan | GLM 产出的原始 CardPlan IR |
 
@@ -328,7 +328,7 @@ GLM 在生成时可标注 `missingInfo`（外部客观信息用 web_search，推
 | 北京旅游 | ✅ 全链路 | IR | DSL 卡片 | GLM 一次性产出 5 卡（含景点数据流） |
 | 购房规划 | ✅ 全链路 | IR | DSL 卡片 | GLM 产出 6 卡（含方案对比 onSelect） |
 | 裁员应对 | ✅ 全链路 | IR | DSL 卡片 | 10 槽位 + 3 用户回答 |
-| AI 编程工具推荐 | ✅ 全链路 | 语义 | Semantic Markdown | 混写 markdown + data/action 索引 |
+| AI 编程工具推荐 | ✅ 全链路 | 语义 | CardPlan Markdown | 混写 markdown + data/action 索引 |
 | PDF 文字识别 | ✅ DSL demo | — | DSL 卡片 | spec 原生场景，工具调用完整 |
 | 读书笔记 | ✅ DSL demo | — | DSL 卡片 | 图片/图表降级（3 notice） |
 | 股票跟踪 | ✅ DSL demo | — | DSL 卡片 | LLM 调用 + metric 降级 |

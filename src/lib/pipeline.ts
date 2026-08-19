@@ -5,14 +5,19 @@ import { createLLMClient, extractJson, hasAnyLLMKey, type CallLog, type LLMProvi
 import type { CardPlan } from "@/dsl/modules";
 import type { InferConflict, InferQuestion, InferSlot } from "@/lib/schemas";
 import {
-  buildOpenUIActionBindings,
   mockOpenUIFromCardPlan,
   normalizeOpenUIOutput,
   OPENUI_SYSTEM_PROMPT,
   validateOpenUIArtifact,
 } from "@/lib/openui";
+import { buildOpenUIGenerationPayload, buildOpenUIRepairPayload } from "@/openui/payload";
+import { hasCompleteOpenUIStatement } from "@/openui/streamTiming";
+import { cardPlanToVibeMarkdown } from "@/openui/vibeMarkdown";
 import { retrieveProfileEvidence } from "@/lib/profile";
 import type { ProfileDigest } from "@/lib/profileTypes";
+import { CARD_PLAN_SYSTEM_PROMPT } from "@/lib/cardPlanPrompt";
+import { integrateWebFactsIntoCardPlan } from "@/lib/webFactIntegration";
+import { NVIDIA_DIFFUSION_GEMMA_MODEL, nvidiaChatOptions } from "@/lib/nvidia";
 import {
   PIPELINE_STEPS,
   type InferenceState,
@@ -48,9 +53,13 @@ interface LLMResult {
   llmMs: number;
   usage?: TokenUsage;
   providerCreatedAt?: number;
+  timeToFirstContentMs?: number;
+  timeToFirstModelStatementMs?: number;
   cost?: number;
   webSearch?: unknown;
 }
+
+type GroqReasoningEffort = "none" | "default" | "low" | "medium" | "high";
 
 const DEFAULT_PROFILES: Record<PipelineStepName, ModelProfile> = {
   intent_analysis: "groq_qwen_3_6_27b",
@@ -74,10 +83,28 @@ const STEP_SAMPLING: Record<PipelineStepName, { temperature: number; doSample: b
   openui_generate: { temperature: 0.2, doSample: true },
 };
 
-function resolveModel(profile: ModelProfile): { model: string; thinking: boolean; provider: LLMProvider } {
+function resolveModel(profile: ModelProfile): {
+  model: string;
+  thinking: boolean;
+  provider: LLMProvider;
+  groqReasoningEffort?: GroqReasoningEffort;
+  includeReasoning?: boolean;
+} {
   switch (profile) {
     case "groq_qwen_3_6_27b":
-      return { model: "qwen/qwen3.6-27b", thinking: false, provider: "groq" };
+      return { model: "qwen/qwen3.6-27b", thinking: false, provider: "groq", groqReasoningEffort: "none" };
+    case "groq_gpt_oss_120b":
+      return {
+        model: "openai/gpt-oss-120b",
+        thinking: true,
+        provider: "groq",
+        groqReasoningEffort: "medium",
+        includeReasoning: false,
+      };
+    case "hf_community_qwen_3_8_27b":
+      return { model: "Qwen/Qwen3.8-27B", thinking: false, provider: "hf_community" };
+    case "nvidia_diffusion_gemma_26b":
+      return { model: NVIDIA_DIFFUSION_GEMMA_MODEL, thinking: false, provider: "nvidia" };
     case "glm_5_2_thinking":
       return { model: "glm-5.2", thinking: true, provider: "glm" };
     case "glm_5_2":
@@ -108,6 +135,9 @@ function estimateCost(model: string, usage?: TokenUsage): number | undefined {
   let prices: Record<string, { input: number; output: number; cachedInput?: number }> = {
     "glm-4.7-flash": { input: 0, output: 0 },
     "qwen/qwen3.6-27b": { input: 0.6, output: 3.0 },
+    "openai/gpt-oss-120b": { input: 0.15, cachedInput: 0.075, output: 0.6 },
+    "qwen/qwen3.8-27b": { input: 0, cachedInput: 0, output: 0 },
+    [NVIDIA_DIFFUSION_GEMMA_MODEL]: { input: 0, cachedInput: 0, output: 0 },
   };
   if (configured) {
     try {
@@ -141,6 +171,8 @@ async function callJson(args: {
   thinking: boolean;
   temperature: number;
   doSample: boolean;
+  groqReasoningEffort?: GroqReasoningEffort;
+  includeReasoning?: boolean;
   webSearchQuery?: string;
   onLog?: RunInput["onLog"];
   allowModelFallback?: boolean;
@@ -153,11 +185,14 @@ async function callJson(args: {
   let providerSearch: unknown;
   let searchUsage: TokenUsage | undefined;
   let searchCost: number | undefined;
-  if (args.provider === "groq" && args.webSearchQuery) {
+  if ((args.provider === "groq" || args.provider === "nvidia") && args.webSearchQuery) {
     const searchStarted = Date.now();
+    const primaryModelLabel = args.provider === "nvidia" ? "NVIDIA DiffusionGemma" : "Groq Qwen";
     log(args.onLog, "request", `Groq Compound web_search query="${args.webSearchQuery.slice(0, 60)}"`);
     try {
-      const searchCompletion = await client.chat.completions.create({
+      if (!process.env.GROQ_API_KEY) throw new Error("未配置 GROQ_API_KEY");
+      const groqSearchClient = args.provider === "groq" ? client : createLLMClient("groq");
+      const searchCompletion = await groqSearchClient.chat.completions.create({
         model: "groq/compound",
         messages: [
           { role: "system", content: "Perform a current web search. Return concrete facts, entities, source URLs, and actionable official links. Do not invent URLs." },
@@ -180,7 +215,7 @@ async function callJson(args: {
         executedTools: searchMessage?.executed_tools,
       });
     } catch (compoundError) {
-      log(args.onLog, "fallback", "Groq Compound 不可用，尝试使用 GLM 仅执行联网检索；主推理仍由 Groq Qwen 完成", {
+      log(args.onLog, "fallback", `Groq Compound 不可用，尝试使用 GLM 仅执行联网检索；主推理仍由 ${primaryModelLabel} 完成`, {
         error: compoundError instanceof Error ? compoundError.message : String(compoundError),
       });
       if (process.env.LLM_API_KEY) {
@@ -224,24 +259,31 @@ async function callJson(args: {
             content: glmSearchCompletion.choices[0]?.message?.content ?? "",
             raw: (glmSearchCompletion as unknown as { web_search?: unknown }).web_search,
           };
-          log(args.onLog, "response", `GLM 联网检索降级完成 ${Date.now() - glmSearchStarted}ms；继续交给 Groq Qwen 归纳`, {
+          log(args.onLog, "response", `GLM 联网检索降级完成 ${Date.now() - glmSearchStarted}ms；继续交给 ${primaryModelLabel} 归纳`, {
             model: glmSearchCompletion.model,
             usage: glmSearchCompletion.usage,
           });
         } catch (glmSearchError) {
-          log(args.onLog, "fallback", "联网检索能力当前均不可用；跳过新鲜信息检索并继续 Groq Qwen 主流程", {
+          log(args.onLog, "fallback", `联网检索能力当前均不可用；跳过新鲜信息检索并继续 ${primaryModelLabel} 主流程`, {
             error: glmSearchError instanceof Error ? glmSearchError.message : String(glmSearchError),
           });
         }
       } else {
-        log(args.onLog, "fallback", "未配置 GLM 搜索备用能力；跳过新鲜信息检索并继续 Groq Qwen 主流程");
+        log(args.onLog, "fallback", `未配置 GLM 搜索备用能力；跳过新鲜信息检索并继续 ${primaryModelLabel} 主流程`);
       }
     }
   }
   const effectiveUser = providerSearch
     ? { request: args.user, providerSearchResults: providerSearch }
     : args.user;
-  log(args.onLog, "request", `POST /chat/completions provider=${args.provider} model=${args.model} thinking=${args.thinking ? "enabled" : "disabled"} temperature=${args.temperature} do_sample=${args.doSample}${args.webSearchQuery ? args.provider === "groq" ? providerSearch ? " search=provider-injected" : " search=unavailable" : " tool=web_search" : ""}${args.stream ? " stream=true" : ""}`);
+  const searchMode = !args.webSearchQuery
+    ? ""
+    : args.provider === "groq" || args.provider === "nvidia"
+      ? providerSearch ? " search=provider-injected" : " search=unavailable"
+      : args.provider === "glm"
+        ? " tool=web_search"
+        : " search=unsupported";
+  log(args.onLog, "request", `POST /chat/completions provider=${args.provider} model=${args.model} thinking=${args.thinking ? "enabled" : "disabled"} temperature=${args.temperature} do_sample=${args.doSample}${searchMode}${args.stream ? " stream=true" : ""}`);
 
   const params = {
     model: args.model,
@@ -249,9 +291,12 @@ async function callJson(args: {
       { role: "system" as const, content: `${args.system}\n只返回合法 JSON。输出结构：${args.schemaHint}` },
       { role: "user" as const, content: JSON.stringify(effectiveUser) },
     ],
-    response_format: isGlm
-      ? { type: "json_object" as const }
-      : { type: "json_object" as const },
+    // NVIDIA/vLLM rejects json_object unless a full JSON Schema is supplied.
+    // These pipeline prompts currently expose a semantic schemaHint, so keep
+    // NVIDIA unconstrained here and rely on the JSON-only prompt + extractor.
+    ...(args.provider !== "nvidia"
+      ? { response_format: { type: "json_object" as const } }
+      : {}),
     temperature: args.temperature,
     ...(isGlm
       ? {
@@ -260,9 +305,13 @@ async function callJson(args: {
           ...(args.thinking ? { reasoning_effort: "high" } : {}),
         }
       : {}),
-    ...(!isGlm
-      ? { reasoning_effort: args.thinking ? "default" : "none" }
+    ...(args.provider === "groq"
+      ? {
+          reasoning_effort: args.groqReasoningEffort ?? (args.thinking ? "default" : "none"),
+          ...(args.includeReasoning !== undefined ? { include_reasoning: args.includeReasoning } : {}),
+        }
       : {}),
+    ...(args.provider === "nvidia" ? nvidiaChatOptions(args.thinking) : {}),
     ...(isGlm && args.webSearchQuery
       ? {
           tools: [{
@@ -282,6 +331,8 @@ async function callJson(args: {
     thinking?: { type: "enabled" | "disabled" };
     do_sample?: boolean;
     reasoning_effort?: string;
+    include_reasoning?: boolean;
+    chat_template_kwargs?: { enable_thinking: boolean };
   };
 
   if (args.stream && !args.webSearchQuery) {
@@ -329,6 +380,11 @@ async function callJson(args: {
       };
     } catch (error) {
       const failedStreamMs = Date.now() - started;
+      const message = error instanceof Error ? error.message : String(error);
+      if (args.provider === "hf_community") {
+        log(args.onLog, "error", `HF Community 流式请求失败 ${failedStreamMs}ms: ${message}`);
+        throw new Error(`HF Community Endpoint 不可用、拥塞或已下线：${message}`, { cause: error });
+      }
       log(args.onLog, "fallback", `流式请求失败 ${failedStreamMs}ms，自动回退非流式: ${error instanceof Error ? error.message : String(error)}`);
       const fallback = await callJson({ ...args, stream: false, onStreamDelta: undefined });
       return { ...fallback, llmMs: failedStreamMs + fallback.llmMs };
@@ -368,6 +424,12 @@ async function callJson(args: {
       log(args.onLog, "fallback", "glm-4.7-flash 服务繁忙，自动改用 glm-5.2（thinking disabled）重试一次");
       return callJson({ ...args, provider: "glm", model: "glm-5.2", thinking: false, allowModelFallback: false });
     }
+    if (args.provider === "hf_community") {
+      throw new Error(`HF Community Endpoint 不可用、拥塞或已下线：${message}`, { cause: error });
+    }
+    if (args.provider === "nvidia") {
+      throw new Error(`NVIDIA Build DiffusionGemma 请求失败：${message}`, { cause: error });
+    }
     throw error;
   }
 }
@@ -380,6 +442,8 @@ async function callText(args: {
   thinking: boolean;
   temperature: number;
   doSample: boolean;
+  groqReasoningEffort?: GroqReasoningEffort;
+  includeReasoning?: boolean;
   onLog?: RunInput["onLog"];
   allowModelFallback?: boolean;
   stream?: boolean;
@@ -403,13 +467,19 @@ async function callText(args: {
           ...(args.thinking ? { reasoning_effort: "high" } : {}),
         }
       : {}),
-    ...(!isGlm
-      ? { reasoning_effort: args.thinking ? "default" : "none" }
+    ...(args.provider === "groq"
+      ? {
+          reasoning_effort: args.groqReasoningEffort ?? (args.thinking ? "default" : "none"),
+          ...(args.includeReasoning !== undefined ? { include_reasoning: args.includeReasoning } : {}),
+        }
       : {}),
+    ...(args.provider === "nvidia" ? nvidiaChatOptions(args.thinking) : {}),
   } as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming & {
     thinking?: { type: "enabled" | "disabled" };
     do_sample?: boolean;
     reasoning_effort?: string;
+    include_reasoning?: boolean;
+    chat_template_kwargs?: { enable_thinking: boolean };
   };
 
   try {
@@ -423,11 +493,20 @@ async function callText(args: {
       let responseModel = args.model;
       let providerCreatedAt: number | undefined;
       let rawUsage: OpenAI.CompletionUsage | undefined;
+      let timeToFirstContentMs: number | undefined;
+      let timeToFirstModelStatementMs: number | undefined;
       for await (const rawChunk of completionStream) {
         const chunk = rawChunk as typeof rawChunk & { usage?: OpenAI.CompletionUsage | null };
         const delta = chunk.choices[0]?.delta?.content;
         if (typeof delta === "string" && delta.length > 0) {
           content += delta;
+          const elapsedMs = Date.now() - started;
+          if (timeToFirstContentMs === undefined && delta.trim().length > 0) {
+            timeToFirstContentMs = elapsedMs;
+          }
+          if (timeToFirstModelStatementMs === undefined && hasCompleteOpenUIStatement(content)) {
+            timeToFirstModelStatementMs = elapsedMs;
+          }
           args.onStreamDelta?.(delta, content.length);
         }
         if (chunk.model) responseModel = chunk.model;
@@ -435,6 +514,9 @@ async function callText(args: {
         if (chunk.usage) rawUsage = chunk.usage;
       }
       const llmMs = Date.now() - started;
+      if (timeToFirstModelStatementMs === undefined && hasCompleteOpenUIStatement(content, true)) {
+        timeToFirstModelStatementMs = llmMs;
+      }
       const usage = normalizeUsage(rawUsage);
       log(args.onLog, "response", `模型流式 OpenUI 响应完成 ${llmMs}ms`, {
         model: responseModel,
@@ -442,8 +524,19 @@ async function callText(args: {
         usage: rawUsage,
         llmMs,
         streamedChars: content.length,
+        timeToFirstContentMs,
+        timeToFirstModelStatementMs,
       });
-      return { value: content, model: responseModel, llmMs, usage, providerCreatedAt, cost: estimateCost(responseModel, usage) };
+      return {
+        value: content,
+        model: responseModel,
+        llmMs,
+        usage,
+        providerCreatedAt,
+        timeToFirstContentMs,
+        timeToFirstModelStatementMs,
+        cost: estimateCost(responseModel, usage),
+      };
     }
 
     const completion = await client.chat.completions.create(params);
@@ -469,6 +562,12 @@ async function callText(args: {
     const failedMs = Date.now() - started;
     const message = error instanceof Error ? error.message : String(error);
     log(args.onLog, "error", `OpenUI 模型请求失败 ${failedMs}ms: ${message}`);
+    if (args.provider === "hf_community") {
+      throw new Error(`HF Community Endpoint 不可用、拥塞或已下线：${message}`, { cause: error });
+    }
+    if (args.provider === "nvidia") {
+      throw new Error(`NVIDIA Build DiffusionGemma 请求失败：${message}`, { cause: error });
+    }
     const rateLimited = /429|访问量过大|使用上限|rate.?limit/i.test(message);
     if (rateLimited) {
       if (args.model === "glm-4.7-flash" && args.allowModelFallback !== false) {
@@ -663,14 +762,6 @@ function refineFulfillment(state: InferenceState, query: string): InferenceState
   return state;
 }
 
-interface WebResource {
-  query: string;
-  summary: string;
-  url?: string;
-  score: number;
-  actionKind?: "order" | "reserve" | "details";
-}
-
 function validHttpUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const candidate = value.trim();
@@ -706,153 +797,6 @@ function extractUrlsFromSearch(webSearch: unknown): string[] {
   };
   walk(webSearch);
   return [...found];
-}
-
-function sourceScore(value: string): number {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    let score = url.pathname !== "/" || !!url.search ? 5 : 0;
-    if (host.endsWith(".gov.cn") || host === "gov.cn") score += 5;
-    if (host.endsWith("dpm.org.cn")) score += 8;
-    if (/book|ticket|reserve|booking|预约|购票/i.test(`${url.pathname}${url.search}`)) score += 4;
-    return score;
-  } catch {
-    return -1;
-  }
-}
-
-function webResources(state: InferenceState): WebResource[] {
-  return (state.webFacts ?? []).slice(0, 6).flatMap((fact, index) => {
-    const entities = (fact.entities ?? []).flatMap((entity) => {
-      const url = validHttpUrl(entity.actionUrl) ?? validHttpUrl(entity.sourceUrl);
-      return entity.name && url ? [{
-        query: entity.name,
-        summary: entity.description,
-        url,
-        score: sourceScore(url) + (entity.actionUrl ? 6 : 0),
-        actionKind: entity.actionUrl ? entity.actionKind : "details" as const,
-      }] : [];
-    });
-    if (entities.length) return entities;
-    const candidates = [...new Set((fact.sources ?? []).map(validHttpUrl).filter((url): url is string => !!url))]
-      .map((url, sourceIndex) => ({ url, score: sourceScore(url), sourceIndex }))
-      .sort((left, right) => right.score - left.score || left.sourceIndex - right.sourceIndex);
-    if (!candidates[0]?.url) return [];
-    return [{
-      query: String(fact.query || `公开信息 ${index + 1}`),
-      summary: String(fact.summary || "已取得公开来源，详情请查看原始页面。"),
-      url: candidates[0]?.url,
-      score: candidates[0]?.score ?? -1,
-      actionKind: "details" as const,
-    }];
-  });
-}
-
-function compactResourceLabel(query: string, actionKind?: WebResource["actionKind"]): string {
-  const label = query.replace(/[\r\n]+/g, " ").trim();
-  const verb = actionKind === "order" ? "去下单" : actionKind === "reserve" ? "去预订" : "查看";
-  return `${verb}${label.slice(0, 18) || "公开来源"}`;
-}
-
-/**
- * 把联网总结确定性写入 CardPlan。模型即使漏抄 webFacts，公开事实和精确 URL 也不会
- * 在 CardPlan → DSL / OpenUI 的链路中消失。
- */
-export function integrateWebFactsIntoCardPlan(plan: CardPlan, state: InferenceState): CardPlan {
-  const cards = plan.cards.map((card) => ({
-    ...card,
-    sourceSlots: card.sourceSlots ? [...card.sourceSlots] : undefined,
-    blocks: [...card.blocks],
-    actions: card.actions ? [...card.actions] : undefined,
-  }));
-  const existingText = JSON.stringify(cards.flatMap((card) => card.blocks));
-  const existingLinks = new Set(
-    cards.flatMap((card) => card.actions ?? [])
-      .filter((action) => action.type === "external-link")
-      .map((action) => validHttpUrl(action.link))
-      .filter((url): url is string => !!url),
-  );
-  const resources = webResources(state)
-    .map((item) => ({ ...item, url: item.url && existingLinks.has(item.url) ? undefined : item.url }))
-    .filter((item) => !!item.url || !existingText.includes(item.summary));
-  if (!resources.length) return plan;
-
-  const availableCards = Math.max(0, 6 - cards.length);
-  const chunks: WebResource[][] = [];
-  if (availableCards > 0) {
-    const chunkCount = Math.min(availableCards, Math.ceil(resources.length / 3), 2);
-    for (let index = 0; index < chunkCount; index += 1) {
-      const start = index * Math.ceil(resources.length / chunkCount);
-      const end = (index + 1) * Math.ceil(resources.length / chunkCount);
-      chunks.push(resources.slice(start, end));
-    }
-  } else {
-    chunks.push(resources);
-  }
-
-  chunks.filter((chunk) => chunk.length).forEach((chunk, chunkIndex) => {
-    const rankedLinks = chunk.filter((item) => item.url).sort((left, right) => right.score - left.score).slice(0, 3);
-    const blocks = chunk.length <= 5
-      ? chunk.map((item) => ({
-          kind: "summary" as const,
-          title: item.query,
-          text: item.summary,
-          detail: item.url ? `来源：${new URL(item.url).hostname}` : undefined,
-          sourceSlots: ["webFacts"],
-        }))
-      : [{
-          kind: "list" as const,
-          title: "最新公开信息",
-          items: chunk.map((item) => ({ label: `${item.query}：${item.summary}` })),
-          sourceSlots: ["webFacts"],
-        }];
-    const actions = rankedLinks.map((item, actionIndex) => ({
-      id: `open_web_source_${chunkIndex + 1}_${actionIndex + 1}`,
-      label: compactResourceLabel(item.query, item.actionKind),
-      type: "external-link" as const,
-      link: item.url,
-      role: actionIndex === 0 ? "primary" as const : "secondary" as const,
-    }));
-
-    if (availableCards > 0) {
-      cards.push({
-        id: chunkIndex === 0 ? "official_resources" : `official_resources_${chunkIndex + 1}`,
-        purpose: chunkIndex === 0 && resources.some((item) => item.actionKind === "order" || item.actionKind === "reserve") ? "真实推荐与可用入口" : chunkIndex === 0 ? "公开信息与来源入口" : "更多公开来源",
-        sourceSlots: ["webFacts"],
-        blocks,
-        actions,
-      });
-    } else {
-      const targetIndex = Math.max(0, cards.length - 1 - chunkIndex);
-      const target = cards[targetIndex];
-      if (!target) return;
-      target.sourceSlots = [...new Set([...(target.sourceSlots ?? []), "webFacts"])];
-      target.blocks = [...target.blocks, ...blocks];
-      target.actions = [...(target.actions ?? []), ...actions];
-    }
-  });
-
-  return { ...plan, cards };
-}
-
-function semanticFromPlan(plan: CardPlan): string {
-  const lines = [`# ${plan.iconText ? `${plan.iconText} ` : ""}${plan.skillName}`, "", `> ${plan.reasoning}`];
-  for (const card of plan.cards) {
-    lines.push("", `## ${card.purpose}`);
-    for (const block of card.blocks) {
-      const title = block.title ? `**${block.title}**：` : "";
-      const value = block.value ?? block.text ?? block.detail;
-      if (value) lines.push(`- ${title}${value}`);
-      for (const item of block.items ?? []) lines.push(`- ${item.label}`);
-      for (const metric of block.metrics ?? []) lines.push(`- ${metric.label}：${metric.value}${metric.unit ?? ""}`);
-    }
-    for (const action of card.actions ?? []) {
-      if (action.type === "external-link" && action.link) lines.push(`- [${action.label}](${action.link})`);
-      else lines.push(`- 操作：${action.label}`);
-    }
-  }
-  return lines.join("\n");
 }
 
 function graphFromPlan(plan: CardPlan, slots: InferSlot[]): string {
@@ -962,7 +906,7 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
     evidence_resolution: { name: input.name, reasoning: "无需额外上下文（mock）", outputs: {}, inferenceState: input.inferenceState ?? state, slots: (input.inferenceState ?? state).slots, conflicts: [], questions: [] },
     clarification: { name: input.name, reasoning: "没有需要澄清的关键槽位（mock）", outputs: { questionCount: 0 }, inferenceState: input.inferenceState ?? state, slots: (input.inferenceState ?? state).slots, questions: [] },
     context_enrichment: { name: input.name, reasoning: "完成总结与能力补齐（mock）", outputs: { summary: "mock summary", capabilityCalls: [] }, inferenceState: { ...(input.inferenceState ?? state), summary: "mock summary", webFacts: [], capabilityCalls: [] }, slots: (input.inferenceState ?? state).slots },
-    card_plan_generate: { name: input.name, reasoning: plan.reasoning, outputs: { cardCount: plan.cards.length }, cardPlan: plan, semanticMarkdown: semanticFromPlan(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState?.slots ?? [slot]), result: { summary: plan.skillName, assumptions: input.inferenceState?.assumptions ?? [] } },
+    card_plan_generate: { name: input.name, reasoning: plan.reasoning, outputs: { cardCount: plan.cards.length }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState?.slots ?? [slot]), result: { summary: plan.skillName, assumptions: input.inferenceState?.assumptions ?? [] } },
     openui_generate: {
       name: input.name,
       reasoning: "生成可编译 OpenUI Lang（mock）",
@@ -972,6 +916,7 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
         coverage: { required: 0, matched: 0, missing: [] },
         parser: { statements: plan.cards.length * 3 + 2, unresolved: [], orphaned: [], incomplete: false },
         repaired: false,
+        repairTriggered: false,
       },
     },
   };
@@ -1124,7 +1069,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
     llm = await callJson({
       ...selectedModel, ...sampling, onLog: input.onLog,
-      system: "你是 CardPlan 规划器。基于已经过用户澄清、事实总结和能力补齐的推断状态生成可编译卡片计划。reasoning 控制在120字内；生成3-6张卡。block kind 只能是 hero/summary/list/progress/status/metric/choice/toggle/image/chart/infographic。list.items 每项必须使用 {label,detail?}，禁止使用 title 代替 label。每张卡/块用 sourceSlots 标记证据槽位。若 webFacts.entities 存在，必须把具体实体名称、推荐理由和 locality 放入业务推荐卡的列表，不可只生成泛化建议；可用 actionUrl/sourceUrl 原样复制为 external-link，order/reserve 才使用“下单/预订”文案，否则写“查看详情”。action role 只能是 primary/secondary/tertiary。不得把低置信槽位做成选项要求用户再次回答。不要生成 HTML、Markdown、OpenUI 或 missingInfo。",
+      system: CARD_PLAN_SYSTEM_PROMPT,
       user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
       schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,purpose,sourceSlots?,blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
     });
@@ -1158,10 +1103,10 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     const validSlotNames = new Set(input.inferenceState.slots.map((slot) => slot.name));
     const plan = integrateWebFactsIntoCardPlan(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), integrationState);
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
-    base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, semanticMarkdown: semanticFromPlan(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
+    base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else if (input.name === "openui_generate") {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
-    const actionBindings = buildOpenUIActionBindings(input.cardPlan);
+    const generationPayload = buildOpenUIGenerationPayload(input.cardPlan);
     llm = await callText({
       ...selectedModel,
       ...sampling,
@@ -1169,24 +1114,12 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       stream: input.stream,
       onStreamDelta: input.onStreamDelta,
       system: OPENUI_SYSTEM_PROMPT,
-      user: {
-        cardPlan: input.cardPlan,
-        actionBindings,
-        acceptance: {
-          protocol: "OpenUI Lang v0.5",
-          root: "Stack",
-          expectedCardCount: input.cardPlan.cards.length,
-          oneDistinctCardPerCardPlanCard: true,
-          preserveCardOrder: true,
-          forbidMergedOrNestedCards: true,
-          allCardPlanContentRequired: true,
-          actionSyntax: "Button(label, Action([@ToAssistant(ref)]), variant)",
-        },
-      },
+      user: generationPayload,
     });
     let openuiCode = normalizeOpenUIOutput(String(llm.value ?? ""));
     let validation = validateOpenUIArtifact(openuiCode, input.cardPlan);
     let repaired = false;
+    let repairMs: number | undefined;
     if (!validation.valid) {
       repaired = true;
       log(input.onLog, "fallback", `OpenUI parser/覆盖校验失败，使用当前 provider 的非 Thinking 模型定向修复一次`, {
@@ -1195,21 +1128,21 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       });
       const repair = await callText({
         provider: selectedModel.provider,
-        model: selectedModel.provider === "groq" ? "qwen/qwen3.6-27b" : "glm-5.2",
+        model: selectedModel.provider === "groq"
+          ? "qwen/qwen3.6-27b"
+          : selectedModel.provider === "hf_community"
+            ? "Qwen/Qwen3.8-27B"
+            : selectedModel.provider === "nvidia"
+              ? NVIDIA_DIFFUSION_GEMMA_MODEL
+              : "glm-5.2",
         thinking: false,
         temperature: 0,
         doSample: false,
         onLog: input.onLog,
         system: `${OPENUI_SYSTEM_PROMPT}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure.`,
-        user: {
-          cardPlan: input.cardPlan,
-          actionBindings,
-          previousOpenUI: openuiCode,
-          expectedCardCount: input.cardPlan.cards.length,
-          validationErrors: validation.errors,
-          missingCoverage: validation.coverage.missing,
-        },
+        user: buildOpenUIRepairPayload(input.cardPlan, openuiCode, validation),
       });
+      repairMs = repair.llmMs;
       const first = llm;
       llm = {
         ...repair,
@@ -1217,6 +1150,8 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         llmMs: first.llmMs + repair.llmMs,
         usage: addUsage(first.usage, repair.usage),
         cost: (first.cost ?? 0) + (repair.cost ?? 0),
+        timeToFirstContentMs: first.timeToFirstContentMs,
+        timeToFirstModelStatementMs: first.timeToFirstModelStatementMs,
       };
       openuiCode = normalizeOpenUIOutput(String(repair.value ?? ""));
       validation = validateOpenUIArtifact(openuiCode, input.cardPlan);
@@ -1229,15 +1164,20 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       reasoning: repaired ? "OpenUI 初稿经 parser 与 CardPlan 覆盖校验后完成一次定向修复" : "模型直接生成了可编译且完整覆盖 CardPlan 的 OpenUI Lang",
       outputs: {
         protocol: "OpenUI Lang v0.5",
+        userPayloadChars: JSON.stringify(generationPayload).length,
         statements: validation.parser.statements,
         coverage: validation.coverage,
         repaired,
+        repairTriggered: repaired,
+        repairMs,
       },
       openuiCode,
       openuiDiagnostics: {
         coverage: validation.coverage,
         parser: validation.parser,
         repaired,
+        repairTriggered: repaired,
+        repairMs,
       },
     };
   } else {
@@ -1245,7 +1185,14 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   }
 
   const totalMs = Math.max(1, Date.now() - started);
-  const timing = { totalMs, llmMs: llm.llmMs, overheadMs: Math.max(0, totalMs - llm.llmMs), providerCreatedAt: llm.providerCreatedAt };
+  const timing = {
+    totalMs,
+    llmMs: llm.llmMs,
+    overheadMs: Math.max(0, totalMs - llm.llmMs),
+    providerCreatedAt: llm.providerCreatedAt,
+    timeToFirstContentMs: llm.timeToFirstContentMs,
+    timeToFirstModelStatementMs: llm.timeToFirstModelStatementMs,
+  };
   return { ...base, model: llm.model, modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], usage: llm.usage, cost: llm.cost, durationMs: totalMs, timing };
 }
 

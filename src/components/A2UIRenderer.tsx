@@ -284,6 +284,8 @@ function renderComponent(
     case "Image": {
       const url = resolveDynamic(comp.url, dataModel);
       return (
+        // A2UI image URLs are dynamic provider data, so Next/Image cannot predeclare their hosts.
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           key={comp.id}
           src={String(url ?? "")}

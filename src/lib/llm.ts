@@ -1,7 +1,10 @@
 import "server-only";
 import OpenAI from "openai";
+import { NVIDIA_BUILD_BASE_URL } from "@/lib/nvidia";
 
-export type LLMProvider = "glm" | "groq";
+export type LLMProvider = "glm" | "groq" | "hf_community" | "nvidia";
+
+const HF_COMMUNITY_BASE_URL = "https://g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud/v1";
 
 export interface LLMTarget {
   provider: LLMProvider;
@@ -15,24 +18,45 @@ export interface LLMTarget {
 /* ------------------------------------------------------------------ */
 
 export function createLLMClient(provider: LLMProvider = "glm"): OpenAI {
-  const apiKey = provider === "groq" ? process.env.GROQ_API_KEY : process.env.LLM_API_KEY;
+  const apiKey = provider === "hf_community"
+    ? "none"
+    : provider === "groq"
+      ? process.env.GROQ_API_KEY
+      : provider === "nvidia"
+        ? process.env.NVIDIA_API_KEY
+        : process.env.LLM_API_KEY;
   if (!apiKey) {
     throw new Error(
       provider === "groq"
         ? "缺少 GROQ_API_KEY 环境变量。请在 .env.local 中配置。"
+        : provider === "nvidia"
+          ? "缺少 NVIDIA_API_KEY 环境变量。请在本地环境文件中配置。"
         : "缺少 LLM_API_KEY 环境变量。请在 .env.local 中配置（可指向 OpenAI/GLM 等兼容端点）。",
     );
   }
   return new OpenAI({
     apiKey,
-    baseURL: provider === "groq"
-      ? (process.env.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1")
-      : process.env.LLM_BASE_URL,
+    baseURL: provider === "hf_community"
+      ? (process.env.HF_COMMUNITY_BASE_URL ?? HF_COMMUNITY_BASE_URL)
+      : provider === "groq"
+        ? (process.env.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1")
+        : provider === "nvidia"
+          ? (process.env.NVIDIA_BASE_URL ?? NVIDIA_BUILD_BASE_URL)
+          : process.env.LLM_BASE_URL,
+    ...(provider === "hf_community" || provider === "nvidia"
+      ? {
+          timeout: Math.max(
+            10_000,
+            Number(provider === "nvidia" ? process.env.NVIDIA_TIMEOUT_MS : process.env.HF_COMMUNITY_TIMEOUT_MS) || 120_000,
+          ),
+          maxRetries: 0,
+        }
+      : {}),
   });
 }
 
 export function hasAnyLLMKey(): boolean {
-  return !!(process.env.GROQ_API_KEY || process.env.LLM_API_KEY);
+  return !!(process.env.GROQ_API_KEY || process.env.LLM_API_KEY || process.env.NVIDIA_API_KEY);
 }
 
 export function defaultLLMTarget(): LLMTarget {
