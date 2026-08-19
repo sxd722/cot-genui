@@ -42,6 +42,23 @@ export interface ProfileDigest {
   degraded?: boolean;
 }
 
+export interface ProfileViewDetail {
+  ref: string;
+  text: string;
+  domain: string;
+  score: number;
+}
+
+export interface ProfileViewV2 {
+  version: "v2";
+  stableCore: string[];
+  domainDirectory: Array<{ name: string; summary: string; recordCount: number; signals: string[] }>;
+  selectedDetails: ProfileViewDetail[];
+  conflicts: string[];
+  profileOverlay?: string;
+  budget: { oldDigestChars: number; profileViewChars: number };
+}
+
 export interface RetrievalRequest {
   slotNames: string[];
   domains: string[];

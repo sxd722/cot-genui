@@ -1,6 +1,8 @@
 import type { CardPlan } from "@/dsl/modules";
 import type { InferConflict, InferQuestion, InferResult, InferSlot } from "@/lib/schemas";
 import type { ProfileDigest, RetrievalRequest } from "@/lib/profileTypes";
+import type { QueryClassification } from "@/lib/adaptive/types";
+import type { StepProvenance } from "@/lib/provenance";
 
 export const PIPELINE_STEPS = [
   "intent_analysis",
@@ -126,4 +128,11 @@ export interface PipelineStepOutput {
   modelProfile?: ModelProfile;
   usage?: TokenUsage;
   cost?: number;
+  adaptive?: {
+    policyId: string;
+    policyVersion: number;
+    classification: QueryClassification;
+    steeringHint: string;
+  };
+  provenance?: StepProvenance;
 }

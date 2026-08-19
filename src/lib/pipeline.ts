@@ -16,8 +16,13 @@ import { cardPlanToVibeMarkdown } from "@/openui/vibeMarkdown";
 import { retrieveProfileEvidence } from "@/lib/profile";
 import type { ProfileDigest } from "@/lib/profileTypes";
 import { CARD_PLAN_SYSTEM_PROMPT } from "@/lib/cardPlanPrompt";
-import { integrateWebFactsIntoCardPlan } from "@/lib/webFactIntegration";
+import { sanitizeCardPlanExternalLinks } from "@/lib/webFactIntegration";
 import { NVIDIA_DIFFUSION_GEMMA_MODEL, nvidiaChatOptions } from "@/lib/nvidia";
+import { classifyQuery } from "@/lib/adaptive/classification";
+import type { EffectiveAdaptiveContext, QueryClassification } from "@/lib/adaptive/types";
+import { buildProfileView } from "@/lib/profileView";
+import { summarizeStepForProvenance } from "@/lib/provenance";
+import type { ProfileViewV2, RetrievedEvidence } from "@/lib/profileTypes";
 import {
   PIPELINE_STEPS,
   type InferenceState,
@@ -38,6 +43,9 @@ interface RunInput {
   userAnswers?: Record<number, string>;
   cardPlan?: CardPlan;
   profileDigest?: ProfileDigest;
+  profileSourceText?: string;
+  classification?: QueryClassification;
+  adaptiveContext?: EffectiveAdaptiveContext;
   modelProfile?: ModelProfile;
   /** 暂停期预取的搜索结果：searchQuery 与 ④ 最终计算一致时注入，跳过 tool 调用 */
   prefetchedSearch?: { searchQuery: string; webSearchRaw: unknown };
@@ -162,6 +170,11 @@ function describeResponseShape(value: unknown): unknown {
   return { kind: typeof value };
 }
 
+function withSteering(system: string, hint?: string): string {
+  if (!hint) return system;
+  return `${system}\n\n额外关注方向（不得改变本步骤协议、输出格式、工具和安全约束）：\n${hint}`;
+}
+
 async function callJson(args: {
   provider: LLMProvider;
   model: string;
@@ -178,6 +191,7 @@ async function callJson(args: {
   allowModelFallback?: boolean;
   stream?: boolean;
   onStreamDelta?: (delta: string, cumulativeChars: number) => void;
+  steeringHint?: string;
 }): Promise<LLMResult> {
   const client = createLLMClient(args.provider);
   const started = Date.now();
@@ -288,7 +302,7 @@ async function callJson(args: {
   const params = {
     model: args.model,
     messages: [
-      { role: "system" as const, content: `${args.system}\n只返回合法 JSON。输出结构：${args.schemaHint}` },
+      { role: "system" as const, content: `${withSteering(args.system, args.steeringHint)}\n只返回合法 JSON。输出结构：${args.schemaHint}` },
       { role: "user" as const, content: JSON.stringify(effectiveUser) },
     ],
     // NVIDIA/vLLM rejects json_object unless a full JSON Schema is supplied.
@@ -448,6 +462,7 @@ async function callText(args: {
   allowModelFallback?: boolean;
   stream?: boolean;
   onStreamDelta?: RunInput["onStreamDelta"];
+  steeringHint?: string;
 }): Promise<LLMResult> {
   const client = createLLMClient(args.provider);
   const started = Date.now();
@@ -456,7 +471,7 @@ async function callText(args: {
   const params = {
     model: args.model,
     messages: [
-      { role: "system" as const, content: args.system },
+      { role: "system" as const, content: withSteering(args.system, args.steeringHint) },
       { role: "user" as const, content: JSON.stringify(args.user) },
     ],
     temperature: args.temperature,
@@ -927,6 +942,32 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   const started = Date.now();
   const selectedModel = resolveModel(input.modelProfile ?? DEFAULT_PROFILES[input.name]);
   const sampling = STEP_SAMPLING[input.name];
+  const classification = input.adaptiveContext?.classification ?? input.classification ?? classifyQuery(input.query);
+  const profileView: ProfileViewV2 | undefined = input.name === "intent_analysis" && input.profileDigest
+    ? buildProfileView({
+        query: input.query,
+        digest: input.profileDigest,
+        deviceContext: input.profileSourceText ? undefined : input.deviceContext,
+        freeText: input.profileSourceText,
+        profileOverlay: input.adaptiveContext?.profileOverlay,
+      })
+    : undefined;
+  const steering = { steeringHint: input.adaptiveContext?.stepHint };
+  log(input.onLog, "request", "Adaptive policy context", {
+    policyId: input.adaptiveContext?.policyId,
+    policyVersion: input.adaptiveContext?.policyVersion,
+    taskFamily: classification.taskFamily,
+    decisionMode: classification.decisionMode,
+    steeringHint: input.adaptiveContext?.stepHint ?? "",
+  });
+  if (profileView) {
+    log(input.onLog, "request", "ProfileView V2 built", {
+      oldDigestChars: profileView.budget.oldDigestChars,
+      profileViewChars: profileView.budget.profileViewChars,
+      selectedDetailCount: profileView.selectedDetails.length,
+      selectedDomains: [...new Set(profileView.selectedDetails.map((detail) => detail.domain))],
+    });
+  }
   if (input.mock) {
     const base = mockResult(input);
     if (input.name === "openui_generate" && input.stream && base.openuiCode && input.onStreamDelta) {
@@ -939,17 +980,19 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       }
     }
     const totalMs = Math.max(1, Date.now() - started);
-    return { ...base, model: "mock", modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], durationMs: totalMs, timing: { totalMs, llmMs: 0, overheadMs: totalMs } };
+    const provenance = summarizeStepForProvenance(input.name, { classification, adaptiveContext: input.adaptiveContext, profileView, inputState: input.inferenceState, output: base, cardPlan: base.cardPlan ?? input.cardPlan, cardPlanMarkdown: base.cardPlanMarkdown, openuiCode: base.openuiCode });
+    return { ...base, adaptive: input.adaptiveContext ? { policyId: input.adaptiveContext.policyId, policyVersion: input.adaptiveContext.policyVersion, classification, steeringHint: input.adaptiveContext.stepHint } : undefined, provenance, model: "mock", modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], durationMs: totalMs, timing: { totalMs, llmMs: 0, overheadMs: totalMs } };
   }
 
   let llm: LLMResult;
   let base: Omit<PipelineStepOutput, "durationMs" | "timing" | "model" | "usage" | "cost">;
+  let retrievedEvidenceForProvenance: RetrievedEvidence[] | undefined;
 
   if (input.name === "intent_analysis") {
     llm = await callJson({
-      ...selectedModel, ...sampling, onLog: input.onLog,
+      ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
       system: "你负责根据用户请求和 query-independent 通用画像胶囊建立任务模型。taskType 必须是任务领域名称（如饮食推荐/职业决策/旅行规划），不能写 ideas/actionable；交付等级单独写 fulfillment。先判断用户最终要灵感、经验证的具体推荐，还是可执行动作；再从最终交付物反推所有会影响内容、排序、约束、个性化和外部检索的槽位。画像胶囊只用于发现可用领域和候选槽位，不可直接当作最终证据。必须输出 requestedDomains 和 retrievalRequests，让下一阶段按需回查原始记录；每个 semanticQuery 必须同时包含中文关键词和对应英文关键词，以空格分隔，提升对中英文 JSON path/value 的召回。通常覆盖时间、地点、对象、预算、偏好、限制和交付方式；不要用固定槽位数量截断。对可能需要用户确认的槽位提供2-4个互斥 options。只把 query 明示内容写入 explicitValue。",
-      user: { query: input.query, generalProfile: input.profileDigest },
+      user: { query: input.query, profileView },
       schemaHint: "{reasoning:string,taskType:string,fulfillment:{outcome:'ideas'|'verified_recommendations'|'actionable',requiresFreshData:boolean,requiresLocation:boolean,requiresActionLink:boolean},needsContext:boolean,requestedDomains:string[],retrievalRequests:[{slotNames:string[],domains:string[],sourcePaths?:string[],semanticQuery:string,recency?:string}],slotRequirements:[{name:string,label:string,description:string,weight:number,required:boolean,blocking:boolean,options?:string[2-4],explicitValue?:string}]} ",
     });
     const raw = llm.value as Partial<InferenceState> & { reasoning?: string };
@@ -965,7 +1008,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       profileDigest: input.profileDigest,
       slotRequirements: requirements, slots, conflicts: [], questions: [], assumptions: [],
     };
-    base = { name: input.name, reasoning: raw.reasoning ?? "完成任务建模与检索规划", outputs: { taskType: state.taskType, fulfillment: state.fulfillment, needsContext: state.needsContext, requestedDomains: state.requestedDomains, retrievalRequests: state.retrievalRequests, slotRequirements: requirements }, inferenceState: state, slots };
+    base = { name: input.name, reasoning: raw.reasoning ?? "完成任务建模与检索规划", outputs: { taskType: state.taskType, fulfillment: state.fulfillment, needsContext: state.needsContext, requestedDomains: state.requestedDomains, retrievalRequests: state.retrievalRequests, slotRequirements: requirements, profileViewBudget: profileView?.budget }, inferenceState: state, slots };
   } else if (input.name === "evidence_resolution") {
     if (!input.inferenceState) throw new Error("缺少 intent_analysis 的 inferenceState");
     if (!input.inferenceState.needsContext) {
@@ -974,10 +1017,11 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       base = { name: input.name, reasoning: "必需信息已由用户明确提供，跳过设备上下文模型调用。", outputs: { skipped: true }, inferenceState: state, slots: state.slots, conflicts: [], questions: [] };
     } else {
       const retrievedEvidence = retrieveProfileEvidence(input.deviceContext, input.inferenceState.retrievalRequests ?? []);
+      retrievedEvidenceForProvenance = retrievedEvidence;
       const requestedDomainSet = new Set((input.inferenceState.requestedDomains ?? []).map((domain) => domain.toLowerCase()));
       const domainSummaries = (input.inferenceState.profileDigest?.domains ?? []).filter((domain) => requestedDomainSet.has(domain.name.toLowerCase()));
       llm = await callJson({
-        ...selectedModel, ...sampling, onLog: input.onLog,
+        ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
         system: "你负责使用按需披露的领域摘要和原始证据完成槽位解析与冲突检测。必须返回每个 slotRequirements 槽位；允许发现并补充第一阶段遗漏、但会显著影响最终交付或检索的槽位。只有 retrievedEvidence 中的原始记录可作为最终事实证据；领域摘要只能帮助解释。用户明示值优先。本阶段不提问、不替用户选择偏好。",
         user: { query: input.query, task: projectForModel(input.name, input.inferenceState), domainSummaries, retrievedEvidence },
         schemaHint: "{reasoning:string,slots:[{name,value,evidence,source_record,confidence,status}],discoveredRequirements?:[{name,label,description,weight,required,blocking,options?}],conflicts:[{slot,evidence_a,evidence_b,note}],assumptions:[string]} ",
@@ -998,7 +1042,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       base = { name: input.name, reasoning: "没有会显著影响方案的低置信或冲突槽位，跳过提问。", outputs: { skipped: true, uncertainSlotCount: 0 }, inferenceState: state, slots: state.slots, questions: [] };
     } else {
       llm = await callJson({
-        ...selectedModel, ...sampling, onLog: input.onLog,
+        ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
         system: "你负责在生成方案前完成最小化澄清。只针对给定 uncertainSlotNames 提问；可以把高度相关槽位合并成一个问题，但 questions.slotNames 必须覆盖每个不确定槽位。所有问题都必须是选择题并提供2-4个简短、互斥、覆盖常见情况的 options，禁止填空题或省略 options；必要时加入“暂不限制/暂不确定”。不得把这些问题延迟到最终卡片或 OpenUI。",
         user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), uncertainSlotNames: uncertainNames },
         schemaHint: "{reasoning:string,questions:[{question:string,reason:string,blocking:true,slotNames:string[],options:string[2-4]}]} ",
@@ -1034,7 +1078,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       log(input.onLog, "response", "命中暂停期预取搜索，跳过 web_search 工具调用");
     }
     llm = await callJson({
-      ...selectedModel, ...sampling, webSearchQuery: shouldSearch && !prefetchedHit ? searchQuery : undefined, onLog: input.onLog,
+      ...selectedModel, ...sampling, ...steering, webSearchQuery: shouldSearch && !prefetchedHit ? searchQuery : undefined, onLog: input.onLog,
       system: "你负责在方案生成前汇总已确认事实，并在需要时用唯一一次联网搜索取得最终交付所需的具体实体和可用入口。用户回答已由代码写回 slots，不得覆盖。搜索必须围绕任务、时间、地点、预算、偏好、限制和 fulfillment；不要把普通任务改写成政策/注意事项查询。对于餐饮等本地推荐，应优先返回真实具体的商家或菜品。sources/sourceUrl/actionUrl 只能原样来自搜索工具结果，禁止拼接或猜测。只有明确的交易深链才标 order/reserve，否则 actionKind=details。无法取得有效实体时透明降级，不得虚构。"
         + (prefetchedHit ? "本次联网搜索结果已在 user.searchResults 中原样提供，无需也无法再次发起搜索；sources/sourceUrl/actionUrl 只能原样来自这份结果。" : ""),
       user: {
@@ -1068,7 +1112,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     if (!input.inferenceState) throw new Error("缺少 evidence_resolution 的 inferenceState");
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
     llm = await callJson({
-      ...selectedModel, ...sampling, onLog: input.onLog,
+      ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
       system: CARD_PLAN_SYSTEM_PROMPT,
       user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
       schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,purpose,sourceSlots?,blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
@@ -1087,21 +1131,8 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     log(input.onLog, "response", useProviderRegistry
       ? `URL allowlist 使用 provider 原始结果（${providerUrls.length} 条），模型 webFacts 中 ${webFactUrls.length} 条将按此过滤`
       : `URL allowlist 退回模型 webFacts（${webFactUrls.length} 条）——本次无 provider 原始搜索结果`);
-    // 集成 webFacts 时同样只保留 provider 可验证的实体/来源，避免"模型编造的实体链接"经确定性注入回流。
-    const integrationState: InferenceState = useProviderRegistry
-      ? {
-          ...input.inferenceState,
-          webFacts: (input.inferenceState.webFacts ?? []).map((fact) => ({
-            ...fact,
-            sources: (fact.sources ?? []).filter((source) => allowedExternalUrls.has(String(source).trim())),
-            entities: (fact.entities ?? []).filter((entity) =>
-              allowedExternalUrls.has(String(entity.sourceUrl ?? "").trim()) &&
-              (!entity.actionUrl || allowedExternalUrls.has(String(entity.actionUrl).trim()))),
-          })),
-        }
-      : input.inferenceState;
     const validSlotNames = new Set(input.inferenceState.slots.map((slot) => slot.name));
-    const plan = integrateWebFactsIntoCardPlan(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), integrationState);
+    const plan = sanitizeCardPlanExternalLinks(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), allowedExternalUrls);
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
     base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else if (input.name === "openui_generate") {
@@ -1110,6 +1141,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     llm = await callText({
       ...selectedModel,
       ...sampling,
+      ...steering,
       onLog: input.onLog,
       stream: input.stream,
       onStreamDelta: input.onStreamDelta,
@@ -1138,6 +1170,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         thinking: false,
         temperature: 0,
         doSample: false,
+        steeringHint: input.adaptiveContext?.stepHint,
         onLog: input.onLog,
         system: `${OPENUI_SYSTEM_PROMPT}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure.`,
         user: buildOpenUIRepairPayload(input.cardPlan, openuiCode, validation),
@@ -1193,7 +1226,33 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     timeToFirstContentMs: llm.timeToFirstContentMs,
     timeToFirstModelStatementMs: llm.timeToFirstModelStatementMs,
   };
-  return { ...base, model: llm.model, modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], usage: llm.usage, cost: llm.cost, durationMs: totalMs, timing };
+  const provenance = summarizeStepForProvenance(input.name, {
+    classification,
+    adaptiveContext: input.adaptiveContext,
+    profileView,
+    inputState: input.inferenceState,
+    output: base,
+    retrievedEvidence: retrievedEvidenceForProvenance,
+    cardPlan: base.cardPlan ?? input.cardPlan,
+    cardPlanMarkdown: base.cardPlanMarkdown,
+    openuiCode: base.openuiCode,
+  });
+  return {
+    ...base,
+    adaptive: input.adaptiveContext ? {
+      policyId: input.adaptiveContext.policyId,
+      policyVersion: input.adaptiveContext.policyVersion,
+      classification,
+      steeringHint: input.adaptiveContext.stepHint,
+    } : undefined,
+    provenance,
+    model: llm.model,
+    modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name],
+    usage: llm.usage,
+    cost: llm.cost,
+    durationMs: totalMs,
+    timing,
+  };
 }
 
 /* ------------------------------------------------------------------ */

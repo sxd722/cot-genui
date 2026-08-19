@@ -4,6 +4,9 @@ import type { CallLog } from "@/lib/llm";
 import type { CardPlan } from "@/dsl/modules";
 import { MODEL_PROFILES, type InferenceState, type ModelProfile } from "@/lib/pipelineTypes";
 import type { ProfileDigest } from "@/lib/profileTypes";
+import { classifyQuery, isQueryClassification } from "@/lib/adaptive/classification";
+import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
+import { sanitizeAdaptiveContext } from "@/lib/adaptive/validation";
 
 const isStepName = (value: string): value is PipelineStepName =>
   (PIPELINE_STEPS as readonly string[]).includes(value);
@@ -38,6 +41,13 @@ export async function POST(request: Request) {
 
   const logs: CallLog[] = [];
   const modelProfile = isModelProfile(body.modelProfile) ? body.modelProfile : "groq_qwen_3_6_27b";
+  const classification = isQueryClassification(body.classification) ? body.classification : classifyQuery(body.query);
+  const fallbackAdaptiveContext = resolveEffectivePolicy({
+    classification,
+    stablePolicies: [],
+    step: body.step as PipelineStepName,
+  });
+  const adaptiveContext = sanitizeAdaptiveContext(body.adaptiveContext, classification) ?? fallbackAdaptiveContext;
   const isMock = !canCallModel(modelProfile);
   const run = (onStreamDelta?: (delta: string, cumulativeChars: number) => void) => runPipelineStep({
     name: body.step as PipelineStepName,
@@ -47,6 +57,11 @@ export async function POST(request: Request) {
     userAnswers: body.userAnswers as Record<number, string> | undefined,
     cardPlan: body.cardPlan as CardPlan | undefined,
     profileDigest: body.profileDigest as ProfileDigest | undefined,
+    profileSourceText: body.step === "intent_analysis" && typeof body.profileSourceText === "string"
+      ? body.profileSourceText.slice(0, 100_000)
+      : undefined,
+    classification,
+    adaptiveContext,
     modelProfile,
     prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
     stream: body.step === "openui_generate" && body.stream === true,

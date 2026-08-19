@@ -3,10 +3,14 @@
 import { create } from "zustand";
 import { presets, DEFAULT_QUERY, type DeviceContext } from "@/lib/presets";
 import type { InferSlot, InferConflict, InferQuestion, InferResult } from "@/lib/schemas";
-import { PIPELINE_STEPS, type InferenceState, type ModelProfile, type PipelineStepName, type StepTiming, type TokenUsage } from "@/lib/pipelineTypes";
+import { PIPELINE_STEPS, type InferenceState, type ModelProfile, type PipelineStepName, type PipelineStepOutput, type StepTiming, type TokenUsage } from "@/lib/pipelineTypes";
 import type { CardPlan } from "@/dsl/modules";
 import type { ProfileDigest } from "@/lib/profileTypes";
 import type { ResultView } from "@/lib/resultViews";
+import { classifyQuery, refineClassification } from "@/lib/adaptive/classification";
+import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
+import type { AdaptivePolicyEntry, QueryClassification } from "@/lib/adaptive/types";
+import type { StepProvenance } from "@/lib/provenance";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -32,6 +36,8 @@ export interface StepState {
   streamingChars: number;
   error: string | null;
   logs: StepLog[];
+  adaptive?: PipelineStepOutput["adaptive"];
+  provenance?: StepProvenance;
 }
 
 export interface OpenUIStreamMetrics {
@@ -77,6 +83,8 @@ interface InferApiResponse {
   modelProfile?: ModelProfile;
   usage?: TokenUsage;
   cost?: number;
+  adaptive?: PipelineStepOutput["adaptive"];
+  provenance?: StepProvenance;
 }
 
 interface RunStepOptions {
@@ -97,6 +105,8 @@ export const STEP_LABEL: Record<StepName, string> = {
 
 interface InferState {
   query: string;
+  queryClassification: QueryClassification;
+  stablePolicies: AdaptivePolicyEntry[];
   deviceContext: DeviceContext;
   contextText: string;
   steps: Record<StepName, StepState>;
@@ -257,6 +267,8 @@ async function readInferResponse(
 
 export const useInferStore = create<InferState>((set, get) => ({
   query: DEFAULT_QUERY,
+  queryClassification: classifyQuery(DEFAULT_QUERY),
+  stablePolicies: [],
   deviceContext: presets[0],
   contextText: pretty(presets[0].records),
   steps: emptySteps(),
@@ -269,7 +281,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   customContextText: "",
   ...clearedResult(),
 
-  setQuery: (query) => set({ query, prefetchedSearch: null, prefetchStatus: "idle" }),
+  setQuery: (query) => set({ query, queryClassification: classifyQuery(query), prefetchedSearch: null, prefetchStatus: "idle" }),
   setContextText: (contextText) => {
     stepCache.clear();
     set({ contextText, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, steps: emptySteps(), ...clearedResult() });
@@ -392,13 +404,22 @@ export const useInferStore = create<InferState>((set, get) => ({
         return;
       }
       const state = get();
+      const adaptiveContext = resolveEffectivePolicy({
+        classification: state.queryClassification,
+        userKey: ensuredProfile?.contextHash,
+        stablePolicies: state.stablePolicies,
+        step: name,
+      });
       const freshPrefetch = state.prefetchedSearch && Date.now() - state.prefetchedSearch.fetchedAt <= 10 * 60 * 1000
         ? { searchQuery: state.prefetchedSearch.searchQuery, webSearchRaw: state.prefetchedSearch.webSearchRaw }
         : undefined;
       const requestBody = {
         query, deviceContext, step: name,
         modelProfile: state.stepModels[name],
+        classification: state.queryClassification,
+        adaptiveContext,
         ...(name === "intent_analysis" ? { profileDigest: ensuredProfile } : {}),
+        ...(name === "intent_analysis" && state.customContextText.trim().length > 20 ? { profileSourceText: state.customContextText.trim() } : {}),
         ...(name !== "intent_analysis" && name !== "openui_generate" ? { inferenceState: state.inferenceState } : {}),
         ...(name === "context_enrichment" || name === "card_plan_generate" ? { userAnswers: state.answers } : {}),
         ...(name === "context_enrichment" && freshPrefetch ? { prefetchedSearch: freshPrefetch } : {}),
@@ -476,6 +497,9 @@ export const useInferStore = create<InferState>((set, get) => ({
 
       set((current) => ({
         isMock: !!data._mock,
+        queryClassification: name === "intent_analysis" && data.inferenceState
+          ? refineClassification(current.queryClassification, data.inferenceState)
+          : current.queryClassification,
         inferenceState: data.inferenceState ?? current.inferenceState,
         slots: data.slots ?? current.slots,
         conflicts: data.conflicts ?? current.conflicts,
@@ -494,6 +518,8 @@ export const useInferStore = create<InferState>((set, get) => ({
             durationMs: data.durationMs ?? data.timing?.totalMs ?? 0,
             timing: data.timing, model: data.model, modelProfile: data.modelProfile, tokens: data.usage,
             cost: data.cost, streamingChars: 0, error: null, logs: data._logs ?? [],
+            adaptive: data.adaptive,
+            provenance: data.provenance,
           },
         },
       }));
@@ -534,6 +560,6 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   reset: () => {
     stepCache.clear();
-    set({ query: DEFAULT_QUERY, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, ...clearedResult() });
+    set({ query: DEFAULT_QUERY, queryClassification: classifyQuery(DEFAULT_QUERY), deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, ...clearedResult() });
   },
 }));

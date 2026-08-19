@@ -16,6 +16,25 @@ const profileCache = new Map<string, ProfileDigest>();
 const MAX_CHUNK_CHARS = 8_000;
 const MAX_CHUNKS = 8;
 
+export function mergeDomains(deterministic: ProfileDomain[], reduced: ProfileDomain[] | undefined): ProfileDomain[] {
+  const reducedByName = new Map((reduced ?? []).map((domain) => [domain.name.toLowerCase(), domain]));
+  const merged = deterministic.map((domain) => {
+    const semantic = reducedByName.get(domain.name.toLowerCase());
+    reducedByName.delete(domain.name.toLowerCase());
+    return {
+      ...domain,
+      ...(semantic ? {
+        summary: semantic.summary || domain.summary,
+        availableSignals: [...new Set([...(semantic.availableSignals ?? []), ...domain.availableSignals])],
+        freshness: semantic.freshness ?? domain.freshness,
+        retrievalKeys: [...new Set([...domain.retrievalKeys, ...(semantic.retrievalKeys ?? [])])],
+      } : {}),
+      recordCount: domain.recordCount,
+    };
+  });
+  return [...merged, ...reducedByName.values()];
+}
+
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   if (value && typeof value === "object") {
@@ -205,6 +224,7 @@ export async function compressFreeText(freeText: string): Promise<{ digest: Prof
     const digest: ProfileDigest = {
       ...fallback,
       ...(reduced as unknown as Partial<ProfileDigest>),
+      domains: mergeDomains(fallback.domains, (reduced as unknown as Partial<ProfileDigest>).domains),
       contextHash: hash,
       version: "v1",
       generatedAt: new Date().toISOString(),
@@ -242,6 +262,7 @@ export async function compressProfile(context: Record<string, unknown>): Promise
     const digest: ProfileDigest = {
       ...fallback,
       ...(reduced as unknown as Partial<ProfileDigest>),
+      domains: mergeDomains(fallback.domains, (reduced as unknown as Partial<ProfileDigest>).domains),
       contextHash: hash,
       version: "v1",
       generatedAt: new Date().toISOString(),
