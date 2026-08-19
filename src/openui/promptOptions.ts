@@ -18,23 +18,43 @@ export const cotGenUIPromptOptions: PromptOptions = {
     "Return only a complete OpenUI Lang program. Do not return Markdown fences, JSON, HTML, comments, or prose.",
   ],
   examples: [
-    `root = CardDeck([card_0, card_1, card_2])
-card_0 = GeneratedCard("overview", "方向概览", [overview_body])
-card_1 = GeneratedCard("comparison", "关键比较", [comparison_body])
-card_2 = GeneratedCard("next", "下一步", [next_body])
-overview_body = Stack([hero, tags], "column", "m")
-hero = TextContent("优先选择最贴合当前节奏的方案。", "large-heavy")
-tags = TagBlock(["轻量", "可执行", "有重点"])
-comparison_body = Stack([comparison_callout, comparison_table], "column", "m")
-comparison_callout = Callout("info", "设计提示", "用对比而不是堆叠长文突出差异。")
-comparison_table = Table([option_col, reason_col])
-option_col = Col("方案", ["A", "B"])
-reason_col = Col("适合原因", ["整体平衡", "更有余量"])
-next_body = Stack([next_text, next_actions], "column", "m")
-next_text = TextContent("选择一个动作继续推进。")
-next_actions = HostActionMenu([details_item, copy_item], "继续探索")
-details_item = HostActionItem("查看详情", "plan:next:details", "打开宿主提供的安全详情")
-copy_item = HostActionItem("复制摘要", "plan:next:copy")`,
+    `root = CardDeck([card_0])
+card_0 = GeneratedCard("answer", "直接答案", [answer_body])
+answer_body = Stack([answer_text, answer_note], "column", "m")
+answer_text = TextContent("用一张完整卡给出结论和必要解释。", "large-heavy")
+answer_note = Callout("info", "关键提醒", "只保留会改变用户行动的信息。")`,
+    `root = CardDeck([card_0, card_1])
+card_0 = GeneratedCard("pick", "推荐选择", [pick_body])
+card_1 = GeneratedCard("tradeoffs", "取舍比较", [tradeoffs_body])
+pick_body = Stack([pick_text, pick_tags], "column", "m")
+pick_text = TextContent("A 更符合当前约束。", "large-heavy")
+pick_tags = TagBlock(["均衡", "低负担"])
+tradeoffs_body = Table([choice_col, tradeoff_col])
+choice_col = Col("选择", ["A", "B"])
+tradeoff_col = Col("取舍", ["稳妥", "灵活"])`,
+    `root = CardDeck([card_0, card_1, card_2, card_3])
+card_0 = GeneratedCard("prepare", "准备", [prepare_body])
+card_1 = GeneratedCard("start", "启动", [start_body])
+card_2 = GeneratedCard("review", "检查", [review_body])
+card_3 = GeneratedCard("finish", "收束", [finish_body])
+prepare_body = Steps(["确认范围", "备齐资源"])
+start_body = Callout("success", "开始", "先完成最小可行步骤。")
+review_body = Stack([review_text], "column", "m")
+review_text = TextContent("在中点检查进度和风险。")
+finish_body = HostActionChip("保存结果", "plan:finish:save")`,
+    `root = CardDeck([card_0, card_1, card_2, card_3, card_4])
+card_0 = GeneratedCard("signal", "关键信号", [signal_body])
+card_1 = GeneratedCard("evidence", "证据", [evidence_body])
+card_2 = GeneratedCard("visual", "视觉线索", [visual_body])
+card_3 = GeneratedCard("risk", "风险", [risk_body])
+card_4 = GeneratedCard("act", "执行", [act_body])
+signal_body = TextContent("先看最影响判断的信号。", "large-heavy")
+evidence_body = Table([fact_col, value_col])
+fact_col = Col("指标", ["成本", "时间"])
+value_col = Col("值", ["适中", "两周"])
+visual_body = Callout("info", "媒体位置", "有安全媒体 ID 时再使用图片组件。")
+risk_body = TagBlock(["依赖", "缓冲", "回退"])
+act_body = HostActionItem("开始执行", "plan:act:start", "由宿主完成真实动作")`,
   ],
 };
 

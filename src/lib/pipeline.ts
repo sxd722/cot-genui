@@ -86,8 +86,8 @@ const STEP_SAMPLING: Record<PipelineStepName, { temperature: number; doSample: b
   evidence_resolution: { temperature: 0.35, doSample: true },
   clarification: { temperature: 0.25, doSample: true },
   context_enrichment: { temperature: 0.2, doSample: true },
-  // 协议生成阶段优先结构稳定性。
-  card_plan_generate: { temperature: 0, doSample: false },
+  // 允许 Step 5 真正选择信息拓扑，同时保持较低随机性。
+  card_plan_generate: { temperature: 0.3, doSample: true },
   // OpenUI 需要适度视觉变化，同时优先保证语法稳定与低时延。
   openui_generate: { temperature: 0.2, doSample: true },
 };
