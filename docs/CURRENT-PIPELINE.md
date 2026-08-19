@@ -74,7 +74,7 @@ flowchart TD
 
 Adaptive Layer 不构成第七步。query 分类是本地启发式函数，典型耗时低于 2ms、零模型调用；ProfileView V2 是 Step1 的输入投影，字符数不得超过旧 ProfileDigest，默认硬上限 6,000 字符；steering 只是一条额外关注方向，不得改变协议、schema、工具、模型或步骤。Web facts 是可选证据，不得因为存在来源就增加用户无价值的卡片。
 
-卡片编辑和 Reflection 都属于 post-generation：编辑 API 只接收目标卡片闭包并在服务端合并、整体验证成功后替换 UI，不重跑六步；Reflection 只在 OK 且 Episode 已保存后执行，不接触 provider reasoning 或隐藏思维链。它唯一能产生的可变参数是 `profileOverlay` 或现有六步的单句 hint candidate。
+卡片编辑和 Reflection 都属于 post-generation：编辑 API 只接收目标卡片闭包并在服务端合并、整体验证成功后替换 UI，不重跑六步；Reflection 只在 OK 且 Episode 已保存后执行，不接触 provider reasoning 或隐藏思维链。Attribution 与 Gradient 固定使用 `glm-5.2 · Thinking`，不继承第⑥步模型选择，以承载较长的 compact episode 上下文。它唯一能产生的可变参数是 `profileOverlay` 或现有六步的单句 hint candidate。
 
 ---
 

@@ -503,7 +503,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     try {
       const attributeResponse = await fetch("/api/reflection/attribute", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ episode, modelProfile: get().stepModels.openui_generate }),
+        body: JSON.stringify({ episode }),
       });
       const attributeData = await attributeResponse.json() as { report?: AttributionReport; error?: string };
       if (!attributeResponse.ok || !attributeData.report) throw new Error(attributeData.error ?? "阶段归因失败");
@@ -519,7 +519,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       try {
         const gradientResponse = await fetch("/api/reflection/gradient", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ episode, attribution: report, currentPolicy, modelProfile: get().stepModels.openui_generate }),
+          body: JSON.stringify({ episode, attribution: report, currentPolicy }),
         });
         const gradientData = await gradientResponse.json() as { candidates?: PolicyGradientCandidate[]; error?: string };
         if (!gradientResponse.ok) throw new Error(gradientData.error ?? "策略候选生成失败");

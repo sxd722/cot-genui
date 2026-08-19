@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { deterministicAttribution, normalizeAttributionReport } from "../src/lib/reflection/attribution";
 import type { GenerationEpisode } from "../src/learning/types";
+import { REFLECTION_MODEL_PROFILE } from "../src/lib/reflection/config";
 
 function episode(instruction?: string): GenerationEpisode {
   return {
@@ -17,6 +18,10 @@ function episode(instruction?: string): GenerationEpisode {
 }
 
 describe("reflection attribution", () => {
+  it("pins long-context reflection to GLM Thinking", () => {
+    expect(REFLECTION_MODEL_PROFILE).toBe("glm_5_2_thinking");
+  });
+
   it("skips learning when a result is accepted without edits", () => {
     const report = deterministicAttribution(episode());
     expect(report?.reasonCodes).toContain("accepted_without_edits");
@@ -40,4 +45,3 @@ describe("reflection attribution", () => {
     expect(report.distribution).not.toHaveProperty("step9");
   });
 });
-

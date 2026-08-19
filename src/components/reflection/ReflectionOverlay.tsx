@@ -4,6 +4,8 @@ import { useInferStore } from "@/store/useInferStore";
 import { AttributionBars } from "./AttributionBars";
 import { PolicyCandidateCard } from "./PolicyCandidateCard";
 import { PolicyInspector } from "./PolicyInspector";
+import { MODEL_PROFILE_LABELS } from "@/lib/pipelineTypes";
+import { REFLECTION_MODEL_PROFILE } from "@/lib/reflection/config";
 
 export function ReflectionOverlay() {
   const state = useInferStore();
@@ -11,7 +13,7 @@ export function ReflectionOverlay() {
   const report = state.attributionReport;
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6" role="dialog" aria-modal="true" aria-label="反思学习">
     <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-950">
-      <header className="flex items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800"><div><h2 className="text-sm font-semibold">正在学习本次结果</h2><p className="text-[10px] text-zinc-500">最终版本已先保存；反思不会改变本次结果。</p></div><button type="button" onClick={state.closeReflection} className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700">关闭</button></header>
+      <header className="flex items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800"><div><h2 className="text-sm font-semibold">正在学习本次结果</h2><p className="text-[10px] text-zinc-500">最终版本已先保存；反思不会改变本次结果。反思模型：{MODEL_PROFILE_LABELS[REFLECTION_MODEL_PROFILE]}</p></div><button type="button" onClick={state.closeReflection} className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700">关闭</button></header>
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
         <div className="grid gap-1 text-[11px]"><p className="text-emerald-600">✓ 已保存最终版本</p><p className={report ? "text-emerald-600" : "text-zinc-400"}>{report ? "✓" : "◌"} 已比较初始结果和用户修改</p><p className={report ? "text-emerald-600" : "text-zinc-400"}>{report ? "✓" : "◌"} 已进行推理阶段归因</p><p className={state.reflectionStatus === "ready" ? "text-emerald-600" : "text-zinc-400"}>{state.reflectionStatus === "ready" ? "✓" : "◌"} {state.reflectionStatus === "generating-candidates" ? "正在生成可学习的 steering 候选" : "策略候选处理"}</p></div>
         {state.reflectionStatus === "error" ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300"><p>结果已保存，但本次反思失败：{state.reflectionError}</p><button type="button" onClick={() => void state.runReflection()} className="mt-2 rounded border border-rose-300 px-2 py-1">重试反思</button></div> : null}
