@@ -5,12 +5,14 @@ import { attributionPrior, buildReflectionEpisodeView, deterministicAttribution,
 import { inferEditIntentHeuristic } from "@/lib/reflection/editIntent";
 import { callReflectionJson } from "@/lib/reflection/model";
 import { ATTRIBUTION_SYSTEM_PROMPT } from "@/lib/reflection/prompts";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 export const runtime = "nodejs";
 
 function profile(value: unknown): value is ModelProfile { return typeof value === "string" && (MODEL_PROFILES as readonly string[]).includes(value); }
 
 export async function POST(request: Request) {
+  if (!FEATURE_FLAGS.REFLECTION_ATTRIBUTION) return Response.json({ error: "Reflection attribution feature is disabled" }, { status: 404 });
   let body: { episode?: GenerationEpisode; modelProfile?: unknown };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体不是合法 JSON" }, { status: 400 }); }
   const episode = body.episode;

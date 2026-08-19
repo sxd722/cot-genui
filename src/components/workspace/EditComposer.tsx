@@ -1,20 +1,23 @@
 "use client";
 
 import { useInferStore } from "@/store/useInferStore";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 export function EditComposer() {
   const state = useInferStore();
-  const canEdit = !!state.openuiCode && state.steps.openui_generate.status === "done";
+  const canEdit = FEATURE_FLAGS.OPENUI_CARD_EDIT && !!state.openuiCode && state.steps.openui_generate.status === "done";
   const canUndo = state.openuiVersionIndex > 0;
   const canRedo = state.openuiVersionIndex >= 0 && state.openuiVersionIndex < state.openuiVersions.length - 1;
   return (
     <section className="relative flex min-h-0 flex-col gap-2 overflow-y-auto bg-white p-3 dark:bg-black">
       <div className="flex items-center gap-2">
         <strong className="text-xs">卡片局部编辑</strong>
+        {!FEATURE_FLAGS.OPENUI_CARD_EDIT ? <span className="text-[10px] text-zinc-400">feature flag 已关闭</span> : null}
         <button type="button" disabled={!canEdit || state.editStatus === "streaming"} onClick={() => state.setTargeting(!state.isTargeting)} className={`rounded border px-2 py-1 text-[10px] disabled:opacity-40 ${state.isTargeting ? "border-cyan-500 bg-cyan-500 text-black" : "border-zinc-300 dark:border-zinc-700"}`}>{state.isTargeting ? "请点击卡片位置…" : "⌖ 点选位置"}</button>
         <button type="button" onClick={state.undoOpenUIEdit} disabled={!canUndo} className="rounded border border-zinc-300 px-2 py-1 text-[10px] disabled:opacity-30 dark:border-zinc-700">撤销</button>
         <button type="button" onClick={state.redoOpenUIEdit} disabled={!canRedo} className="rounded border border-zinc-300 px-2 py-1 text-[10px] disabled:opacity-30 dark:border-zinc-700">重做</button>
         <span className="text-[10px] text-zinc-400">版本 {Math.max(0, state.openuiVersionIndex)}/{Math.max(0, state.openuiVersions.length - 1)}</span>
+        {state.openuiVersions[state.openuiVersionIndex]?.metrics ? <span className="text-[9px] text-zinc-400">edit {state.openuiVersions[state.openuiVersionIndex].metrics!.latencyMs}ms · prompt {state.openuiVersions[state.openuiVersionIndex].metrics!.promptChars} chars · patch {state.openuiVersions[state.openuiVersionIndex].metrics!.patchChars} chars</span> : null}
         <div className="ml-auto flex gap-1">
           <button type="button" onClick={() => void state.exportLearningJson()} className="rounded border border-zinc-300 px-2 py-1 text-[10px] dark:border-zinc-700">导出学习数据</button>
           <button type="button" disabled={!state.currentEpisode || !canEdit || state.currentEpisode.status === "accepted"} onClick={() => void state.acceptCurrentEpisode()} className="rounded bg-emerald-600 px-3 py-1 text-[10px] font-medium text-white disabled:opacity-30">OK · 接受</button>

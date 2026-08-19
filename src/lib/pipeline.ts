@@ -24,6 +24,7 @@ import type { EffectiveAdaptiveContext, QueryClassification } from "@/lib/adapti
 import { buildProfileView } from "@/lib/profileView";
 import { summarizeStepForProvenance } from "@/lib/provenance";
 import type { ProfileViewV2, RetrievedEvidence } from "@/lib/profileTypes";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import {
   PIPELINE_STEPS,
   type InferenceState,
@@ -911,7 +912,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   const selectedModel = resolveModelProfile(input.modelProfile ?? DEFAULT_PROFILES[input.name]);
   const sampling = STEP_SAMPLING[input.name];
   const classification = input.adaptiveContext?.classification ?? input.classification ?? classifyQuery(input.query);
-  const profileView: ProfileViewV2 | undefined = input.name === "intent_analysis" && input.profileDigest
+  const profileView: ProfileViewV2 | undefined = FEATURE_FLAGS.PROFILE_VIEW_V2 && input.name === "intent_analysis" && input.profileDigest
     ? buildProfileView({
         query: input.query,
         digest: input.profileDigest,
@@ -960,7 +961,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     llm = await callJson({
       ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
       system: "你负责根据用户请求和 query-independent 通用画像胶囊建立任务模型。taskType 必须是任务领域名称（如饮食推荐/职业决策/旅行规划），不能写 ideas/actionable；交付等级单独写 fulfillment。先判断用户最终要灵感、经验证的具体推荐，还是可执行动作；再从最终交付物反推所有会影响内容、排序、约束、个性化和外部检索的槽位。画像胶囊只用于发现可用领域和候选槽位，不可直接当作最终证据。必须输出 requestedDomains 和 retrievalRequests，让下一阶段按需回查原始记录；每个 semanticQuery 必须同时包含中文关键词和对应英文关键词，以空格分隔，提升对中英文 JSON path/value 的召回。通常覆盖时间、地点、对象、预算、偏好、限制和交付方式；不要用固定槽位数量截断。对可能需要用户确认的槽位提供2-4个互斥 options。只把 query 明示内容写入 explicitValue。",
-      user: { query: input.query, profileView },
+      user: FEATURE_FLAGS.PROFILE_VIEW_V2 ? { query: input.query, profileView } : { query: input.query, profileDigest: input.profileDigest },
       schemaHint: "{reasoning:string,taskType:string,fulfillment:{outcome:'ideas'|'verified_recommendations'|'actionable',requiresFreshData:boolean,requiresLocation:boolean,requiresActionLink:boolean},needsContext:boolean,requestedDomains:string[],retrievalRequests:[{slotNames:string[],domains:string[],sourcePaths?:string[],semanticQuery:string,recency?:string}],slotRequirements:[{name:string,label:string,description:string,weight:number,required:boolean,blocking:boolean,options?:string[2-4],explicitValue?:string}]} ",
     });
     const raw = llm.value as Partial<InferenceState> & { reasoning?: string };
@@ -1081,7 +1082,9 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
     llm = await callJson({
       ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
-      system: CARD_PLAN_SYSTEM_PROMPT,
+      system: FEATURE_FLAGS.WEB_FACTS_OPTIONAL
+        ? CARD_PLAN_SYSTEM_PROMPT
+        : `${CARD_PLAN_SYSTEM_PROMPT}\n兼容模式：若 webFacts 非空，必须把其中与任务有关的事实纳入现有业务卡，但仍不得为来源单独增加卡片。`,
       user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
       schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,purpose,sourceSlots?,blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
     });

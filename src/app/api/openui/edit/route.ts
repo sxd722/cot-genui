@@ -10,6 +10,7 @@ import { normalizeOpenUIOutput, validateOpenUIArtifact } from "@/lib/openui";
 import { buildOpenUIEditPrompt, extractCardMarkdownSection, OPENUI_EDIT_SYSTEM_PROMPT } from "@/openui/editPrompt";
 import { extractCardSlice, mergeOpenUIPatch } from "@/openui/editSlice";
 import { isAssignmentStatement, referencedStatementIds, splitOpenUIStatements } from "@/openui/statements";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 export const runtime = "nodejs";
 
@@ -79,6 +80,7 @@ function completionParams(body: OpenUIEditRequest, prompt: ReturnType<typeof bui
 }
 
 export async function POST(request: Request) {
+  if (!FEATURE_FLAGS.OPENUI_CARD_EDIT) return errorResponse("OpenUI card edit feature is disabled", 404);
   let rawBody: unknown;
   try {
     rawBody = await request.json();
@@ -110,6 +112,8 @@ export async function POST(request: Request) {
   });
   const targetModel = resolveModelProfile(body.modelProfile);
   const client = createLLMClient(targetModel.provider);
+  const editStartedAt = Date.now();
+  const promptChars = OPENUI_EDIT_SYSTEM_PROMPT.length + JSON.stringify(prompt).length;
   const encoder = new TextEncoder();
   let canceled = false;
   const stream = new ReadableStream<Uint8Array>({
@@ -156,6 +160,7 @@ export async function POST(request: Request) {
             validation,
             model: responseModel,
             usage,
+            metrics: { promptChars, patchChars: patch.length, latencyMs: Date.now() - editStartedAt },
           });
         } catch (error) {
           emit("error", { error: error instanceof Error ? error.message : "卡片编辑失败" });
@@ -174,4 +179,3 @@ export async function POST(request: Request) {
     },
   });
 }
-

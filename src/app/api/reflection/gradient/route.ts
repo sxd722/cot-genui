@@ -7,11 +7,13 @@ import { ATTRIBUTION_TO_POLICY_TARGET, eligibleAttributionTargets, normalizeGrad
 import { callReflectionJson } from "@/lib/reflection/model";
 import { GRADIENT_SYSTEM_PROMPT } from "@/lib/reflection/prompts";
 import type { AttributionReport } from "@/lib/reflection/types";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 export const runtime = "nodejs";
 function isProfile(value: unknown): value is ModelProfile { return typeof value === "string" && (MODEL_PROFILES as readonly string[]).includes(value); }
 
 export async function POST(request: Request) {
+  if (!FEATURE_FLAGS.REFLECTION_GRADIENT) return Response.json({ error: "Reflection gradient feature is disabled" }, { status: 404 });
   let body: { episode?: GenerationEpisode; attribution?: AttributionReport; currentPolicy?: AdaptivePolicyEntry; modelProfile?: unknown };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体不是合法 JSON" }, { status: 400 }); }
   if (!body.episode || body.episode.status !== "accepted" || !body.attribution || !body.currentPolicy) return Response.json({ error: "缺少 gradient 输入" }, { status: 400 });
@@ -30,4 +32,3 @@ export async function POST(request: Request) {
     return Response.json({ error: error instanceof Error ? error.message : "策略候选生成失败" }, { status: 500 });
   }
 }
-

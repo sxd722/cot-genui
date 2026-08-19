@@ -8,6 +8,7 @@ import { classifyQuery, isQueryClassification } from "@/lib/adaptive/classificat
 import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
 import { sanitizeAdaptiveContext } from "@/lib/adaptive/validation";
 import { canCallModelProfile } from "@/lib/modelProfiles";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 const isStepName = (value: string): value is PipelineStepName =>
   (PIPELINE_STEPS as readonly string[]).includes(value);
@@ -35,13 +36,17 @@ export async function POST(request: Request) {
 
   const logs: CallLog[] = [];
   const modelProfile = isModelProfile(body.modelProfile) ? body.modelProfile : "groq_qwen_3_6_27b";
-  const classification = isQueryClassification(body.classification) ? body.classification : classifyQuery(body.query);
+  const classification = FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION
+    ? (isQueryClassification(body.classification) ? body.classification : classifyQuery(body.query))
+    : { taskFamily: "general" as const, decisionMode: "general" as const, confidence: 1, source: "heuristic" as const };
   const fallbackAdaptiveContext = resolveEffectivePolicy({
     classification,
     stablePolicies: [],
     step: body.step as PipelineStepName,
   });
-  const adaptiveContext = sanitizeAdaptiveContext(body.adaptiveContext, classification) ?? fallbackAdaptiveContext;
+  const adaptiveContext = FEATURE_FLAGS.ADAPTIVE_STEERING
+    ? (sanitizeAdaptiveContext(body.adaptiveContext, classification) ?? fallbackAdaptiveContext)
+    : undefined;
   const isMock = !canCallModelProfile(modelProfile);
   const run = (onStreamDelta?: (delta: string, cumulativeChars: number) => void) => runPipelineStep({
     name: body.step as PipelineStepName,

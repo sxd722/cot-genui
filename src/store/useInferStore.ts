@@ -18,6 +18,7 @@ import { exportLearningData, getLearningSettings, listEpisodes, listPolicies, li
 import type { AttributionReport, PolicyGradientCandidate } from "@/lib/reflection/types";
 import { canGuardedAutoPromote, observationFromCandidate, promoteCandidate, reflectionPolicyForEpisode, rollbackPolicy } from "@/lib/reflection/promotion";
 import { validateGradientCandidate } from "@/lib/reflection/gradient";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -312,6 +313,7 @@ interface EditApiResponse {
   beforeSlice?: string;
   afterSlice?: string;
   model?: string;
+  metrics?: OpenUIEditVersion["metrics"];
 }
 
 async function readEditResponse(response: Response, onDelta: (delta: string) => void): Promise<EditApiResponse> {
@@ -363,7 +365,7 @@ function downloadJson(value: unknown, filename: string) {
 
 export const useInferStore = create<InferState>((set, get) => ({
   query: DEFAULT_QUERY,
-  queryClassification: classifyQuery(DEFAULT_QUERY),
+  queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" },
   stablePolicies: [],
   deviceContext: presets[0],
   contextText: pretty(presets[0].records),
@@ -387,7 +389,7 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   setQuery: (query) => {
     persistAbandoned(get().currentEpisode);
-    set({ query, queryClassification: classifyQuery(query), prefetchedSearch: null, prefetchStatus: "idle", currentEpisode: null, isReflectionOpen: false });
+    set({ query, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(query) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, prefetchedSearch: null, prefetchStatus: "idle", currentEpisode: null, isReflectionOpen: false });
   },
   setContextText: (contextText) => {
     stepCache.clear();
@@ -421,6 +423,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     return { openuiVersionIndex: nextIndex, openuiCode: state.openuiVersions[nextIndex].code, editStatus: "idle", editError: null };
   }),
   submitCardEdit: async () => {
+    if (!FEATURE_FLAGS.OPENUI_CARD_EDIT) return;
     const state = get();
     if (!state.openuiCode || !state.cardPlan || !state.cardPlanMarkdown || !state.cardEditTarget || !state.editDraft.trim()) {
       set({ editStatus: "error", editError: "请先点选卡片位置并填写编辑要求" });
@@ -455,6 +458,7 @@ export const useInferStore = create<InferState>((set, get) => ({
         modelProfile: requestSnapshot.modelProfile,
         beforeSlice: data.beforeSlice,
         afterSlice: data.afterSlice,
+        metrics: data.metrics,
       };
       set((current) => {
         const branch = current.openuiVersions.slice(0, current.openuiVersionIndex + 1);
@@ -478,11 +482,21 @@ export const useInferStore = create<InferState>((set, get) => ({
     const state = get();
     if (!state.currentEpisode || !state.openuiCode) return;
     const episode = finalizeEpisode(state.currentEpisode, state.openuiCode);
-    await putEpisode(episode);
+    try {
+      await putEpisode(episode);
+    } catch (error) {
+      set({ currentEpisode: episode, isReflectionOpen: true, reflectionStatus: "error", reflectionError: `最终 UI 已保留，但 Episode 持久化失败：${error instanceof Error ? error.message : "IndexedDB 不可用"}` });
+      return;
+    }
+    if (!FEATURE_FLAGS.REFLECTION_ATTRIBUTION || !state.learningSettings.enabled) {
+      set({ currentEpisode: episode, isReflectionOpen: false, reflectionStatus: "idle" });
+      return;
+    }
     set({ currentEpisode: episode, isReflectionOpen: true, reflectionStatus: "attributing", attributionReport: null, gradientCandidates: [], candidateDecisions: {}, reflectionError: null });
     void get().runReflection(episode);
   },
   runReflection: async (episodeInput) => {
+    if (!FEATURE_FLAGS.REFLECTION_ATTRIBUTION) return;
     const episode = episodeInput ?? get().currentEpisode;
     if (!episode || episode.status !== "accepted") return;
     set({ isReflectionOpen: true, reflectionStatus: "attributing", reflectionError: null, attributionReport: null, gradientCandidates: [], candidateDecisions: {} });
@@ -495,7 +509,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       if (!attributeResponse.ok || !attributeData.report) throw new Error(attributeData.error ?? "阶段归因失败");
       const report = attributeData.report;
       set({ attributionReport: report });
-      if (Math.max(...Object.values(report.distribution)) < 0.35 || report.reasonCodes.includes("accepted_without_edits")) {
+      if (!FEATURE_FLAGS.REFLECTION_GRADIENT || Math.max(...Object.values(report.distribution)) < 0.35 || report.reasonCodes.includes("accepted_without_edits")) {
         set({ reflectionStatus: "ready", gradientCandidates: [] });
         return;
       }
@@ -518,7 +532,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       await Promise.all(observations.map(putPolicyObservation));
       set({ gradientCandidates: candidates, candidateDecisions: Object.fromEntries(candidates.map((candidate) => [candidate.id, "pending"])), reflectionStatus: "ready" });
 
-      if (get().learningSettings.learningMode === "guarded-auto" && candidates.length) {
+      if (FEATURE_FLAGS.GUARDED_AUTO_LEARN && get().learningSettings.learningMode === "guarded-auto" && candidates.length) {
         const [storedObservations, acceptedEpisodes] = await Promise.all([listPolicyObservations(), listEpisodes()]);
         for (const candidate of candidates) {
           if (canGuardedAutoPromote({ candidate, observations: storedObservations, settings: get().learningSettings, acceptedEpisodes })) await get().applyPolicyCandidate(candidate.id, true);
@@ -553,6 +567,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     set((current) => ({ candidateDecisions: { ...current.candidateDecisions, [candidateId]: "discarded" } }));
   },
   setLearningMode: async (learningMode) => {
+    if (learningMode === "guarded-auto" && !FEATURE_FLAGS.GUARDED_AUTO_LEARN) return;
     const settings: LearningSettings = { id: "settings", enabled: true, learningMode, updatedAt: new Date().toISOString() };
     await putLearningSettings(settings);
     set({ learningSettings: settings });
@@ -681,20 +696,20 @@ export const useInferStore = create<InferState>((set, get) => ({
         return;
       }
       const state = get();
-      const adaptiveContext = resolveEffectivePolicy({
+      const adaptiveContext = FEATURE_FLAGS.ADAPTIVE_STEERING ? resolveEffectivePolicy({
         classification: state.queryClassification,
         userKey: ensuredProfile?.contextHash,
         stablePolicies: state.stablePolicies,
         step: name,
-      });
+      }) : undefined;
       const freshPrefetch = state.prefetchedSearch && Date.now() - state.prefetchedSearch.fetchedAt <= 10 * 60 * 1000
         ? { searchQuery: state.prefetchedSearch.searchQuery, webSearchRaw: state.prefetchedSearch.webSearchRaw }
         : undefined;
       const requestBody = {
         query, deviceContext, step: name,
         modelProfile: state.stepModels[name],
-        classification: state.queryClassification,
-        adaptiveContext,
+        ...(FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? { classification: state.queryClassification } : {}),
+        ...(adaptiveContext ? { adaptiveContext } : {}),
         ...(name === "intent_analysis" ? { profileDigest: ensuredProfile } : {}),
         ...(name === "intent_analysis" && state.customContextText.trim().length > 20 ? { profileSourceText: state.customContextText.trim() } : {}),
         ...(name !== "intent_analysis" && name !== "openui_generate" ? { inferenceState: state.inferenceState } : {}),
@@ -773,7 +788,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       }
 
       set((current) => {
-        const nextClassification = name === "intent_analysis" && data.inferenceState
+        const nextClassification = FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION && name === "intent_analysis" && data.inferenceState
           ? refineClassification(current.queryClassification, data.inferenceState)
           : current.queryClassification;
         const finalOpenUICode = data.openuiCode ?? current.openuiCode;
@@ -863,6 +878,6 @@ export const useInferStore = create<InferState>((set, get) => ({
   reset: () => {
     persistAbandoned(get().currentEpisode);
     stepCache.clear();
-    set({ query: DEFAULT_QUERY, queryClassification: classifyQuery(DEFAULT_QUERY), deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, ...clearedResult() });
+    set({ query: DEFAULT_QUERY, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, ...clearedResult() });
   },
 }));

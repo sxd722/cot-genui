@@ -1,7 +1,7 @@
 # cot-genui 当前全流程说明
 
-> 实现基线：2026-08-18 工作区代码
-> 当前协议：ProfileDigest + CardPlan 单一协议 + OpenUI Lang v0.5
+> 实现基线：2026-08-19 `codex/adaptive-learning-card-editing`
+> 当前协议：ProfileDigest → ProfileView V2 + CardPlan 单一协议 + OpenUI Lang v0.5
 > 主流程：画像预处理 + 6 个可独立执行的推理阶段
 
 本文描述当前代码实际执行的链路。`docs/DESIGN-DOC.md` 记录的是较早的 9 步设计，其中部分步骤、生成模式和文件职责已经发生变化；调试当前页面时应以本文和代码为准。
@@ -26,6 +26,8 @@
 - 生成唯一的中间协议 CardPlan；
 - 从 CardPlan 确定性派生 CardPlan Markdown，再生成 OpenUI Lang；
 - 校验结构、内容覆盖率、动作和外链，必要时降级或修复。
+- 在六步外围执行零 LLM query 分类、固定预算 ProfileView V2 和单句 steering；六步顺序、schema、工具和模型选择保持冻结；
+- 首次生成后允许对单张卡片做 dependency-slice 编辑；用户点击 OK 后再异步执行阶段归因和受约束策略学习。
 
 ---
 
@@ -42,8 +44,10 @@ flowchart TD
   P1 --> PD["ProfileDigest 通用画像胶囊"]
   P2 --> PD
 
-  Q --> S1["① 意图建模"]
-  PD --> S1
+  Q --> QC["确定性 query 分类 / policy 路由"]
+  PD --> PV["固定预算 ProfileView V2"]
+  QC --> PV
+  PV --> S1["① 意图建模 + 单句 steering"]
   S1 --> R["RetrievalRequest"]
   R --> RET["从原始 deviceContext 渐进披露证据"]
   RET --> S2["② 证据解析"]
@@ -61,9 +65,16 @@ flowchart TD
   SH --> OUI
   OUI --> OC["OpenUI parser + CardPlan 覆盖校验"]
   OC --> OV["官方 React Renderer 渐进渲染"]
+  OV --> EDIT["目标卡片 dependency-slice 编辑"]
+  EDIT --> OK["OK / IndexedDB Episode"]
+  OK --> REF["异步阶段归因 → 学习候选"]
 ```
 
 关键设计是：CardPlan 是唯一内部业务 IR；CardPlan Markdown 是它唯一的文本投影。第⑥步模型只接收 Markdown 和 required shell，只负责视觉编排，不能重新决定业务事实、实体或外链。
+
+Adaptive Layer 不构成第七步。query 分类是本地启发式函数，典型耗时低于 2ms、零模型调用；ProfileView V2 是 Step1 的输入投影，字符数不得超过旧 ProfileDigest，默认硬上限 6,000 字符；steering 只是一条额外关注方向，不得改变协议、schema、工具、模型或步骤。Web facts 是可选证据，不得因为存在来源就增加用户无价值的卡片。
+
+卡片编辑和 Reflection 都属于 post-generation：编辑 API 只接收目标卡片闭包并在服务端合并、整体验证成功后替换 UI，不重跑六步；Reflection 只在 OK 且 Episode 已保存后执行，不接触 provider reasoning 或隐藏思维链。它唯一能产生的可变参数是 `profileOverlay` 或现有六步的单句 hint candidate。
 
 ---
 
@@ -88,6 +99,9 @@ flowchart TD
 - `cardPlanMarkdown`：从 CardPlan 确定性派生的唯一文本投影；
 - `openuiCode / openuiDiagnostics`：OpenUI Lang 流式源码、parser 和覆盖校验结果；
 - `steps`：每一步状态、模型、耗时、token、费用和调用日志。
+- `queryClassification / stablePolicies`：确定性分类和当前可用策略库；
+- `currentEpisode / openuiVersions / cardEditTarget`：当前生成、局部编辑及 Undo/Redo；
+- `attributionReport / gradientCandidates`：OK 后异步反思结果，不进入首次生成路径；
 - `prefetchedSearch`：暂停期搜索词、provider 原始结果和获取时间；
 - 模块级步骤缓存：最多 20 项的前端 LRU，只供“一键全部/继续生成”复用。
 
@@ -204,7 +218,7 @@ NVIDIA 档位使用 `google/diffusiongemma-26b-a4b-it`。请求仅包含 Chat Co
 
 | 步骤 | 模型可见的状态字段 | 另行传入 |
 |---|---|---|
-| ① | 完整 `ProfileDigest` | `query` |
+| ① | 固定预算 `ProfileViewV2`（flag 关闭时回退完整 `ProfileDigest`） | `query` + 可选单句 steering |
 | ② | 不再携带 `profileDigest`；保留任务状态 | 过滤后的 `domainSummaries`、`retrievedEvidence` |
 | ③ | `taskType / fulfillment / slotRequirements / slots / conflicts` | `uncertainSlotNames` |
 | ④ | `taskType / fulfillment / slotRequirements / slots / assumptions` | `qa`；预取命中时附 `searchResults` |
@@ -218,9 +232,10 @@ NVIDIA 档位使用 `google/diffusiongemma-26b-a4b-it`。请求仅包含 Chat Co
 输入：
 
 - `query`；
-- 完整 `ProfileDigest`。
+- query-aware、固定预算的 `ProfileViewV2`；关闭 `PROFILE_VIEW_V2` 时回退完整 `ProfileDigest`；
+- 当前 taskFamily/policy 对应的一条 steering hint；关闭 `ADAPTIVE_STEERING` 时完全省略。
 
-本步不读取整份原始 deviceContext。主要任务是：
+本步不读取整份原始 deviceContext。ProfileView 只披露稳定核心、领域目录和当前任务相关细节，并保留来源 ref；主要任务是：
 
 1. 确定任务领域 `taskType`，例如旅行规划、饮食推荐；
 2. 确定最终交付等级 `fulfillment.outcome`：
@@ -472,6 +487,9 @@ idle
 | `/api/profile/compress` | POST | 结构化 JSON 通用画像压缩 |
 | `/api/profile/compress-free-text` | POST | 自由文本通用画像压缩 |
 | `/api/infer` | POST | 执行六步中的指定一步 |
+| `/api/openui/edit` | POST/SSE | 编辑目标卡片 dependency slice，校验成功后返回可合并版本 |
+| `/api/reflection/attribute` | POST | OK 后执行 UI fast path 或 compact provenance 阶段归因 |
+| `/api/reflection/gradient` | POST | 仅对概率 ≥0.35 的最多两个 target 生成策略候选 |
 | `/api/prefetch-search` | POST | 暂停期按高置信槽位构造搜索词并返回 provider 原始结果 |
 | `/api/search` | POST | 隔离 DSL 开发示例的旧 missingInfo 知识问答 |
 | `/api/llm` | POST | 隔离 DSL 开发示例的普通文本生成 |
@@ -484,6 +502,8 @@ idle
   "deviceContext": {},
   "step": "intent_analysis",
   "modelProfile": "groq_qwen_3_6_27b",
+  "classification": {},
+  "adaptiveContext": {},
   "profileDigest": {},
   "inferenceState": {},
   "userAnswers": {},
@@ -499,7 +519,7 @@ idle
 
 ## 11. 结果视图
 
-右侧当前只提供四种视图：
+结果区当前只提供四种视图，并与推理区、编辑区纵向排列；左侧保持输入与画像：
 
 | 视图 | 数据源 | 说明 |
 |---|---|---|
@@ -537,6 +557,21 @@ idle
 | `LLM_MODEL` | 未配置 Groq 时画像与兼容旁路使用的模型 |
 | `LLM_PRICING_JSON` | 按模型配置输入、输出、缓存 token 单价 |
 
+### 12.1 Feature flags
+
+所有开关使用 `NEXT_PUBLIC_` 前缀，值可设为 `0/false/off/no` 关闭：
+
+| 变量后缀 | 默认值 | 边界 |
+|---|---:|---|
+| `ADAPTIVE_QUERY_CLASSIFICATION` | true | 关闭后使用 general 分类，不调用分类器 |
+| `ADAPTIVE_STEERING` | true | 关闭后 `/api/infer` 不接收 effective policy/hint |
+| `PROFILE_VIEW_V2` | true | 关闭后 Step1 回退旧 ProfileDigest 载荷 |
+| `WEB_FACTS_OPTIONAL` | true | 关闭后启用 web facts 必须覆盖的兼容提示，但仍不创建来源卡 |
+| `OPENUI_CARD_EDIT` | true | 同时关闭编辑 UI 与 API |
+| `REFLECTION_ATTRIBUTION` | true | 关闭后 OK 只保存 Episode |
+| `REFLECTION_GRADIENT` | true | 关闭后只展示归因，不生成候选 |
+| `GUARDED_AUTO_LEARN` | false | rollout 硬门；关闭时只能 Manual Apply/Discard |
+
 `LLM_PRICING_JSON` 示例：
 
 ```json
@@ -565,6 +600,8 @@ idle
 8. **自由文本状态不会随“重置全部”清空**：它持续具有高于 JSON 预设的画像优先级；切换预设前应手动清空，或在后续实现中修正 reset 行为。
 9. **HF Community Endpoint 无可用性承诺**：它无需密钥但可能冷启动、拥塞、限流或永久下线；地址可通过环境变量替换，生产链路不应依赖它。
 10. **NVIDIA 测试凭据和 hosted endpoint 不作生产承诺**：本地测试密钥存放在 Git 忽略的环境文件中；到期后该档位会明确报错或进入 mock，生产部署需配置自己的 `NVIDIA_API_KEY`。
+11. **学习数据是本地浏览器级别**：Episode、observation 和 policy 使用 IndexedDB；存储故障不会阻断六步生成或破坏已接受 UI，但不会跨设备同步。
+12. **Guarded Auto 默认关闭**：即使用户把本地 mode 设为 guarded-auto，rollout flag 未开启时也不会自动晋升；首次开放前应先观察 20–50 个真实 accepted episodes。
 
 ---
 
@@ -574,6 +611,10 @@ idle
 |---|---|
 | `src/lib/profile.ts` | 画像哈希、压缩、缓存、降级、证据检索 |
 | `src/lib/profileTypes.ts` | ProfileDigest 和 RetrievalRequest 类型 |
+| `src/lib/profileView.ts` | query-aware ProfileView V2 与字符预算 |
+| `src/lib/adaptive/` | 分类、policy 路由、默认 hint 和输入校验 |
+| `src/lib/provenance.ts` | 每步紧凑 provenance，不记录隐藏思维链 |
+| `src/lib/featureFlags.ts` | Adaptive/Edit/Reflection rollout 开关 |
 | `src/lib/pipeline.ts` | 六步模型调用、提示词、搜索、归一化、修复和计时 |
 | `src/lib/pipelineTypes.ts` | 六步名称、模型档位、InferenceState、计时与 usage |
 | `src/store/useInferStore.ts` | 页面状态机、暂停期搜索预取、步骤 LRU 和 SSE 解析 |
@@ -588,6 +629,9 @@ idle
 | `src/openui/payload.ts` | 首轮与 repair 的最小模型用户载荷 |
 | `src/lib/openui.ts` | 使用生成 spec 构造系统提示词、parser 校验与 action binding |
 | `src/components/OpenUIRenderer.tsx` | 同源 OpenUI Library 渐进渲染和 CardPlan action 安全执行 |
+| `src/openui/editSlice.ts` | OpenUI statement 扫描、dependency closure 与受限 patch 合并 |
+| `src/learning/` | 脱敏 Episode、IndexedDB storage 和满意度代理指标 |
+| `src/lib/reflection/` | EditIntent、阶段归因、trust-region gradient 和 policy promotion |
 | `src/components/CotTrace.tsx` | 六步状态、耗时、日志、问题和 DAG 展示 |
 | `src/app/api/infer/route.ts` | 六步统一 API 入口 |
 | `src/app/api/prefetch-search/route.ts` | 暂停期投机搜索入口 |

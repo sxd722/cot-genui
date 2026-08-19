@@ -1,5 +1,5 @@
 import type { QueryClassification, AdaptivePolicyEntry, TaskFamily } from "@/lib/adaptive/types";
-import type { CardEditTarget } from "@/lib/cardEditingTypes";
+import type { CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
 import type { ModelProfile, PipelineStepName, TokenUsage } from "@/lib/pipelineTypes";
 import type { StepProvenance } from "@/lib/provenance";
 
@@ -25,6 +25,7 @@ export interface EpisodeEditRecord {
   afterSlice: string;
   modelProfile: ModelProfile;
   createdAt: string;
+  metrics?: OpenUIEditVersion["metrics"];
 }
 
 export interface GenerationEpisode {

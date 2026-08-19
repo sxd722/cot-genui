@@ -44,7 +44,6 @@ function updateBudget(view: ProfileViewV2): number {
 
 function trimToBudget(view: ProfileViewV2, hardMax: number): ProfileViewV2 {
   updateBudget(view);
-  while (serializedLength(view) > hardMax && view.selectedDetails.length) view.selectedDetails.pop();
   let domainIndex = view.domainDirectory.length - 1;
   while (serializedLength(view) > hardMax && domainIndex >= 0) {
     const signals = view.domainDirectory[domainIndex].signals;
@@ -52,6 +51,7 @@ function trimToBudget(view: ProfileViewV2, hardMax: number): ProfileViewV2 {
   }
   while (serializedLength(view) > hardMax && view.stableCore.length) view.stableCore.pop();
   while (serializedLength(view) > hardMax && view.conflicts.length) view.conflicts.pop();
+  while (serializedLength(view) > hardMax && view.selectedDetails.length) view.selectedDetails.pop();
   while (serializedLength(view) > hardMax && view.domainDirectory.length) view.domainDirectory.pop();
   if (serializedLength(view) > hardMax) delete view.profileOverlay;
   updateBudget(view);
@@ -70,6 +70,7 @@ export function buildProfileView(args: {
   const hardMax = Math.min(args.maxChars ?? 6_000, oldDigestChars);
   const queryTerms = terms(args.query);
   const overlayTerms = terms(args.profileOverlay ?? "");
+  const lowEffortTrip = /别太累|不要太累|少走|轻松|省事|不折腾|带孩子|亲子/.test(args.query);
   const constraintPattern = /health|allerg|mobility|chronic|family|child|children|spouse|parents|location|commute|transport|car|budget|payment|income|mortgage|preference|dislike|avoid|dietary|calendar|date|time|recent/i;
   const raw = args.freeText?.trim() ? freeTextDetails(args.freeText) : flatten(args.deviceContext ?? {});
   const scored = raw.map((detail) => {
@@ -77,6 +78,7 @@ export function buildProfileView(args: {
     const score = queryTerms.filter((term) => haystack.includes(term)).length * 6
       + overlayTerms.filter((term) => haystack.includes(term)).length * 4
       + queryTerms.filter((term) => detail.domain.toLowerCase().includes(term)).length * 3
+      + (lowEffortTrip && /health|mobility|knee|transport|car|commute/i.test(`${detail.ref} ${detail.domain}`) ? 5 : 0)
       + (constraintPattern.test(detail.ref) ? 3 : 0)
       + (/date|time|recent|latest|calendar/i.test(detail.ref) ? 1 : 0);
     return { ...detail, score };

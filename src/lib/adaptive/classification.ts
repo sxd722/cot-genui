@@ -10,7 +10,7 @@ import {
 type WeightedTerms = Record<string, { exact?: string[]; strong?: string[]; weak?: string[] }>;
 
 const FAMILY_TERMS: WeightedTerms = {
-  recommendation: { exact: ["吃什么", "买什么", "去哪", "哪个好"], strong: ["推荐", "适合", "哪家", "recommend", "suggest"], weak: ["选择", "候选"] },
+  recommendation: { exact: ["吃什么", "买什么", "去哪", "哪个好", "带孩子玩"], strong: ["推荐", "适合", "哪家", "游玩", "周末去哪", "recommend", "suggest"], weak: ["选择", "候选", "玩"] },
   planning: { exact: ["行程安排"], strong: ["计划", "安排", "行程", "日程", "路线", "方案", "itinerary", "schedule"], weak: ["plan"] },
   decision: { exact: ["选哪个", "哪个更适合", "是否应该", "值不值"], strong: ["比较", "对比", "还是", "compare", " vs "], weak: ["哪个", "权衡"] },
   information: { exact: ["什么是", "怎么回事"], strong: ["解释", "了解", "信息", "explain"], weak: ["what", "how"] },

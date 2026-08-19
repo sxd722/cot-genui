@@ -20,6 +20,7 @@ export interface OpenUIEditVersion {
   modelProfile?: ModelProfile;
   beforeSlice?: string;
   afterSlice?: string;
+  metrics?: { promptChars: number; patchChars: number; latencyMs: number };
 }
 
 export interface OpenUIEditRequest {

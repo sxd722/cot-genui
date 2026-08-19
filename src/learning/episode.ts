@@ -93,6 +93,7 @@ export function appendEpisodeEdit(episode: GenerationEpisode, version: OpenUIEdi
       afterSlice: version.afterSlice,
       modelProfile: version.modelProfile,
       createdAt: version.createdAt,
+      metrics: version.metrics,
     }],
   };
 }
