@@ -49,3 +49,14 @@ export const sixCardPlan: CardPlan = {
     },
   ],
 };
+
+export function simpleTwoCardPlan(): CardPlan {
+  return {
+    skillName: "双卡比较",
+    reasoning: "结论和取舍分别表达。",
+    cards: [
+      { id: "a", purpose: "结论", blocks: [{ kind: "summary", text: "优先 A" }] },
+      { id: "b", purpose: "取舍", blocks: [{ kind: "text", text: "B 更灵活" }] },
+    ],
+  };
+}

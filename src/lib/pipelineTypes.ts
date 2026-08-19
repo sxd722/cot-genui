@@ -3,6 +3,7 @@ import type { InferConflict, InferQuestion, InferResult, InferSlot } from "@/lib
 import type { ProfileDigest, RetrievalRequest } from "@/lib/profileTypes";
 import type { QueryClassification } from "@/lib/adaptive/types";
 import type { StepProvenance } from "@/lib/provenance";
+import type { OpenUIQualityMetrics } from "@/openui/qualityMetrics";
 
 export const PIPELINE_STEPS = [
   "intent_analysis",
@@ -121,6 +122,8 @@ export interface PipelineStepOutput {
     repaired: boolean;
     repairTriggered: boolean;
     repairMs?: number;
+    quality?: OpenUIQualityMetrics;
+    promptProfile?: string;
   };
   durationMs: number;
   timing: StepTiming;

@@ -25,6 +25,7 @@ import { buildProfileView } from "@/lib/profileView";
 import { summarizeStepForProvenance } from "@/lib/provenance";
 import type { ProfileViewV2, RetrievedEvidence } from "@/lib/profileTypes";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
+import { analyzeOpenUIQuality } from "@/openui/qualityMetrics";
 import {
   PIPELINE_STEPS,
   type InferenceState,
@@ -1181,6 +1182,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         repaired,
         repairTriggered: repaired,
         repairMs,
+        quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
       },
       openuiCode,
       openuiDiagnostics: {
@@ -1189,6 +1191,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         repaired,
         repairTriggered: repaired,
         repairMs,
+        quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
       },
     };
   } else {
