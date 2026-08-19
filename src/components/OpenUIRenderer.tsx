@@ -7,6 +7,7 @@ import { cotGenUILibrary } from "@/openui/library";
 import { useInferStore, type OpenUIStreamMetrics } from "@/store/useInferStore";
 import type { AssetManifest } from "@/openui/assetTypes";
 import { AssetRegistryProvider } from "@/openui/assetContext";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 interface OpenUIRendererProps {
   code: string;
@@ -144,6 +145,7 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest }: O
       )}
       <div
         className={`openui-host flex-1 overflow-y-auto bg-zinc-50 p-3 text-zinc-900 ${isTargeting ? "openui-host--targeting" : ""}`}
+        data-local-bindings={FEATURE_FLAGS.OPENUI_LOCAL_BINDINGS ? "enabled" : "disabled"}
         onPointerDownCapture={captureTarget}
       >
         {!code && isStreaming ? (

@@ -19,13 +19,7 @@ export function examplesForTaskFamily(family: TaskFamily): string[] {
   return [...GENERAL_OPENUI_EXAMPLES];
 }
 
-export const cotGenUIPromptOptions: PromptOptions = {
-  toolCalls: false,
-  bindings: false,
-  editMode: false,
-  inlineMode: false,
-  preamble: "You are a generative visual designer. Turn CardPlan Markdown into a polished OpenUI card experience.",
-  additionalRules: [
+const BASE_RULES = [
     "Treat cardPlanMarkdown as a creative brief, not as a wireframe. Preserve its facts, intent, card order, and action meaning, while freely choosing hierarchy, density, components, and visual rhythm.",
     "The supplied CardPlan may contain one card or several cards. Never infer a preferred card count from the example; requiredShell is the sole source of truth for the chosen count.",
     "CardDeck is the only root and GeneratedCard is the only peer card boundary.",
@@ -37,8 +31,26 @@ export const cotGenUIPromptOptions: PromptOptions = {
     "Use each supplied actionRef exactly once through Button + @ToAssistant or an approved HostAction component. Never show an actionRef as visible text.",
     "Never use Query, Mutation, @Run, @OpenUrl, or invented URLs. The host owns all side effects.",
     "Return only a complete OpenUI Lang program. Do not return Markdown fences, JSON, HTML, comments, or prose.",
-  ],
-  examples: ALL_OPENUI_EXAMPLES,
-};
+];
+
+export function createCotGenUIPromptOptions(args: { localBindings: boolean; examples: string[] }): PromptOptions {
+  return {
+    toolCalls: false,
+    bindings: args.localBindings,
+    editMode: false,
+    inlineMode: false,
+    preamble: "You are a generative visual designer. Turn CardPlan Markdown into a polished OpenUI card experience.",
+    additionalRules: [
+      ...BASE_RULES,
+      ...(args.localBindings ? [
+        "Local bindings are only for transient in-card UI state such as selected option, expanded content, filters, sliders or visibility.",
+        "Never use local state to represent a completed purchase, save, navigation, upload, network request or other host side effect. Host side effects must continue to use supplied actionRef values.",
+      ] : []),
+    ],
+    examples: args.examples,
+  };
+}
+
+export const cotGenUIPromptOptions = createCotGenUIPromptOptions({ localBindings: false, examples: ALL_OPENUI_EXAMPLES });
 
 export const promptOptions = cotGenUIPromptOptions;

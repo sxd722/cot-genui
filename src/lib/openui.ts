@@ -15,11 +15,13 @@ import compactPlanningSpecJson from "@/openui/generated/compact-planning.spec.js
 import compactRecommendationSpecJson from "@/openui/generated/compact-recommendation.spec.json";
 import compactAnalysisSpecJson from "@/openui/generated/compact-analysis.spec.json";
 import expandedSpecJson from "@/openui/generated/expanded.spec.json";
-import { cotGenUIPromptOptions, examplesForTaskFamily } from "@/openui/promptOptions";
+import { cotGenUIPromptOptions, createCotGenUIPromptOptions, examplesForTaskFamily } from "@/openui/promptOptions";
 import type { TaskFamily } from "@/lib/adaptive/types";
 import type { ModelProfile } from "@/lib/pipelineTypes";
 import { openUIPromptTierFor } from "@/openui/modelCapabilities";
 import { paletteNameForTaskFamily } from "@/openui/palettes";
+import { forbiddenOpenUIActions } from "@/openui/localInteraction";
+import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 const librarySpec = librarySpecJson as LibrarySpec;
 
@@ -44,8 +46,9 @@ export function openUISystemPromptFor(args: { taskFamily: TaskFamily; modelProfi
   const examples = tier === "expanded" && familyPalette !== "general"
     ? [...familyExamples, examplesForTaskFamily("general")[0]]
     : familyExamples;
+  const promptOptions = createCotGenUIPromptOptions({ localBindings: FEATURE_FLAGS.OPENUI_LOCAL_BINDINGS, examples });
   return {
-    prompt: generateSystemPrompt({ library: promptSpecs[palette], promptOptions: { ...cotGenUIPromptOptions, examples } }),
+    prompt: generateSystemPrompt({ library: promptSpecs[palette], promptOptions }),
     promptProfile: `${tier}:${tier === "expanded" ? "general" : palette}`,
   };
 }
@@ -120,7 +123,8 @@ export function validateOpenUIArtifact(code: string, cardPlan: CardPlan): OpenUI
   if (parsed.queryStatements.length || parsed.mutationStatements.length) {
     errors.push("禁止在第⑥步产物中使用 Query/Mutation 工具调用");
   }
-  if (/@(?:OpenUrl|Run)\s*\(/.test(code)) errors.push("禁止使用 @OpenUrl/@Run；动作必须引用 CardPlan action");
+  const forbiddenActions = forbiddenOpenUIActions(code);
+  if (forbiddenActions.length) errors.push(`禁止使用 ${forbiddenActions.map((name) => `@${name}`).join("/")}；动作必须引用 CardPlan action`);
   if (/https?:\/\//i.test(code)) errors.push("OpenUI 源码不得包含外部 URL；外部能力必须通过 actionRef");
 
   const rootChildren = Array.isArray(parsed.root?.props.children) ? parsed.root.props.children : [];
