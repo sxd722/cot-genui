@@ -3,9 +3,8 @@ import type { ChatCompletionCreateParamsStreaming } from "openai/resources/chat/
 import { createLLMClient } from "@/lib/llm";
 import { canCallModelProfile, resolveModelProfile } from "@/lib/modelProfiles";
 import { nvidiaChatOptions } from "@/lib/nvidia";
-import { MODEL_PROFILES, type ModelProfile } from "@/lib/pipelineTypes";
 import type { CardPlan } from "@/dsl/modules";
-import type { CardEditTarget, OpenUIEditRequest } from "@/lib/cardEditingTypes";
+import { isCardEditModelProfile, type CardEditTarget, type OpenUIEditRequest } from "@/lib/cardEditingTypes";
 import { normalizeOpenUIOutput, validateOpenUIArtifact } from "@/lib/openui";
 import { buildOpenUIEditPrompt, extractCardMarkdownSection, OPENUI_EDIT_SYSTEM_PROMPT } from "@/openui/editPrompt";
 import { extractCardSlice, mergeOpenUIPatch } from "@/openui/editSlice";
@@ -13,10 +12,6 @@ import { isAssignmentStatement, referencedStatementIds, splitOpenUIStatements } 
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
 export const runtime = "nodejs";
-
-function isModelProfile(value: unknown): value is ModelProfile {
-  return typeof value === "string" && (MODEL_PROFILES as readonly string[]).includes(value);
-}
 
 function isCardPlan(value: unknown): value is CardPlan {
   if (!value || typeof value !== "object") return false;
@@ -48,7 +43,7 @@ function validateBody(value: unknown): OpenUIEditRequest | string {
   if (!body.cardPlan.cards.some((card) => card.id === body.cardId)) return "cardId 不属于 CardPlan";
   if (!isTarget(body.target) || body.target.cardId !== body.cardId) return "缺少合法 target";
   if (typeof body.instruction !== "string" || !body.instruction.trim() || body.instruction.length > 2_000) return "编辑要求缺失或过长";
-  if (!isModelProfile(body.modelProfile)) return "缺少合法 modelProfile";
+  if (!isCardEditModelProfile(body.modelProfile)) return "二次编辑仅支持 glm-5.2 或 glm-4.7-flash";
   return body as OpenUIEditRequest;
 }
 

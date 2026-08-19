@@ -2,6 +2,8 @@
 
 import { useInferStore } from "@/store/useInferStore";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
+import { CARD_EDIT_MODEL_PROFILES, type CardEditModelProfile } from "@/lib/cardEditingTypes";
+import { MODEL_PROFILE_LABELS } from "@/lib/pipelineTypes";
 
 export function EditComposer() {
   const state = useInferStore();
@@ -13,6 +15,17 @@ export function EditComposer() {
       <div className="flex items-center gap-2">
         <strong className="text-xs">卡片局部编辑</strong>
         {!FEATURE_FLAGS.OPENUI_CARD_EDIT ? <span className="text-[10px] text-zinc-400">feature flag 已关闭</span> : null}
+        <label className="flex items-center gap-1 text-[10px] text-zinc-500">
+          二次编辑模型
+          <select
+            value={state.cardEditModelProfile}
+            disabled={state.editStatus === "streaming"}
+            onChange={(event) => state.setCardEditModelProfile(event.target.value as CardEditModelProfile)}
+            className="rounded border border-zinc-300 bg-white px-1.5 py-1 text-[10px] text-zinc-700 outline-none disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+          >
+            {CARD_EDIT_MODEL_PROFILES.map((profile) => <option key={profile} value={profile}>{MODEL_PROFILE_LABELS[profile]}</option>)}
+          </select>
+        </label>
         <button type="button" disabled={!canEdit || state.editStatus === "streaming"} onClick={() => state.setTargeting(!state.isTargeting)} className={`rounded border px-2 py-1 text-[10px] disabled:opacity-40 ${state.isTargeting ? "border-cyan-500 bg-cyan-500 text-black" : "border-zinc-300 dark:border-zinc-700"}`}>{state.isTargeting ? "请点击卡片位置…" : "⌖ 点选位置"}</button>
         <button type="button" onClick={state.undoOpenUIEdit} disabled={!canUndo} className="rounded border border-zinc-300 px-2 py-1 text-[10px] disabled:opacity-30 dark:border-zinc-700">撤销</button>
         <button type="button" onClick={state.redoOpenUIEdit} disabled={!canRedo} className="rounded border border-zinc-300 px-2 py-1 text-[10px] disabled:opacity-30 dark:border-zinc-700">重做</button>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { extractCardSlice, mergeOpenUIPatch } from "../src/openui/editSlice";
 import { splitOpenUIStatements } from "../src/openui/statements";
+import { CARD_EDIT_MODEL_PROFILES, isCardEditModelProfile } from "../src/lib/cardEditingTypes";
 
 const fixture = `root = CardDeck([card_0, card_1])
 card_0 = GeneratedCard("first", "First", [card_0_body])
@@ -15,6 +16,13 @@ card_1_body = Stack([second_text, shared_label], "column", "m")
 second_text = TextContent("other")`;
 
 describe("OpenUI card statement editing", () => {
+  it("limits the secondary-edit selector to the two supported GLM profiles", () => {
+    expect(CARD_EDIT_MODEL_PROFILES).toEqual(["glm_5_2", "glm_4_7_flash"]);
+    expect(isCardEditModelProfile("glm_5_2")).toBe(true);
+    expect(isCardEditModelProfile("glm_4_7_flash")).toBe(true);
+    expect(isCardEditModelProfile("groq_qwen_3_6_27b")).toBe(false);
+  });
+
   it("splits multiline statements without breaking quoted or nested content", () => {
     const statements = splitOpenUIStatements(fixture);
     expect(statements.map((statement) => statement.id)).toEqual([
@@ -45,4 +53,3 @@ describe("OpenUI card statement editing", () => {
     expect(() => mergeOpenUIPatch(fixture, 'card_9_body = Stack([])', new Set())).toThrow(/shell/);
   });
 });
-

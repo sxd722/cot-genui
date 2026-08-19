@@ -22,7 +22,7 @@ price_text = TextContent("预算适中")`;
     const target = { cardId: "overview", x: 0.5, y: 0.5, pixelX: 120, pixelY: 80, nearbyText: "预算适中", elementHint: "span" };
     episode = appendEpisodeEdit(episode, {
       id: "edit-1", createdAt: "2026-08-19T00:01:00Z", code: acceptedCode,
-      instruction: "这里更醒目一点", target, modelProfile: "groq_qwen_3_6_27b",
+      instruction: "这里更醒目一点", target, modelProfile: "glm_5_2",
       beforeSlice: slice.source, afterSlice: extractCardSlice(acceptedCode, 0).source,
       metrics: { promptChars: 600, patchChars: 45, latencyMs: 250 },
     });
@@ -41,4 +41,3 @@ price_text = TextContent("预算适中")`;
     expect(learned.stepHints.openui_generate).toBe(candidate.candidateText);
   });
 });
-

@@ -11,7 +11,7 @@ import { classifyQuery, refineClassification } from "@/lib/adaptive/classificati
 import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
 import type { AdaptivePolicyEntry, QueryClassification } from "@/lib/adaptive/types";
 import type { StepProvenance } from "@/lib/provenance";
-import type { CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
+import type { CardEditModelProfile, CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
 import type { GenerationEpisode, LearningSettings, PolicyObservation } from "@/learning/types";
 import { abandonEpisode, appendEpisodeEdit, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordEpisodeUndo, recordInitialOpenUI } from "@/learning/episode";
 import { exportLearningData, getLearningSettings, listEpisodes, listPolicies, listPolicyObservations, putEpisode, putLearningSettings, putPolicy, putPolicyObservation } from "@/learning/storage";
@@ -145,6 +145,7 @@ interface InferState {
   isTargeting: boolean;
   cardEditTarget: CardEditTarget | null;
   editDraft: string;
+  cardEditModelProfile: CardEditModelProfile;
   editStatus: "idle" | "streaming" | "error" | "done";
   editError: string | null;
   editStreamingPatch: string;
@@ -170,6 +171,7 @@ interface InferState {
   setTargeting: (active: boolean) => void;
   setCardEditTarget: (target: CardEditTarget | null) => void;
   setEditDraft: (value: string) => void;
+  setCardEditModelProfile: (profile: CardEditModelProfile) => void;
   submitCardEdit: () => Promise<void>;
   undoOpenUIEdit: () => void;
   redoOpenUIEdit: () => void;
@@ -377,6 +379,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   profileError: null,
   profileContextText: null,
   customContextText: "",
+  cardEditModelProfile: "glm_5_2",
   currentEpisode: null,
   isReflectionOpen: false,
   reflectionStatus: "idle",
@@ -412,6 +415,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   setTargeting: (isTargeting) => set({ isTargeting, ...(isTargeting ? { cardEditTarget: null, editError: null } : {}) }),
   setCardEditTarget: (cardEditTarget) => set({ cardEditTarget, isTargeting: false, editError: null }),
   setEditDraft: (editDraft) => set({ editDraft }),
+  setCardEditModelProfile: (cardEditModelProfile) => set({ cardEditModelProfile }),
   undoOpenUIEdit: () => set((state) => {
     const nextIndex = Math.max(0, state.openuiVersionIndex - 1);
     if (nextIndex === state.openuiVersionIndex || !state.openuiVersions[nextIndex]) return {};
@@ -436,7 +440,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       cardId: state.cardEditTarget.cardId,
       target: state.cardEditTarget,
       instruction: state.editDraft.trim(),
-      modelProfile: state.stepModels.openui_generate,
+      modelProfile: state.cardEditModelProfile,
     };
     set({ editStatus: "streaming", editError: null, editStreamingPatch: "" });
     try {
@@ -878,6 +882,6 @@ export const useInferStore = create<InferState>((set, get) => ({
   reset: () => {
     persistAbandoned(get().currentEpisode);
     stepCache.clear();
-    set({ query: DEFAULT_QUERY, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, ...clearedResult() });
+    set({ query: DEFAULT_QUERY, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), cardEditModelProfile: "glm_5_2", isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, ...clearedResult() });
   },
 }));

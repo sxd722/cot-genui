@@ -14,7 +14,7 @@ describe("generation episode", () => {
       createdAt: new Date().toISOString(),
       code: "whole code is not copied into edit record",
       instruction: "make concise",
-      modelProfile: "groq_qwen_3_6_27b",
+      modelProfile: "glm_4_7_flash",
       target: { cardId: "a", x: 0.5, y: 0.5, pixelX: 10, pixelY: 10, nearbyText: "title", elementHint: "h2" },
       beforeSlice: "a = TextContent(\"before\")",
       afterSlice: "a = TextContent(\"after\")",

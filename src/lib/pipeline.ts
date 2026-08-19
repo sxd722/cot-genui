@@ -878,11 +878,18 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
   const plan: CardPlan = input.cardPlan ?? {
     skillName: input.query,
     iconText: "S",
-    reasoning: "基于明确需求生成多卡方案",
+    reasoning: "根据简单 mock 意图生成一张完整卡片",
     cards: [
-      { id: "overview", purpose: "方案概览", sourceSlots: ["request"], blocks: [{ kind: "hero", title: input.query, text: "已整理目标与推荐方向", sourceSlots: ["request"] }] },
-      { id: "details", purpose: "核心内容", sourceSlots: ["request"], blocks: [{ kind: "list", title: "执行要点", items: [{ label: "先确认最重要的目标" }, { label: "再按优先级推进" }], sourceSlots: ["request"] }] },
-      { id: "next-steps", purpose: "下一步", sourceSlots: ["request"], blocks: [{ kind: "summary", title: "行动建议", text: "从第一项开始执行，并根据结果继续调整。", sourceSlots: ["request"] }] },
+      {
+        id: "overview",
+        purpose: "完整方案",
+        sourceSlots: ["request"],
+        blocks: [
+          { kind: "hero", title: input.query, text: "已整理目标与推荐方向", sourceSlots: ["request"] },
+          { kind: "list", title: "执行要点", items: [{ label: "先确认最重要的目标" }, { label: "再按优先级推进" }], sourceSlots: ["request"] },
+          { kind: "summary", title: "行动建议", text: "从第一项开始执行，并根据结果继续调整。", sourceSlots: ["request"] },
+        ],
+      },
     ],
   };
   const table: Record<PipelineStepName, Omit<PipelineStepOutput, "durationMs" | "timing" | "model">> = {
