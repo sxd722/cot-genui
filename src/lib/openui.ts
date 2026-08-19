@@ -15,7 +15,7 @@ import compactPlanningSpecJson from "@/openui/generated/compact-planning.spec.js
 import compactRecommendationSpecJson from "@/openui/generated/compact-recommendation.spec.json";
 import compactAnalysisSpecJson from "@/openui/generated/compact-analysis.spec.json";
 import expandedSpecJson from "@/openui/generated/expanded.spec.json";
-import { cotGenUIPromptOptions } from "@/openui/promptOptions";
+import { cotGenUIPromptOptions, examplesForTaskFamily } from "@/openui/promptOptions";
 import type { TaskFamily } from "@/lib/adaptive/types";
 import type { ModelProfile } from "@/lib/pipelineTypes";
 import { openUIPromptTierFor } from "@/openui/modelCapabilities";
@@ -38,9 +38,14 @@ const promptSpecs = {
 
 export function openUISystemPromptFor(args: { taskFamily: TaskFamily; modelProfile: ModelProfile }): { prompt: string; promptProfile: string } {
   const tier = openUIPromptTierFor(args.modelProfile);
-  const palette = tier === "expanded" ? "expanded" : paletteNameForTaskFamily(args.taskFamily);
+  const familyPalette = paletteNameForTaskFamily(args.taskFamily);
+  const palette = tier === "expanded" ? "expanded" : familyPalette;
+  const familyExamples = examplesForTaskFamily(args.taskFamily);
+  const examples = tier === "expanded" && familyPalette !== "general"
+    ? [...familyExamples, examplesForTaskFamily("general")[0]]
+    : familyExamples;
   return {
-    prompt: generateSystemPrompt({ library: promptSpecs[palette], promptOptions: cotGenUIPromptOptions }),
+    prompt: generateSystemPrompt({ library: promptSpecs[palette], promptOptions: { ...cotGenUIPromptOptions, examples } }),
     promptProfile: `${tier}:${tier === "expanded" ? "general" : palette}`,
   };
 }

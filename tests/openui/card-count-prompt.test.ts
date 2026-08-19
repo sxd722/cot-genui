@@ -21,8 +21,8 @@ describe("adaptive CardPlan card count", () => {
     expect(cotGenUIPromptOptions.additionalRules?.join(" ")).toContain("requiredShell is the sole source of truth");
     const examples = cotGenUIPromptOptions.examples ?? [];
     expect(examples.length).toBeGreaterThanOrEqual(4);
-    expect(examples.some((value) => value.includes("CardDeck([card_0])"))).toBe(true);
-    expect(examples.some((value) => value.includes("CardDeck([card_0, card_1])"))).toBe(true);
+    expect(examples.some((value) => value.includes("CardDeck([card_0],"))).toBe(true);
+    expect(examples.some((value) => value.includes("CardDeck([card_0, card_1],"))).toBe(true);
     expect(examples.some((value) => value.includes("card_3"))).toBe(true);
   });
 

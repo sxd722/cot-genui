@@ -1,0 +1,19 @@
+export const RECOMMENDATION_OPENUI_EXAMPLES = [
+  `root = CardDeck([card_0, card_1], "auto")
+card_0 = GeneratedCard("picks", "推荐选择", [picks_body], "media", "balanced")
+card_1 = GeneratedCard("compare", "关键取舍", [compare_body], "comparison", "compact")
+picks_body = RecommendationGrid([{title:"方案 A",detail:"整体均衡",badge:"推荐",assetRef:"asset_demo_1"},{title:"方案 B",detail:"更加灵活"}])
+compare_body = ComparisonGrid([{title:"A",rows:[{label:"预算",value:"适中"}]},{title:"B",rows:[{label:"预算",value:"更低"}]}])`,
+  `root = CardDeck([card_0, card_1, card_2, card_3, card_4], "featured")
+card_0 = GeneratedCard("lead", "首选", [lead_body], "hero", "immersive")
+card_1 = GeneratedCard("alternatives", "备选", [alternatives_body], "standard", "balanced")
+card_2 = GeneratedCard("tradeoffs", "取舍", [tradeoffs_body], "comparison", "compact")
+card_3 = GeneratedCard("evidence", "依据", [evidence_body], "data", "compact")
+card_4 = GeneratedCard("next", "下一步", [next_body], "action", "compact")
+lead_body = MediaHero("最符合当前偏好的选择", "兼顾体验与预算", "asset_demo_1", ["首选"])
+alternatives_body = RecommendationGrid([{title:"备选 A"},{title:"备选 B"}])
+tradeoffs_body = ComparisonGrid([{title:"首选",rows:[{label:"优势",value:"均衡"}]},{title:"备选",rows:[{label:"优势",value:"灵活"}]}])
+evidence_body = MetricRow([{label:"匹配度",value:"92%"}])
+next_body = ActionPanel("继续", "查看宿主提供的详情", [details_action])
+details_action = HostActionItem("查看详情", "plan:next:details")`,
+];
