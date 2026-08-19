@@ -122,6 +122,13 @@ export interface IRBlock {
   // —— image/chart 领先字段（编译器降级）——
   imageUrl?: string;
   chartType?: string;
+  /** 宿主媒体请求意图；模型只描述需要什么图，不接触 URL。 */
+  assetRequest?: {
+    kind: "image" | "gallery";
+    query: string;
+    count: number;
+    role: "hero" | "supporting" | "gallery";
+  };
 
   // —— 缺失信息（系统自动补齐）——
   missingInfo?: IRMissingInfo;

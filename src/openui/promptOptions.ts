@@ -14,6 +14,7 @@ export const cotGenUIPromptOptions: PromptOptions = {
     "Do not add, remove, merge, reorder, or nest GeneratedCard components.",
     "Inside each GeneratedCard, compose freely with the available content, layout, chart, table, tabs, accordion, callout, and data-display components. Do not use Card as another card boundary.",
     "When one semantic component directly represents the content, prefer it over manually rebuilding the same pattern with many Stack/Card/TextContent statements. Semantic components are not mandatory; use generic OpenUI components when they express the result more naturally.",
+    "Use AssetImage or AssetGallery only with assetRef IDs explicitly listed under 可用媒体. Never invent an asset ID and never place an image URL in OpenUI source.",
     "Use each supplied actionRef exactly once through Button + @ToAssistant or an approved HostAction component. Never show an actionRef as visible text.",
     "Never use Query, Mutation, @Run, @OpenUrl, or invented URLs. The host owns all side effects.",
     "Return only a complete OpenUI Lang program. Do not return Markdown fences, JSON, HTML, comments, or prose.",

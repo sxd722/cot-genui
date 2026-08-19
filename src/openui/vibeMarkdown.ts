@@ -1,4 +1,5 @@
 import type { CardNode, CardPlan, IRBlock } from "@/dsl/modules";
+import { safeAssetRefs, type AssetManifest } from "./assetTypes";
 
 function clean(value: unknown): string {
   return String(value ?? "")
@@ -35,7 +36,8 @@ function cardVibe(card: CardNode): string {
  * YAML and positional UI instructions: facts/actions stay explicit while the
  * visual composition remains open-ended.
  */
-export function cardPlanToVibeMarkdown(plan: CardPlan): string {
+export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetManifest): string {
+  const availableAssets = assetManifest ? safeAssetRefs(assetManifest) : [];
   const experienceDirection = plan.cards.length === 1
     ? "这是一个 **单卡体验**。让这一张卡直接、完整地解决用户意图，不要暗示还需要额外卡片。"
     : `这是一个由 **${plan.cards.length} 张平级卡片**组成的体验。每张卡应有独立目标和清晰焦点，但整组仍像同一套作品。`;
@@ -72,6 +74,11 @@ export function cardPlanToVibeMarkdown(plan: CardPlan): string {
         ...(card.presentation.density ? [`- density: ${card.presentation.density}`] : []),
         ...(card.presentation.emphasis ? [`- emphasis: ${card.presentation.emphasis}`] : []),
       );
+    }
+
+    const cardAssets = availableAssets.filter((asset) => asset.cardId === card.id);
+    if (cardAssets.length) {
+      lines.push("", "### 可用媒体", "", ...cardAssets.map((asset) => `- \`${asset.id}\` · ${asset.kind} · ${clean(asset.alt)}`));
     }
 
     lines.push("", "### 数据", "");

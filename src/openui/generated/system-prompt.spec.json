@@ -249,6 +249,14 @@
       "signature": "ActionPanel(title?: string, description?: string, actions: (HostActionChip | HostActionItem)[])",
       "description": "A focused host-action region. Its children must be supplied HostActionChip or HostActionItem refs."
     },
+    "AssetImage": {
+      "signature": "AssetImage(assetRef: string, alt?: string, aspect?: \"wide\" | \"square\" | \"portrait\")",
+      "description": "Displays a host-resolved image by assetRef. assetRef must come from availableAssets; never pass a URL."
+    },
+    "AssetGallery": {
+      "signature": "AssetGallery(assetRefs: string[], columns?: 2 | 3)",
+      "description": "Displays host-resolved image IDs as a two- or three-column gallery. Never pass URLs."
+    },
     "HostActionChip": {
       "signature": "HostActionChip(label: string, actionRef: string)",
       "description": "Compact host-side action affordance. actionRef must be copied exactly from CardPlan Markdown."
@@ -430,6 +438,8 @@
         "RecommendationGrid",
         "ComparisonGrid",
         "MediaHero",
+        "AssetImage",
+        "AssetGallery",
         "ActionPanel",
         "HostActionChip",
         "HostActionItem",
@@ -441,7 +451,8 @@
         "CardDeck is the only root.",
         "GeneratedCard is the only peer card boundary.",
         "HostAction components must receive actionRef values supplied by the host.",
-        "Prefer a semantic component when it directly represents the content pattern."
+        "Prefer a semantic component when it directly represents the content pattern.",
+        "AssetImage and AssetGallery accept only host-supplied assetRef IDs, never URLs."
       ]
     }
   ],
@@ -635,6 +646,12 @@
       "ActionPanel": {
         "$ref": "#/$defs/ActionPanel"
       },
+      "AssetImage": {
+        "$ref": "#/$defs/AssetImage"
+      },
+      "AssetGallery": {
+        "$ref": "#/$defs/AssetGallery"
+      },
       "HostActionChip": {
         "$ref": "#/$defs/HostActionChip"
       },
@@ -714,6 +731,8 @@
       "ComparisonGrid",
       "MediaHero",
       "ActionPanel",
+      "AssetImage",
+      "AssetGallery",
       "HostActionChip",
       "HostActionItem",
       "HostActionMenu",
@@ -3037,6 +3056,58 @@
         ],
         "additionalProperties": false,
         "description": "A host-side action rendered as a descriptive list or menu row."
+      },
+      "AssetImage": {
+        "type": "object",
+        "properties": {
+          "assetRef": {
+            "type": "string"
+          },
+          "alt": {
+            "type": "string"
+          },
+          "aspect": {
+            "type": "string",
+            "enum": [
+              "wide",
+              "square",
+              "portrait"
+            ]
+          }
+        },
+        "required": [
+          "assetRef"
+        ],
+        "additionalProperties": false,
+        "description": "Displays a host-resolved image by assetRef. assetRef must come from availableAssets; never pass a URL."
+      },
+      "AssetGallery": {
+        "type": "object",
+        "properties": {
+          "assetRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "columns": {
+            "anyOf": [
+              {
+                "type": "number",
+                "const": 2
+              },
+              {
+                "type": "number",
+                "const": 3
+              }
+            ]
+          }
+        },
+        "required": [
+          "assetRefs"
+        ],
+        "additionalProperties": false,
+        "description": "Displays host-resolved image IDs as a two- or three-column gallery. Never pass URLs."
       },
       "HostActionMenu": {
         "type": "object",

@@ -19,6 +19,7 @@ import type { AttributionReport, PolicyGradientCandidate } from "@/lib/reflectio
 import { canGuardedAutoPromote, observationFromCandidate, promoteCandidate, reflectionPolicyForEpisode, rollbackPolicy } from "@/lib/reflection/promotion";
 import { validateGradientCandidate } from "@/lib/reflection/gradient";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
+import type { AssetManifest } from "@/openui/assetTypes";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -78,13 +79,8 @@ interface InferApiResponse {
   cardPlanMarkdown?: string;
   reasoningGraph?: string;
   openuiCode?: string;
-  openuiDiagnostics?: {
-    coverage: { required: number; matched: number; missing: string[] };
-    parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
-    repaired: boolean;
-    repairTriggered: boolean;
-    repairMs?: number;
-  };
+  openuiDiagnostics?: PipelineStepOutput["openuiDiagnostics"];
+  assetManifest?: AssetManifest;
   durationMs?: number;
   timing?: StepTiming;
   model?: string;
@@ -136,6 +132,7 @@ interface InferState {
   reasoningGraph: string | null;
   openuiCode: string | null;
   openuiDiagnostics: InferApiResponse["openuiDiagnostics"] | null;
+  assetManifest: AssetManifest | null;
   openuiStreamMetrics: OpenUIStreamMetrics;
   rightView: ResultView | null;
   answers: Record<number, string>;
@@ -225,7 +222,7 @@ function clearedResult() {
   return {
     inferenceState: null,
     slots: [] as InferSlot[], conflicts: [] as InferConflict[], questions: [] as InferQuestion[],
-    result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, openuiStreamMetrics: {} as OpenUIStreamMetrics, rightView: null as ResultView | null,
+    result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, assetManifest: null as AssetManifest | null, openuiStreamMetrics: {} as OpenUIStreamMetrics, rightView: null as ResultView | null,
     answers: {}, runAllPaused: false,
     prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
     isTargeting: false, cardEditTarget: null as CardEditTarget | null, editDraft: "", editStatus: "idle" as const,
@@ -688,8 +685,8 @@ export const useInferStore = create<InferState>((set, get) => ({
     }
 
     set((state) => ({
-      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, openuiVersions: [], openuiVersionIndex: -1, rightView: "cardplan-markdown" as const } : {}),
-      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, openuiStreamMetrics: {}, openuiVersions: [], openuiVersionIndex: -1, cardEditTarget: null, rightView: "openui" as const } : {}),
+      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, assetManifest: null, openuiVersions: [], openuiVersionIndex: -1, rightView: "cardplan-markdown" as const } : {}),
+      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, assetManifest: null, openuiStreamMetrics: {}, openuiVersions: [], openuiVersionIndex: -1, cardEditTarget: null, rightView: "openui" as const } : {}),
       steps: { ...state.steps, [name]: { ...state.steps[name], status: "loading", streamingChars: 0, error: null, logs: [] } },
     }));
 
@@ -823,6 +820,7 @@ export const useInferStore = create<InferState>((set, get) => ({
         reasoningGraph: data.reasoningGraph ?? current.reasoningGraph,
         openuiCode: data.openuiCode ?? current.openuiCode,
         openuiDiagnostics: data.openuiDiagnostics ?? current.openuiDiagnostics,
+        assetManifest: data.assetManifest ?? current.assetManifest,
         currentEpisode: episode,
         ...(initialVersion ? { openuiVersions: [initialVersion], openuiVersionIndex: 0 } : {}),
         ...(name === "clarification" ? { answers: {} } : {}),

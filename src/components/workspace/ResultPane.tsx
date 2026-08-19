@@ -5,7 +5,7 @@ import { useInferStore, type ResultView } from "@/store/useInferStore";
 import { CardPlanMarkdownView } from "./CardPlanMarkdownView";
 
 export function ResultPane() {
-  const { steps, cardPlan, cardPlanMarkdown, openuiCode, openuiDiagnostics, rightView, setRightView } = useInferStore();
+  const { steps, cardPlan, cardPlanMarkdown, openuiCode, assetManifest, openuiDiagnostics, rightView, setRightView } = useInferStore();
   const streaming = steps.openui_generate.status === "loading";
   const canShowOpenUI = !!cardPlan && (streaming || !!openuiCode);
   const fallback: ResultView | null = canShowOpenUI ? "openui" : cardPlanMarkdown ? "cardplan-markdown" : cardPlan ? "cardplan-json" : null;
@@ -29,7 +29,7 @@ export function ResultPane() {
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
         {!active ? <div className="flex h-full items-center justify-center text-xs text-zinc-500">执行⑤ CardPlan 后在此查看和编辑卡片</div> : null}
-        {active === "openui" && cardPlan ? <div className="workspace-openui h-full p-3"><OpenUIRenderer code={openuiCode ?? ""} cardPlan={cardPlan} isStreaming={streaming} /></div> : null}
+        {active === "openui" && cardPlan ? <div className="workspace-openui h-full p-3"><OpenUIRenderer code={openuiCode ?? ""} cardPlan={cardPlan} assetManifest={assetManifest} isStreaming={streaming} /></div> : null}
         {active === "openui-source" && openuiCode ? <pre className="h-full overflow-auto p-3 font-mono text-[10px] leading-relaxed text-cyan-300/80">{openuiCode}</pre> : null}
         {active === "cardplan-markdown" && cardPlanMarkdown ? <CardPlanMarkdownView markdown={cardPlanMarkdown} /> : null}
         {active === "cardplan-json" && cardPlan ? <pre className="h-full overflow-auto p-3 font-mono text-[10px] leading-relaxed text-emerald-300/80">{JSON.stringify(cardPlan, null, 2)}</pre> : null}

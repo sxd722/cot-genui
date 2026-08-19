@@ -4,6 +4,7 @@ import type { ProfileDigest, RetrievalRequest } from "@/lib/profileTypes";
 import type { QueryClassification } from "@/lib/adaptive/types";
 import type { StepProvenance } from "@/lib/provenance";
 import type { OpenUIQualityMetrics } from "@/openui/qualityMetrics";
+import type { AssetManifest } from "@/openui/assetTypes";
 
 export const PIPELINE_STEPS = [
   "intent_analysis",
@@ -116,6 +117,7 @@ export interface PipelineStepOutput {
   reasoningGraph?: string;
   /** 第⑥步模型直接生成、通过 OpenUI parser 校验的 OpenUI Lang 源码 */
   openuiCode?: string;
+  assetManifest?: AssetManifest;
   openuiDiagnostics?: {
     coverage: { required: number; matched: number; missing: string[] };
     parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
@@ -124,6 +126,7 @@ export interface PipelineStepOutput {
     repairMs?: number;
     quality?: OpenUIQualityMetrics;
     promptProfile?: string;
+    assetManifest?: AssetManifest;
   };
   durationMs: number;
   timing: StepTiming;

@@ -2,6 +2,7 @@ import type { CardPlan } from "../dsl/modules";
 import type { OpenUIValidationResult } from "../lib/openui";
 import { buildOpenUIBootstrap } from "./bootstrap";
 import { cardPlanToVibeMarkdown } from "./vibeMarkdown";
+import type { AssetManifest } from "./assetTypes";
 
 export interface OpenUIGenerationPayload {
   cardPlanMarkdown: string;
@@ -16,9 +17,9 @@ export interface OpenUIRepairPayload {
 }
 
 /** The only business content sent to the first-pass OpenUI generation model. */
-export function buildOpenUIGenerationPayload(cardPlan: CardPlan): OpenUIGenerationPayload {
+export function buildOpenUIGenerationPayload(cardPlan: CardPlan, assetManifest?: AssetManifest): OpenUIGenerationPayload {
   return {
-    cardPlanMarkdown: cardPlanToVibeMarkdown(cardPlan),
+    cardPlanMarkdown: cardPlanToVibeMarkdown(cardPlan, assetManifest),
     requiredShell: buildOpenUIBootstrap(cardPlan).code,
   };
 }

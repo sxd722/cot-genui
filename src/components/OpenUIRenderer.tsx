@@ -5,11 +5,14 @@ import { Renderer, type ActionEvent, type OpenUIError, type ParseResult } from "
 import type { CardPlan, IRAction } from "@/dsl/modules";
 import { cotGenUILibrary } from "@/openui/library";
 import { useInferStore, type OpenUIStreamMetrics } from "@/store/useInferStore";
+import type { AssetManifest } from "@/openui/assetTypes";
+import { AssetRegistryProvider } from "@/openui/assetContext";
 
 interface OpenUIRendererProps {
   code: string;
   cardPlan: CardPlan;
   isStreaming: boolean;
+  assetManifest?: AssetManifest | null;
 }
 
 function resolveAction(cardPlan: CardPlan, message: string): { action: IRAction; cardId: string } | null {
@@ -41,7 +44,7 @@ function relativeMetric(metrics: OpenUIStreamMetrics, timestamp: number | undefi
   return `${Math.max(0, Math.round(timestamp - metrics.requestStartedAt))}ms`;
 }
 
-export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererProps) {
+export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest }: OpenUIRendererProps) {
   const [errors, setErrors] = useState<OpenUIError[]>([]);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [feedback, setFeedback] = useState<string>("");
@@ -151,15 +154,17 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererPr
             </div>
           </div>
         ) : (
-          <Renderer
-            response={code || null}
-            library={cotGenUILibrary}
-            isStreaming={isStreaming}
-            onAction={handleAction}
-            onParseResult={handleParseResult}
-            onError={setErrors}
-            toolProvider={null}
-          />
+          <AssetRegistryProvider manifest={assetManifest}>
+            <Renderer
+              response={code || null}
+              library={cotGenUILibrary}
+              isStreaming={isStreaming}
+              onAction={handleAction}
+              onParseResult={handleParseResult}
+              onError={setErrors}
+              toolProvider={null}
+            />
+          </AssetRegistryProvider>
         )}
       </div>
       {!isStreaming && errors.length > 0 && (
