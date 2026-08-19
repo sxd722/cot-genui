@@ -6,18 +6,13 @@ import remarkGfm from "remark-gfm";
 import { InputPanel } from "@/components/InputPanel";
 import { CotTrace } from "@/components/CotTrace";
 import { ResultPanel } from "@/components/ResultPanel";
-import { StackedCards } from "@/components/StackedCards";
-import { DslCardHost } from "@/components/dsl/DslCardHost";
-import { validateArtifact } from "@/dsl/validate";
 import { OpenUIRenderer } from "@/components/OpenUIRenderer";
 import { useInferStore, type ResultView } from "@/store/useInferStore";
 
 export default function Home() {
   const {
-    isMock, result, steps, runAll,
-    compiledArtifact, compileNotices,
-    enrichStatus, enrichProgress, enrichResults,
-    cardPlan, semanticMarkdown,
+    isMock, steps, runAll,
+    cardPlan, cardPlanMarkdown,
     openuiCode, openuiDiagnostics,
     rightView, setRightView,
     runAllPaused, continueGenerate,
@@ -25,22 +20,22 @@ export default function Home() {
 
   const anyDone = Object.values(steps).some((s) => s.status === "done");
   const anyLoading = Object.values(steps).some((s) => s.status === "loading");
-  // CardPlan 完成且产出了兼容卡片 → 可显示旧堆叠视图
-  const showCards =
-    steps.card_plan_generate.status === "done" &&
-    !!result &&
-    Array.isArray(result.cards) &&
-    result.cards.length > 0;
-  // CardPlan 编译出了 artifact → 可显示 DSL 卡片
-  const hasDsl = !!compiledArtifact;
-  const dslValidation = compiledArtifact ? validateArtifact(compiledArtifact) : null;
   const isOpenUIStreaming = steps.openui_generate.status === "loading";
   const canShowOpenUI = !!cardPlan && (isOpenUIStreaming || !!openuiCode);
-  const requestedRightView = rightView ?? (canShowOpenUI ? "openui" : "dsl");
+  const fallbackRightView: ResultView | null = canShowOpenUI
+    ? "openui"
+    : cardPlanMarkdown
+      ? "cardplan-markdown"
+      : cardPlan
+        ? "cardplan-json"
+        : null;
+  const requestedRightView = rightView ?? fallbackRightView;
   const activeRightView =
-    (requestedRightView === "semantic" && !semanticMarkdown) ||
-    (requestedRightView === "openui" && !canShowOpenUI)
-      ? "dsl"
+    (requestedRightView === "cardplan-markdown" && !cardPlanMarkdown) ||
+    (requestedRightView === "cardplan-json" && !cardPlan) ||
+    (requestedRightView === "openui" && !canShowOpenUI) ||
+    (requestedRightView === "openui-source" && !openuiCode)
+      ? fallbackRightView
       : requestedRightView;
 
   return (
@@ -54,7 +49,7 @@ export default function Home() {
         <div className="flex items-center gap-2">
           {anyDone && isMock && (
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-              Mock 输出（未配置 Groq/GLM API key）
+              Mock 输出（所选模型缺少 API key）
             </span>
           )}
           <span className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-500 dark:border-zinc-700">
@@ -81,7 +76,7 @@ export default function Home() {
           <CotTrace />
         </main>
         {/* 右栏：generate 完成后显示切换器 */}
-        {hasDsl || showCards || !!semanticMarkdown || canShowOpenUI ? (
+        {activeRightView ? (
           <aside className="flex w-[360px] shrink-0 flex-col border-l border-zinc-200 dark:border-zinc-800">
             {/* 视图切换下拉框 */}
             <div className="flex shrink-0 items-center gap-2 border-b border-zinc-200 p-2 dark:border-zinc-800">
@@ -91,13 +86,10 @@ export default function Home() {
                 onChange={(e) => setRightView(e.target.value as ResultView)}
                 className="flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] text-zinc-700 outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
               >
-                <option value="dsl">📋 DSL 卡片渲染</option>
-                <option value="cards" disabled={!showCards}>🎴 堆叠卡片</option>
-                <option value="semantic" disabled={!semanticMarkdown}>📝 Semantic Markdown</option>
-                <option value="blueprint" disabled={!cardPlan}>📦 CardPlan JSON</option>
+                <option value="cardplan-markdown" disabled={!cardPlanMarkdown}>📝 CardPlan Markdown</option>
+                <option value="cardplan-json" disabled={!cardPlan}>📦 CardPlan JSON</option>
                 <option value="openui" disabled={!canShowOpenUI}>✨ OpenUI 渲染</option>
                 <option value="openui-source" disabled={!openuiCode}>⌨️ OpenUI Lang 源码</option>
-                <option value="raw" disabled={!cardPlan}>🔧 Model Raw IR</option>
               </select>
             </div>
             {/* 内容区 */}
@@ -126,81 +118,17 @@ export default function Home() {
                     />
                   </div>
                 </div>
-              ) : /* 语义卡片描述 */
-              activeRightView === "semantic" && semanticMarkdown ? (
-                <SemanticMarkdownView markdown={semanticMarkdown} />
-              ) : /* Blueprint JSON */
-              activeRightView === "blueprint" && cardPlan ? (
+              ) : activeRightView === "cardplan-markdown" && cardPlanMarkdown ? (
+                <CardPlanMarkdownView markdown={cardPlanMarkdown} />
+              ) : activeRightView === "cardplan-json" && cardPlan ? (
                 <div className="flex h-full flex-col overflow-hidden bg-zinc-950 p-3">
                   <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
-                    CardPlan JSON · 语义与交互规划 · OpenUI Lang 的唯一业务输入
+                    CardPlan JSON · 内部业务 IR · 动作安全、CardDeck shell 与校验的事实源
                   </div>
                   <pre className="flex-1 overflow-auto rounded-lg bg-zinc-900 p-2 font-mono text-[10px] leading-relaxed text-emerald-300/80">
                     {JSON.stringify(cardPlan, null, 2)}
                   </pre>
                 </div>
-              ) : /* 模型 Raw 输出 */
-              activeRightView === "raw" && cardPlan ? (
-                <div className="flex h-full flex-col overflow-hidden bg-zinc-950 p-3">
-                  <div className="mb-2 shrink-0 text-[10px] text-zinc-500">
-                    强模型产出的 CardPlan IR（enrich 前的原始 JSON）
-                  </div>
-                  <pre className="flex-1 overflow-auto rounded-lg bg-zinc-900 p-2 font-mono text-[10px] leading-relaxed text-emerald-300/80">
-                    {JSON.stringify(cardPlan, null, 2)}
-                  </pre>
-                </div>
-              ) : activeRightView === "dsl" && (hasDsl || enrichStatus === "enriching" || enrichStatus === "scanning") ? (
-                <div className="flex h-full flex-col bg-zinc-950 p-3">
-                  {/* 信息补齐进度 */}
-                  {(enrichStatus === "scanning" || enrichStatus === "enriching") && (
-                    <div className="mb-2 shrink-0 rounded bg-blue-950/50 px-2 py-1.5 text-[10px] text-blue-400">
-                      <span className="animate-pulse">🔍 信息补齐中</span>
-                      {enrichProgress.total > 0 && (
-                        <span className="ml-1">
-                          · {enrichProgress.done}/{enrichProgress.total} · {enrichProgress.current}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {/* 补齐结果摘要 */}
-                  {enrichStatus === "done" && enrichResults.length > 0 && (
-                    <div className="mb-2 shrink-0 rounded bg-emerald-950/50 px-2 py-1.5 text-[10px] text-emerald-400">
-                      ✓ 信息补齐完成 · {enrichResults.filter(r => r.success).length}/{enrichResults.length} 项成功
-                    </div>
-                  )}
-                  {enrichStatus === "skipped" && (
-                    <div className="mb-2 shrink-0 rounded bg-zinc-900 px-2 py-1.5 text-[10px] text-zinc-500">
-                      无需信息补齐 · 直接编译
-                    </div>
-                  )}
-                  {/* 校验状态 + 编译诊断 */}
-                  {(dslValidation || compileNotices.length > 0) && (
-                    <div className="mb-2 shrink-0 space-y-1">
-                      {dslValidation && (
-                        <div className={`rounded px-2 py-1 text-[10px] ${dslValidation.valid ? "bg-emerald-950/50 text-emerald-400" : "bg-rose-950/50 text-rose-400"}`}>
-                          {dslValidation.valid ? "✓ 校验通过" : `✗ ${dslValidation.errors.length} 处错误`}
-                        </div>
-                      )}
-                      {compileNotices.length > 0 && (
-                        <div className="rounded bg-amber-950/50 px-2 py-1 text-[10px] text-amber-400">
-                          编译降级 · {compileNotices.length} 处
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {/* 卡片渲染 or 补齐中占位 */}
-                  {hasDsl ? (
-                    <div className="flex-1 overflow-hidden">
-                      <DslCardHost artifact={compiledArtifact} />
-                    </div>
-                  ) : (
-                    <div className="flex flex-1 items-center justify-center">
-                      <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-400" />
-                    </div>
-                  )}
-                </div>
-              ) : activeRightView === "cards" && showCards ? (
-                <StackedCards />
               ) : (
                 <ResultPanel />
               )}
@@ -214,9 +142,9 @@ export default function Home() {
   );
 }
 
-/* ----------------------- Semantic Markdown 视图 ----------------------- */
+/* ----------------------- CardPlan Markdown 视图 ----------------------- */
 
-function SemanticMarkdownView({ markdown }: { markdown: string }) {
+function CardPlanMarkdownView({ markdown }: { markdown: string }) {
   const [mode, setMode] = useState<"preview" | "source">("preview");
   const [copied, setCopied] = useState(false);
 
@@ -230,8 +158,8 @@ function SemanticMarkdownView({ markdown }: { markdown: string }) {
     <div className="flex h-full flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950">
       <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
         <div>
-          <p className="text-[10px] font-medium text-zinc-600 dark:text-zinc-300">Semantic Markdown 原文</p>
-          <p className="text-[9px] text-zinc-400">不提取卡片结构 · 不做 YAML/JSON 解析</p>
+          <p className="text-[10px] font-medium text-zinc-600 dark:text-zinc-300">CardPlan Markdown</p>
+          <p className="text-[9px] text-zinc-400">由 CardPlan 确定性派生 · 不做 YAML/JSON 解析</p>
         </div>
         <div className="flex items-center gap-1">
           <button

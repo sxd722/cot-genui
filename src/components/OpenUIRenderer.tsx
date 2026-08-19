@@ -2,8 +2,9 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { Renderer, type ActionEvent, type OpenUIError, type ParseResult } from "@openuidev/react-lang";
-import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import type { CardPlan, IRAction } from "@/dsl/modules";
+import { cotGenUILibrary } from "@/openui/library";
+import { useInferStore, type OpenUIStreamMetrics } from "@/store/useInferStore";
 
 interface OpenUIRendererProps {
   code: string;
@@ -35,10 +36,17 @@ function safeExternalUrl(value: string | undefined): string | null {
   }
 }
 
+function relativeMetric(metrics: OpenUIStreamMetrics, timestamp: number | undefined): string {
+  if (metrics.requestStartedAt === undefined || timestamp === undefined) return "—";
+  return `${Math.max(0, Math.round(timestamp - metrics.requestStartedAt))}ms`;
+}
+
 export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererProps) {
   const [errors, setErrors] = useState<OpenUIError[]>([]);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [feedback, setFeedback] = useState<string>("");
+  const streamMetrics = useInferStore((state) => state.openuiStreamMetrics);
+  const markFirstRenderableRoot = useInferStore((state) => state.markOpenUIFirstRenderableRoot);
 
   const status = useMemo(() => {
     if (isStreaming) return `流式生成 · ${code.length} 字`;
@@ -46,6 +54,18 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererPr
     if (!parseResult?.root) return "等待可渲染 root";
     return `${parseResult.meta.statementCount} 条语句 · 可编译`;
   }, [code.length, errors.length, isStreaming, parseResult]);
+
+  const timingStatus = useMemo(() => [
+    `bootstrap ${relativeMetric(streamMetrics, streamMetrics.bootstrapReceivedAt)}`,
+    `首 delta ${relativeMetric(streamMetrics, streamMetrics.firstDeltaAt)}`,
+    `首 root ${relativeMetric(streamMetrics, streamMetrics.firstRenderableRootAt)}`,
+    `done ${relativeMetric(streamMetrics, streamMetrics.doneAt)}`,
+  ].join(" · "), [streamMetrics]);
+
+  const handleParseResult = useCallback((result: ParseResult | null) => {
+    setParseResult(result);
+    if (result?.root) markFirstRenderableRoot();
+  }, [markFirstRenderableRoot]);
 
   const handleAction = useCallback((event: ActionEvent) => {
     const resolved = resolveAction(cardPlan, event.humanFriendlyMessage);
@@ -78,9 +98,12 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererPr
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-black">
-      <div className="flex shrink-0 items-center justify-between border-b border-zinc-800 px-3 py-2 text-[10px] text-zinc-400">
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-800 px-3 py-2 text-[10px] text-zinc-400">
         <span>OpenUI Lang v0.5</span>
-        <span className={errors.length && !isStreaming ? "text-amber-400" : "text-emerald-400"}>{status}</span>
+        <span className="min-w-0 text-right">
+          <span className={errors.length && !isStreaming ? "block text-amber-400" : "block text-emerald-400"}>{status}</span>
+          <span className="block truncate text-[9px] text-zinc-500">{timingStatus}</span>
+        </span>
       </div>
       {feedback && (
         <button
@@ -102,10 +125,10 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererPr
         ) : (
           <Renderer
             response={code || null}
-            library={openuiLibrary}
+            library={cotGenUILibrary}
             isStreaming={isStreaming}
             onAction={handleAction}
-            onParseResult={setParseResult}
+            onParseResult={handleParseResult}
             onError={setErrors}
             toolProvider={null}
           />

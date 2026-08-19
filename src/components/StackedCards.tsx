@@ -57,7 +57,7 @@ function sanitizeHtml(html: unknown): string {
 }
 
 /* ----------------------- iframe 沙箱渲染 ----------------------- */
-function CardHtmlFrame({ html, gradient }: { html: string; gradient: string }) {
+function CardHtmlFrame({ html }: { html: string }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(150);
 
@@ -174,9 +174,9 @@ function Timeline({ nodes }: { nodes: CardTimelineNode[] }) {
 }
 
 /** 卡片内容：优先 iframe 渲染模型 html，否则兜底本地组件 */
-function CardVisual({ card, gradient }: { card: InferPlanCard; gradient: string }) {
+function CardVisual({ card }: { card: InferPlanCard }) {
   const html = sanitizeHtml(card.html);
-  if (html) return <CardHtmlFrame html={html} gradient={gradient} />;
+  if (html) return <CardHtmlFrame html={html} />;
 
   const items = Array.isArray(card.items) ? (card.items as unknown[]).map((v) => toText(v)) : [];
   const metrics = Array.isArray(card.metrics) ? (card.metrics as CardMetric[]) : [];
@@ -237,7 +237,7 @@ function Card({
 
           {/* 内容区：iframe 渲染模型 HTML，或兜底组件 */}
           <div className="relative mt-1 flex-1 overflow-y-auto pr-1">
-            <CardVisual card={card} gradient={gradient} />
+            <CardVisual card={card} />
           </div>
 
           <div className="relative flex items-center justify-between pt-1 text-[10px] text-white/70">

@@ -13,11 +13,14 @@ export const PIPELINE_STEPS = [
 
 export type PipelineStepName = (typeof PIPELINE_STEPS)[number];
 
-export const MODEL_PROFILES = ["groq_qwen_3_6_27b", "glm_5_2_thinking", "glm_5_2", "glm_4_7_flash"] as const;
+export const MODEL_PROFILES = ["groq_qwen_3_6_27b", "groq_gpt_oss_120b", "hf_community_qwen_3_8_27b", "nvidia_diffusion_gemma_26b", "glm_5_2_thinking", "glm_5_2", "glm_4_7_flash"] as const;
 export type ModelProfile = (typeof MODEL_PROFILES)[number];
 
 export const MODEL_PROFILE_LABELS: Record<ModelProfile, string> = {
   groq_qwen_3_6_27b: "Groq · Qwen3.6-27B",
+  groq_gpt_oss_120b: "Groq · GPT-OSS-120B",
+  hf_community_qwen_3_8_27b: "HF Community · Qwen3.8-27B",
+  nvidia_diffusion_gemma_26b: "NVIDIA · DiffusionGemma-26B",
   glm_5_2_thinking: "glm-5.2 · Thinking",
   glm_5_2: "glm-5.2",
   glm_4_7_flash: "glm-4.7-flash",
@@ -90,7 +93,10 @@ export interface StepTiming {
   providerCreatedAt?: number;
   /** provider 未报告纯推理分段时延，当前仍保留给后续可观测性扩展 */
   timeToFirstReasoningMs?: number;
+  /** 从模型请求发出到首个非空正文 delta 的墙钟耗时 */
   timeToFirstContentMs?: number;
+  /** 从模型请求发出到首条完整 OpenUI 顶层 statement 的墙钟耗时 */
+  timeToFirstModelStatementMs?: number;
 }
 
 export interface PipelineStepOutput {
@@ -103,7 +109,7 @@ export interface PipelineStepOutput {
   questions?: InferQuestion[];
   result?: InferResult;
   cardPlan?: CardPlan;
-  semanticMarkdown?: string;
+  cardPlanMarkdown?: string;
   reasoningGraph?: string;
   /** 第⑥步模型直接生成、通过 OpenUI parser 校验的 OpenUI Lang 源码 */
   openuiCode?: string;
@@ -111,6 +117,8 @@ export interface PipelineStepOutput {
     coverage: { required: number; matched: number; missing: string[] };
     parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
     repaired: boolean;
+    repairTriggered: boolean;
+    repairMs?: number;
   };
   durationMs: number;
   timing: StepTiming;

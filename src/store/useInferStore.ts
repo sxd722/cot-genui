@@ -4,13 +4,13 @@ import { create } from "zustand";
 import { presets, DEFAULT_QUERY, type DeviceContext } from "@/lib/presets";
 import type { InferSlot, InferConflict, InferQuestion, InferResult } from "@/lib/schemas";
 import { PIPELINE_STEPS, type InferenceState, type ModelProfile, type PipelineStepName, type StepTiming, type TokenUsage } from "@/lib/pipelineTypes";
-import { compileCardPlan } from "@/dsl/compiler";
-import { enrichCardPlan, hasMissingInfo } from "@/dsl/enrichPlan";
-import type { CardPlan, CompileNotice } from "@/dsl/modules";
+import type { CardPlan } from "@/dsl/modules";
 import type { ProfileDigest } from "@/lib/profileTypes";
+import type { ResultView } from "@/lib/resultViews";
+
+export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
 export type StepStatus = "pending" | "loading" | "done" | "error";
-export type ResultView = "dsl" | "cards" | "raw" | "semantic" | "blueprint" | "openui-source" | "openui";
 
 export interface StepLog {
   ts: string;
@@ -34,6 +34,15 @@ export interface StepState {
   logs: StepLog[];
 }
 
+export interface OpenUIStreamMetrics {
+  requestStartedAt?: number;
+  responseHeadersAt?: number;
+  bootstrapReceivedAt?: number;
+  firstDeltaAt?: number;
+  firstRenderableRootAt?: number;
+  doneAt?: number;
+}
+
 interface SearchPrefetch {
   searchQuery: string;
   webSearchRaw: unknown;
@@ -52,13 +61,15 @@ interface InferApiResponse {
   questions?: InferQuestion[];
   result?: InferResult;
   cardPlan?: CardPlan;
-  semanticMarkdown?: string;
+  cardPlanMarkdown?: string;
   reasoningGraph?: string;
   openuiCode?: string;
   openuiDiagnostics?: {
     coverage: { required: number; matched: number; missing: string[] };
     parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
     repaired: boolean;
+    repairTriggered: boolean;
+    repairMs?: number;
   };
   durationMs?: number;
   timing?: StepTiming;
@@ -103,16 +114,12 @@ interface InferState {
   questions: InferQuestion[];
   result: InferResult | null;
   cardPlan: CardPlan | null;
-  semanticMarkdown: string | null;
+  cardPlanMarkdown: string | null;
   reasoningGraph: string | null;
   openuiCode: string | null;
   openuiDiagnostics: InferApiResponse["openuiDiagnostics"] | null;
+  openuiStreamMetrics: OpenUIStreamMetrics;
   rightView: ResultView | null;
-  compiledArtifact: unknown | null;
-  compileNotices: CompileNotice[];
-  enrichStatus: "idle" | "scanning" | "enriching" | "done" | "skipped";
-  enrichProgress: { done: number; total: number; current: string };
-  enrichResults: import("@/dsl/enrichPlan").EnrichResult[];
   answers: Record<number, string>;
   runAllPaused: boolean;
   prefetchedSearch: SearchPrefetch | null;
@@ -124,10 +131,10 @@ interface InferState {
   answerQuestion: (index: number, value: string) => void;
   setStepModel: (name: StepName, profile: ModelProfile) => void;
   setRightView: (view: ResultView) => void;
+  markOpenUIFirstRenderableRoot: (timestamp?: number) => void;
   ensureProfileDigest: () => Promise<ProfileDigest | null>;
   prefetchSearch: () => Promise<void>;
   continueGenerate: () => Promise<void>;
-  enrichAndCompile: () => Promise<void>;
   runStep: (name: StepName, options?: RunStepOptions) => Promise<void>;
   runAll: () => Promise<void>;
   reset: () => void;
@@ -167,9 +174,8 @@ function clearedResult() {
   return {
     inferenceState: null,
     slots: [] as InferSlot[], conflicts: [] as InferConflict[], questions: [] as InferQuestion[],
-    result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, rightView: null as ResultView | null,
-    compiledArtifact: null, compileNotices: [] as CompileNotice[], enrichStatus: "idle" as const,
-    enrichProgress: { done: 0, total: 0, current: "" }, enrichResults: [], answers: {}, runAllPaused: false,
+    result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, openuiStreamMetrics: {} as OpenUIStreamMetrics, rightView: null as ResultView | null,
+    answers: {}, runAllPaused: false,
     prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
   };
 }
@@ -209,7 +215,11 @@ function cacheSet(key: string, value: InferApiResponse) {
   }
 }
 
-async function readInferResponse(response: Response, onDelta: (delta: string, chars: number) => void): Promise<InferApiResponse> {
+async function readInferResponse(
+  response: Response,
+  onDelta: (delta: string, chars: number) => void,
+  onEvent?: (event: string) => void,
+): Promise<InferApiResponse> {
   if (!response.headers.get("content-type")?.includes("text/event-stream")) {
     return response.json() as Promise<InferApiResponse>;
   }
@@ -227,6 +237,7 @@ async function readInferResponse(response: Response, onDelta: (delta: string, ch
     }
     if (!dataLines.length) return;
     const payload = JSON.parse(dataLines.join("\n")) as InferApiResponse & { delta?: string; chars?: number };
+    onEvent?.(event);
     if (event === "delta" && typeof payload.delta === "string" && typeof payload.chars === "number") onDelta(payload.delta, payload.chars);
     if (event === "done") donePayload = payload;
     if (event === "error") donePayload = payload;
@@ -270,6 +281,15 @@ export const useInferStore = create<InferState>((set, get) => ({
     steps: { ...state.steps, [name]: emptyStep() },
   })),
   setRightView: (rightView) => set({ rightView }),
+  markOpenUIFirstRenderableRoot: (timestamp = performance.now()) => set((state) => {
+    if (!state.openuiStreamMetrics.requestStartedAt || state.openuiStreamMetrics.firstRenderableRootAt !== undefined) return {};
+    return {
+      openuiStreamMetrics: {
+        ...state.openuiStreamMetrics,
+        firstRenderableRootAt: timestamp,
+      },
+    };
+  }),
 
   selectPreset: (id) => {
     const preset = presets.find((item) => item.id === id);
@@ -349,35 +369,6 @@ export const useInferStore = create<InferState>((set, get) => ({
     }
   },
 
-  enrichAndCompile: async () => {
-    const plan = get().cardPlan;
-    if (!plan) return;
-    if (!hasMissingInfo(plan)) {
-      try {
-        const compiled = compileCardPlan(plan);
-        set({ compiledArtifact: compiled.artifact, compileNotices: compiled.notices, enrichStatus: "skipped" });
-      } catch (error) {
-        set({ compileNotices: [{ level: "unsupported", message: `编译失败: ${error instanceof Error ? error.message : String(error)}` }], enrichStatus: "done" });
-      }
-      return;
-    }
-
-    set({ enrichStatus: "enriching", enrichProgress: { done: 0, total: 0, current: "扫描缺失信息…" } });
-    try {
-      const { enrichedPlan, results, notices } = await enrichCardPlan(plan, (done, total, current) => set({ enrichProgress: { done, total, current } }));
-      const compiled = compileCardPlan(enrichedPlan);
-      set({ cardPlan: enrichedPlan, compiledArtifact: compiled.artifact, compileNotices: [...compiled.notices, ...notices], enrichResults: results, enrichStatus: "done" });
-    } catch (error) {
-      set({ enrichStatus: "done", compileNotices: [{ level: "info", message: `信息补齐异常: ${error instanceof Error ? error.message : String(error)}` }] });
-      try {
-        const compiled = compileCardPlan(plan);
-        set({ compiledArtifact: compiled.artifact });
-      } catch {
-        // 原始 CardPlan 也无法编译时，保留上面的诊断信息。
-      }
-    }
-  },
-
   runStep: async (name, options = {}) => {
     const { query, contextText } = get();
     let deviceContext: Record<string, unknown>;
@@ -389,8 +380,8 @@ export const useInferStore = create<InferState>((set, get) => ({
     }
 
     set((state) => ({
-      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, semanticMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, rightView: "dsl" as const, compiledArtifact: null, compileNotices: [], enrichStatus: "idle" as const } : {}),
-      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, rightView: "openui" as const } : {}),
+      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, rightView: "cardplan-markdown" as const } : {}),
+      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, openuiStreamMetrics: {}, rightView: "openui" as const } : {}),
       steps: { ...state.steps, [name]: { ...state.steps[name], status: "loading", streamingChars: 0, error: null, logs: [] } },
     }));
 
@@ -426,19 +417,56 @@ export const useInferStore = create<InferState>((set, get) => ({
           ],
         };
       } else {
+        if (name === "openui_generate") {
+          set({ openuiStreamMetrics: { requestStartedAt: performance.now() } });
+        }
         const response = await fetch("/api/infer", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestBody),
         });
         responseOk = response.ok;
+        if (name === "openui_generate") {
+          set((current) => ({
+            openuiStreamMetrics: {
+              ...current.openuiStreamMetrics,
+              responseHeadersAt: performance.now(),
+            },
+          }));
+        }
         data = await readInferResponse(response, (delta, streamingChars) => set((current) => ({
           openuiCode: name === "openui_generate" ? `${current.openuiCode ?? ""}${delta}` : current.openuiCode,
+          ...(name === "openui_generate"
+            ? {
+                openuiStreamMetrics: {
+                  ...current.openuiStreamMetrics,
+                  firstDeltaAt: current.openuiStreamMetrics.firstDeltaAt ?? performance.now(),
+                },
+              }
+            : {}),
           steps: {
             ...current.steps,
             [name]: { ...current.steps[name], streamingChars },
           },
-        })));
+        })), (event) => {
+          if (name !== "openui_generate") return;
+          if (event === "bootstrap") {
+            set((current) => ({
+              openuiStreamMetrics: {
+                ...current.openuiStreamMetrics,
+                bootstrapReceivedAt: current.openuiStreamMetrics.bootstrapReceivedAt ?? performance.now(),
+              },
+            }));
+          }
+          if (event === "done" || event === "error") {
+            set((current) => ({
+              openuiStreamMetrics: {
+                ...current.openuiStreamMetrics,
+                doneAt: current.openuiStreamMetrics.doneAt ?? performance.now(),
+              },
+            }));
+          }
+        });
         if (responseOk && !data.error && options.useCache) cacheSet(cacheKey, data);
       }
       if (!responseOk || data.error) {
@@ -454,12 +482,11 @@ export const useInferStore = create<InferState>((set, get) => ({
         questions: data.questions ?? current.questions,
         result: data.result ?? current.result,
         cardPlan: data.cardPlan ?? current.cardPlan,
-        semanticMarkdown: data.semanticMarkdown ?? current.semanticMarkdown,
+        cardPlanMarkdown: data.cardPlanMarkdown ?? current.cardPlanMarkdown,
         reasoningGraph: data.reasoningGraph ?? current.reasoningGraph,
         openuiCode: data.openuiCode ?? current.openuiCode,
         openuiDiagnostics: data.openuiDiagnostics ?? current.openuiDiagnostics,
         ...(name === "clarification" ? { answers: {} } : {}),
-        ...(name === "card_plan_generate" && data.cardPlan ? { enrichStatus: "scanning" as const } : {}),
         steps: {
           ...current.steps,
           [name]: {
@@ -471,7 +498,6 @@ export const useInferStore = create<InferState>((set, get) => ({
         },
       }));
 
-      if (name === "card_plan_generate" && data.cardPlan) await get().enrichAndCompile();
     } catch (error) {
       set((current) => ({ steps: { ...current.steps, [name]: { ...current.steps[name], status: "error", error: error instanceof Error ? error.message : "网络错误" } } }));
     }

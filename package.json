@@ -3,10 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "generate:openui": "openui generate src/openui/library.tsx --spec --out src/openui/generated/system-prompt.spec.json --export library --no-interactive --agent-name codex",
+    "dev": "npm run generate:openui && next dev",
+    "build": "npm run generate:openui && next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@openuidev/lang-core": "0.2.11",
@@ -25,6 +28,7 @@
     "zustand": "4.5.7"
   },
   "devDependencies": {
+    "@openuidev/cli": "^0.2.8",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -32,6 +36,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

@@ -4,13 +4,19 @@ import type { CallLog } from "@/lib/llm";
 import type { CardPlan } from "@/dsl/modules";
 import { MODEL_PROFILES, type InferenceState, type ModelProfile } from "@/lib/pipelineTypes";
 import type { ProfileDigest } from "@/lib/profileTypes";
-import { hasAnyLLMKey } from "@/lib/llm";
 
 const isStepName = (value: string): value is PipelineStepName =>
   (PIPELINE_STEPS as readonly string[]).includes(value);
 
 const isModelProfile = (value: unknown): value is ModelProfile =>
   typeof value === "string" && (MODEL_PROFILES as readonly string[]).includes(value);
+
+function canCallModel(profile: ModelProfile): boolean {
+  if (profile === "hf_community_qwen_3_8_27b") return true;
+  if (profile === "nvidia_diffusion_gemma_26b") return !!process.env.NVIDIA_API_KEY;
+  if (profile.startsWith("groq_")) return !!process.env.GROQ_API_KEY;
+  return !!process.env.LLM_API_KEY;
+}
 
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -31,6 +37,8 @@ export async function POST(request: Request) {
   }
 
   const logs: CallLog[] = [];
+  const modelProfile = isModelProfile(body.modelProfile) ? body.modelProfile : "groq_qwen_3_6_27b";
+  const isMock = !canCallModel(modelProfile);
   const run = (onStreamDelta?: (delta: string, cumulativeChars: number) => void) => runPipelineStep({
     name: body.step as PipelineStepName,
     query: body.query as string,
@@ -39,11 +47,11 @@ export async function POST(request: Request) {
     userAnswers: body.userAnswers as Record<number, string> | undefined,
     cardPlan: body.cardPlan as CardPlan | undefined,
     profileDigest: body.profileDigest as ProfileDigest | undefined,
-    modelProfile: isModelProfile(body.modelProfile) ? body.modelProfile : undefined,
+    modelProfile,
     prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
     stream: body.step === "openui_generate" && body.stream === true,
     onStreamDelta,
-    mock: !hasAnyLLMKey(),
+    mock: isMock,
     onLog: (entry) => logs.push(entry),
   });
 
@@ -67,7 +75,7 @@ export async function POST(request: Request) {
             const output = await run((delta, cumulativeChars) => {
               emit("delta", { delta, chars: cumulativeChars });
             });
-            emit("done", { ...output, _mock: !hasAnyLLMKey(), _logs: logs });
+            emit("done", { ...output, _mock: isMock, _logs: logs });
           } catch (error) {
             emit("error", {
               error: error instanceof Error ? error.message : "推理失败",
@@ -93,7 +101,7 @@ export async function POST(request: Request) {
 
   try {
     const output = await run();
-    return NextResponse.json({ ...output, _mock: !hasAnyLLMKey(), _logs: logs });
+    return NextResponse.json({ ...output, _mock: isMock, _logs: logs });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "推理失败", _logs: logs },
