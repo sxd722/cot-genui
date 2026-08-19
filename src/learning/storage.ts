@@ -56,7 +56,7 @@ export async function getLearningSettings(): Promise<LearningSettings> {
   return settings.find((item) => item.id === "settings") ?? {
     id: "settings",
     enabled: true,
-    mode: "manual",
+    learningMode: "manual",
     updatedAt: new Date().toISOString(),
   };
 }
@@ -67,4 +67,3 @@ export async function exportLearningData(): Promise<LearningExport> {
   ]);
   return { exportedAt: new Date().toISOString(), episodes, policies, observations, settings };
 }
-

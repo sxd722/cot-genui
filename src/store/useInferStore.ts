@@ -12,9 +12,12 @@ import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
 import type { AdaptivePolicyEntry, QueryClassification } from "@/lib/adaptive/types";
 import type { StepProvenance } from "@/lib/provenance";
 import type { CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
-import type { GenerationEpisode } from "@/learning/types";
-import { abandonEpisode, appendEpisodeEdit, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordInitialOpenUI } from "@/learning/episode";
-import { exportLearningData, listPolicies, putEpisode } from "@/learning/storage";
+import type { GenerationEpisode, LearningSettings, PolicyObservation } from "@/learning/types";
+import { abandonEpisode, appendEpisodeEdit, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordEpisodeUndo, recordInitialOpenUI } from "@/learning/episode";
+import { exportLearningData, getLearningSettings, listEpisodes, listPolicies, listPolicyObservations, putEpisode, putLearningSettings, putPolicy, putPolicyObservation } from "@/learning/storage";
+import type { AttributionReport, PolicyGradientCandidate } from "@/lib/reflection/types";
+import { canGuardedAutoPromote, observationFromCandidate, promoteCandidate, reflectionPolicyForEpisode, rollbackPolicy } from "@/lib/reflection/promotion";
+import { validateGradientCandidate } from "@/lib/reflection/gradient";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -148,6 +151,12 @@ interface InferState {
   openuiVersionIndex: number;
   currentEpisode: GenerationEpisode | null;
   isReflectionOpen: boolean;
+  reflectionStatus: "idle" | "attributing" | "generating-candidates" | "ready" | "error";
+  attributionReport: AttributionReport | null;
+  gradientCandidates: PolicyGradientCandidate[];
+  candidateDecisions: Record<string, PolicyObservation["decision"]>;
+  reflectionError: string | null;
+  learningSettings: LearningSettings;
   setQuery: (query: string) => void;
   selectPreset: (id: string) => void;
   setContextText: (text: string) => void;
@@ -164,6 +173,11 @@ interface InferState {
   undoOpenUIEdit: () => void;
   redoOpenUIEdit: () => void;
   acceptCurrentEpisode: () => Promise<void>;
+  runReflection: (episode?: GenerationEpisode) => Promise<void>;
+  applyPolicyCandidate: (candidateId: string, automatic?: boolean) => Promise<void>;
+  discardPolicyCandidate: (candidateId: string) => Promise<void>;
+  setLearningMode: (mode: LearningSettings["learningMode"]) => Promise<void>;
+  rollbackAdaptivePolicy: (policyId: string) => Promise<void>;
   closeReflection: () => void;
   exportLearningJson: () => Promise<void>;
   ensureProfileDigest: () => Promise<ProfileDigest | null>;
@@ -363,6 +377,12 @@ export const useInferStore = create<InferState>((set, get) => ({
   customContextText: "",
   currentEpisode: null,
   isReflectionOpen: false,
+  reflectionStatus: "idle",
+  attributionReport: null,
+  gradientCandidates: [],
+  candidateDecisions: {},
+  reflectionError: null,
+  learningSettings: { id: "settings", enabled: true, learningMode: "manual", updatedAt: new Date(0).toISOString() },
   ...clearedResult(),
 
   setQuery: (query) => {
@@ -381,7 +401,10 @@ export const useInferStore = create<InferState>((set, get) => ({
   })),
   setRightView: (rightView) => set({ rightView }),
   initializeLearning: async () => {
-    try { set({ stablePolicies: await listPolicies() }); }
+    try {
+      const [stablePolicies, learningSettings] = await Promise.all([listPolicies(), getLearningSettings()]);
+      set({ stablePolicies, learningSettings });
+    }
     catch { set({ stablePolicies: [] }); }
   },
   setTargeting: (isTargeting) => set({ isTargeting, ...(isTargeting ? { cardEditTarget: null, editError: null } : {}) }),
@@ -390,7 +413,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   undoOpenUIEdit: () => set((state) => {
     const nextIndex = Math.max(0, state.openuiVersionIndex - 1);
     if (nextIndex === state.openuiVersionIndex || !state.openuiVersions[nextIndex]) return {};
-    return { openuiVersionIndex: nextIndex, openuiCode: state.openuiVersions[nextIndex].code, editStatus: "idle", editError: null };
+    return { openuiVersionIndex: nextIndex, openuiCode: state.openuiVersions[nextIndex].code, editStatus: "idle", editError: null, currentEpisode: state.currentEpisode ? recordEpisodeUndo(state.currentEpisode) : null };
   }),
   redoOpenUIEdit: () => set((state) => {
     const nextIndex = Math.min(state.openuiVersions.length - 1, state.openuiVersionIndex + 1);
@@ -456,7 +479,91 @@ export const useInferStore = create<InferState>((set, get) => ({
     if (!state.currentEpisode || !state.openuiCode) return;
     const episode = finalizeEpisode(state.currentEpisode, state.openuiCode);
     await putEpisode(episode);
-    set({ currentEpisode: episode, isReflectionOpen: true });
+    set({ currentEpisode: episode, isReflectionOpen: true, reflectionStatus: "attributing", attributionReport: null, gradientCandidates: [], candidateDecisions: {}, reflectionError: null });
+    void get().runReflection(episode);
+  },
+  runReflection: async (episodeInput) => {
+    const episode = episodeInput ?? get().currentEpisode;
+    if (!episode || episode.status !== "accepted") return;
+    set({ isReflectionOpen: true, reflectionStatus: "attributing", reflectionError: null, attributionReport: null, gradientCandidates: [], candidateDecisions: {} });
+    try {
+      const attributeResponse = await fetch("/api/reflection/attribute", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ episode, modelProfile: get().stepModels.openui_generate }),
+      });
+      const attributeData = await attributeResponse.json() as { report?: AttributionReport; error?: string };
+      if (!attributeResponse.ok || !attributeData.report) throw new Error(attributeData.error ?? "阶段归因失败");
+      const report = attributeData.report;
+      set({ attributionReport: report });
+      if (Math.max(...Object.values(report.distribution)) < 0.35 || report.reasonCodes.includes("accepted_without_edits")) {
+        set({ reflectionStatus: "ready", gradientCandidates: [] });
+        return;
+      }
+      set({ reflectionStatus: "generating-candidates" });
+      const currentPolicy = reflectionPolicyForEpisode(episode, get().stablePolicies);
+      let candidates: PolicyGradientCandidate[] = [];
+      try {
+        const gradientResponse = await fetch("/api/reflection/gradient", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ episode, attribution: report, currentPolicy, modelProfile: get().stepModels.openui_generate }),
+        });
+        const gradientData = await gradientResponse.json() as { candidates?: PolicyGradientCandidate[]; error?: string };
+        if (!gradientResponse.ok) throw new Error(gradientData.error ?? "策略候选生成失败");
+        candidates = gradientData.candidates ?? [];
+      } catch (error) {
+        set({ reflectionStatus: "ready", gradientCandidates: [], reflectionError: `阶段归因已完成，但没有生成可安全复用的策略候选：${error instanceof Error ? error.message : "候选生成失败"}` });
+        return;
+      }
+      const observations = candidates.map((candidate) => observationFromCandidate(episode, candidate));
+      await Promise.all(observations.map(putPolicyObservation));
+      set({ gradientCandidates: candidates, candidateDecisions: Object.fromEntries(candidates.map((candidate) => [candidate.id, "pending"])), reflectionStatus: "ready" });
+
+      if (get().learningSettings.learningMode === "guarded-auto" && candidates.length) {
+        const [storedObservations, acceptedEpisodes] = await Promise.all([listPolicyObservations(), listEpisodes()]);
+        for (const candidate of candidates) {
+          if (canGuardedAutoPromote({ candidate, observations: storedObservations, settings: get().learningSettings, acceptedEpisodes })) await get().applyPolicyCandidate(candidate.id, true);
+        }
+      }
+    } catch (error) {
+      set({ reflectionStatus: "error", reflectionError: error instanceof Error ? error.message : "本次反思失败" });
+    }
+  },
+  applyPolicyCandidate: async (candidateId, automatic = false) => {
+    const state = get();
+    const candidate = state.gradientCandidates.find((item) => item.id === candidateId);
+    const episode = state.currentEpisode;
+    if (!candidate || !episode || state.candidateDecisions[candidateId] !== "pending") return;
+    const validation = validateGradientCandidate(candidate, episode);
+    if (!validation.valid || !validation.candidate) {
+      set({ reflectionError: validation.reason ?? "候选未通过 trust-region 校验" });
+      return;
+    }
+    const policy = promoteCandidate(validation.candidate, state.stablePolicies);
+    const observation = { ...observationFromCandidate(episode, validation.candidate), decision: automatic ? "auto-applied" as const : "applied" as const, policyId: policy.id };
+    await Promise.all([putPolicy(policy), putPolicyObservation(observation)]);
+    set((current) => ({ stablePolicies: [...current.stablePolicies, policy], candidateDecisions: { ...current.candidateDecisions, [candidateId]: observation.decision }, reflectionError: null }));
+  },
+  discardPolicyCandidate: async (candidateId) => {
+    const state = get();
+    const candidate = state.gradientCandidates.find((item) => item.id === candidateId);
+    const episode = state.currentEpisode;
+    if (!candidate || !episode || state.candidateDecisions[candidateId] !== "pending") return;
+    const observation = { ...observationFromCandidate(episode, candidate), decision: "discarded" as const };
+    await putPolicyObservation(observation);
+    set((current) => ({ candidateDecisions: { ...current.candidateDecisions, [candidateId]: "discarded" } }));
+  },
+  setLearningMode: async (learningMode) => {
+    const settings: LearningSettings = { id: "settings", enabled: true, learningMode, updatedAt: new Date().toISOString() };
+    await putLearningSettings(settings);
+    set({ learningSettings: settings });
+  },
+  rollbackAdaptivePolicy: async (policyId) => {
+    const state = get();
+    const target = state.stablePolicies.find((policy) => policy.id === policyId);
+    if (!target) return;
+    const restored = rollbackPolicy(target, state.stablePolicies);
+    await putPolicy(restored);
+    set((current) => ({ stablePolicies: [...current.stablePolicies, restored] }));
   },
   closeReflection: () => set({ isReflectionOpen: false }),
   exportLearningJson: async () => downloadJson(await exportLearningData(), `cot-genui-learning-${new Date().toISOString().slice(0, 10)}.json`),

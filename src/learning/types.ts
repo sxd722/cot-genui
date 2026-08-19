@@ -1,5 +1,5 @@
-import type { QueryClassification, AdaptivePolicyEntry } from "@/lib/adaptive/types";
-import type { OpenUIEditVersion } from "@/lib/cardEditingTypes";
+import type { QueryClassification, AdaptivePolicyEntry, TaskFamily } from "@/lib/adaptive/types";
+import type { CardEditTarget } from "@/lib/cardEditingTypes";
 import type { ModelProfile, PipelineStepName, TokenUsage } from "@/lib/pipelineTypes";
 import type { StepProvenance } from "@/lib/provenance";
 
@@ -20,7 +20,7 @@ export interface EpisodeEditRecord {
   versionId: string;
   cardId: string;
   instruction: string;
-  target: OpenUIEditVersion["target"];
+  target: CardEditTarget;
   beforeSlice: string;
   afterSlice: string;
   modelProfile: ModelProfile;
@@ -51,20 +51,35 @@ export interface GenerationEpisode {
   };
   edits: EpisodeEditRecord[];
   finalOpenUI?: string;
+  rewardMetrics?: {
+    editCount: number;
+    semanticEditCount: number;
+    visualEditCount: number;
+    undoCount: number;
+    acceptedWithoutEdit: boolean;
+    timeToAcceptMs: number;
+  };
 }
 
 export interface PolicyObservation {
   id: string;
   episodeId: string;
-  policyId: string;
-  verdict: "positive" | "negative" | "neutral";
+  taskFamily: TaskFamily;
+  userKey?: string;
+  target: "profileOverlay" | PipelineStepName;
+  themeKey: string;
+  candidateText: string;
+  confidence: number;
+  attributionProbability: number;
+  decision: "pending" | "applied" | "discarded" | "auto-applied";
+  policyId?: string;
   createdAt: string;
 }
 
 export interface LearningSettings {
   id: "settings";
   enabled: boolean;
-  mode: "manual" | "guarded-auto";
+  learningMode: "manual" | "guarded-auto";
   updatedAt: string;
 }
 
@@ -75,4 +90,3 @@ export interface LearningExport {
   observations: PolicyObservation[];
   settings: LearningSettings;
 }
-

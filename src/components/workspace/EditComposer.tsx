@@ -29,8 +29,6 @@ export function EditComposer() {
       </div>
       {state.editError ? <p className="text-[10px] text-rose-500">⚠ {state.editError}；当前卡片保持不变。</p> : null}
       {state.editStatus === "streaming" && state.editStreamingPatch ? <p className="truncate font-mono text-[9px] text-cyan-600">patch stream: {state.editStreamingPatch}</p> : null}
-      {state.isReflectionOpen ? <div className="absolute inset-2 z-10 flex items-center justify-between rounded-xl border border-indigo-300 bg-indigo-50/95 px-4 text-xs text-indigo-900 shadow-lg dark:border-indigo-800 dark:bg-indigo-950/95 dark:text-indigo-200"><span>已保存 Episode。反思学习将在下一阶段异步执行，不影响当前结果。</span><button type="button" onClick={state.closeReflection} className="rounded border border-indigo-400 px-2 py-1">关闭</button></div> : null}
     </section>
   );
 }
-

@@ -14,16 +14,28 @@ const MODE_CLAUSE: Record<DecisionMode, string> = {
   general: "",
 };
 
+function latest(policies: AdaptivePolicyEntry[]): AdaptivePolicyEntry | undefined {
+  return [...policies].sort((left, right) => right.version - left.version || right.updatedAt.localeCompare(left.updatedAt))[0];
+}
+
+export function selectStablePolicy(args: {
+  classification: QueryClassification;
+  userKey?: string;
+  stablePolicies: AdaptivePolicyEntry[];
+}): AdaptivePolicyEntry | undefined {
+  const stable = args.stablePolicies.filter((policy) => policy.status === "stable");
+  return latest(stable.filter((policy) => policy.scope === "user-class" && policy.taskFamily === args.classification.taskFamily && !!args.userKey && policy.userKey === args.userKey))
+    ?? latest(stable.filter((policy) => policy.scope === "class" && policy.taskFamily === args.classification.taskFamily))
+    ?? latest(stable.filter((policy) => policy.scope === "global"));
+}
+
 export function resolveEffectivePolicy(args: {
   classification: QueryClassification;
   userKey?: string;
   stablePolicies: AdaptivePolicyEntry[];
   step: PipelineStepName;
 }): EffectiveAdaptiveContext {
-  const stable = args.stablePolicies.filter((policy) => policy.status === "stable");
-  const selected = stable.find((policy) => policy.scope === "user-class" && policy.taskFamily === args.classification.taskFamily && !!args.userKey && policy.userKey === args.userKey)
-    ?? stable.find((policy) => policy.scope === "class" && policy.taskFamily === args.classification.taskFamily)
-    ?? stable.find((policy) => policy.scope === "global");
+  const selected = selectStablePolicy(args);
   const baseHint = selected?.stepHints[args.step] || defaultHintFor(args.classification.taskFamily, args.step);
   const modeClause = MODE_CLAUSE[args.classification.decisionMode];
   return {

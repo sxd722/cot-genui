@@ -97,9 +97,39 @@ export function appendEpisodeEdit(episode: GenerationEpisode, version: OpenUIEdi
   };
 }
 
+export function recordEpisodeUndo(episode: GenerationEpisode): GenerationEpisode {
+  return {
+    ...episode,
+    updatedAt: now(),
+    rewardMetrics: {
+      editCount: episode.rewardMetrics?.editCount ?? episode.edits.length,
+      semanticEditCount: episode.rewardMetrics?.semanticEditCount ?? 0,
+      visualEditCount: episode.rewardMetrics?.visualEditCount ?? 0,
+      undoCount: (episode.rewardMetrics?.undoCount ?? 0) + 1,
+      acceptedWithoutEdit: false,
+      timeToAcceptMs: episode.rewardMetrics?.timeToAcceptMs ?? 0,
+    },
+  };
+}
+
 export function finalizeEpisode(episode: GenerationEpisode, finalOpenUI: string): GenerationEpisode {
   const timestamp = now();
-  return { ...episode, status: "accepted", updatedAt: timestamp, acceptedAt: timestamp, finalOpenUI };
+  const visualEditCount = episode.edits.filter((edit) => /颜色|字号|醒目|badge|阴影|圆角|图片|高亮|布局|间距|对齐|横向|点击|滑动|展开|hover|切换/i.test(edit.instruction)).length;
+  return {
+    ...episode,
+    status: "accepted",
+    updatedAt: timestamp,
+    acceptedAt: timestamp,
+    finalOpenUI,
+    rewardMetrics: {
+      editCount: episode.edits.length,
+      semanticEditCount: episode.edits.length - visualEditCount,
+      visualEditCount,
+      undoCount: episode.rewardMetrics?.undoCount ?? 0,
+      acceptedWithoutEdit: episode.edits.length === 0,
+      timeToAcceptMs: Math.max(0, Date.parse(timestamp) - Date.parse(episode.startedAt)),
+    },
+  };
 }
 
 export function abandonEpisode(episode: GenerationEpisode): GenerationEpisode {

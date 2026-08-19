@@ -5,6 +5,7 @@ import { InputPanel } from "@/components/InputPanel";
 import { InferencePane } from "@/components/workspace/InferencePane";
 import { ResultPane } from "@/components/workspace/ResultPane";
 import { EditComposer } from "@/components/workspace/EditComposer";
+import { ReflectionOverlay } from "@/components/reflection/ReflectionOverlay";
 import { useInferStore } from "@/store/useInferStore";
 
 export default function Home() {
@@ -31,6 +32,7 @@ export default function Home() {
           <EditComposer />
         </main>
       </div>
+      <ReflectionOverlay />
     </div>
   );
 }
