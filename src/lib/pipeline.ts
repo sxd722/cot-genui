@@ -18,6 +18,7 @@ import type { ProfileDigest } from "@/lib/profileTypes";
 import { CARD_PLAN_SYSTEM_PROMPT } from "@/lib/cardPlanPrompt";
 import { sanitizeCardPlanExternalLinks } from "@/lib/webFactIntegration";
 import { NVIDIA_DIFFUSION_GEMMA_MODEL, nvidiaChatOptions } from "@/lib/nvidia";
+import { resolveModelProfile, type GroqReasoningEffort } from "@/lib/modelProfiles";
 import { classifyQuery } from "@/lib/adaptive/classification";
 import type { EffectiveAdaptiveContext, QueryClassification } from "@/lib/adaptive/types";
 import { buildProfileView } from "@/lib/profileView";
@@ -67,8 +68,6 @@ interface LLMResult {
   webSearch?: unknown;
 }
 
-type GroqReasoningEffort = "none" | "default" | "low" | "medium" | "high";
-
 const DEFAULT_PROFILES: Record<PipelineStepName, ModelProfile> = {
   intent_analysis: "groq_qwen_3_6_27b",
   evidence_resolution: "groq_qwen_3_6_27b",
@@ -90,37 +89,6 @@ const STEP_SAMPLING: Record<PipelineStepName, { temperature: number; doSample: b
   // OpenUI 需要适度视觉变化，同时优先保证语法稳定与低时延。
   openui_generate: { temperature: 0.2, doSample: true },
 };
-
-function resolveModel(profile: ModelProfile): {
-  model: string;
-  thinking: boolean;
-  provider: LLMProvider;
-  groqReasoningEffort?: GroqReasoningEffort;
-  includeReasoning?: boolean;
-} {
-  switch (profile) {
-    case "groq_qwen_3_6_27b":
-      return { model: "qwen/qwen3.6-27b", thinking: false, provider: "groq", groqReasoningEffort: "none" };
-    case "groq_gpt_oss_120b":
-      return {
-        model: "openai/gpt-oss-120b",
-        thinking: true,
-        provider: "groq",
-        groqReasoningEffort: "medium",
-        includeReasoning: false,
-      };
-    case "hf_community_qwen_3_8_27b":
-      return { model: "Qwen/Qwen3.8-27B", thinking: false, provider: "hf_community" };
-    case "nvidia_diffusion_gemma_26b":
-      return { model: NVIDIA_DIFFUSION_GEMMA_MODEL, thinking: false, provider: "nvidia" };
-    case "glm_5_2_thinking":
-      return { model: "glm-5.2", thinking: true, provider: "glm" };
-    case "glm_5_2":
-      return { model: "glm-5.2", thinking: false, provider: "glm" };
-    case "glm_4_7_flash":
-      return { model: "glm-4.7-flash", thinking: false, provider: "glm" };
-  }
-}
 
 function log(onLog: RunInput["onLog"], phase: CallLog["phase"], message: string, detail?: unknown) {
   onLog?.({ ts: new Date().toISOString(), phase, message, detail });
@@ -940,7 +908,7 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
 
 export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutput> {
   const started = Date.now();
-  const selectedModel = resolveModel(input.modelProfile ?? DEFAULT_PROFILES[input.name]);
+  const selectedModel = resolveModelProfile(input.modelProfile ?? DEFAULT_PROFILES[input.name]);
   const sampling = STEP_SAMPLING[input.name];
   const classification = input.adaptiveContext?.classification ?? input.classification ?? classifyQuery(input.query);
   const profileView: ProfileViewV2 | undefined = input.name === "intent_analysis" && input.profileDigest

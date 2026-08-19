@@ -47,6 +47,8 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererPr
   const [feedback, setFeedback] = useState<string>("");
   const streamMetrics = useInferStore((state) => state.openuiStreamMetrics);
   const markFirstRenderableRoot = useInferStore((state) => state.markOpenUIFirstRenderableRoot);
+  const isTargeting = useInferStore((state) => state.isTargeting);
+  const setCardEditTarget = useInferStore((state) => state.setCardEditTarget);
 
   const status = useMemo(() => {
     if (isStreaming) return `流式生成 · ${code.length} 字`;
@@ -96,6 +98,29 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererPr
     setFeedback(`已触发：${action.label}`);
   }, [cardPlan]);
 
+  const captureTarget = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isTargeting) return;
+    const origin = event.target as HTMLElement | null;
+    const card = origin?.closest<HTMLElement>("[data-card-id]");
+    if (!card) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = card.getBoundingClientRect();
+    const textHost = origin?.closest<HTMLElement>("button, a, [role], h1, h2, h3, p, li, span") ?? origin;
+    const role = textHost?.getAttribute("role");
+    const elementHint = [textHost?.tagName.toLowerCase(), role ? `role=${role}` : "", textHost?.getAttribute("aria-label") ?? ""]
+      .filter(Boolean).join(" · ").slice(0, 160);
+    setCardEditTarget({
+      cardId: card.dataset.cardId ?? "",
+      x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / Math.max(1, bounds.width))),
+      y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / Math.max(1, bounds.height))),
+      pixelX: Math.round(event.clientX - bounds.left),
+      pixelY: Math.round(event.clientY - bounds.top),
+      nearbyText: (textHost?.innerText || card.innerText || "").replace(/\s+/g, " ").trim().slice(0, 240),
+      elementHint,
+    });
+  }, [isTargeting, setCardEditTarget]);
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-black">
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-800 px-3 py-2 text-[10px] text-zinc-400">
@@ -114,7 +139,10 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming }: OpenUIRendererPr
           {feedback}
         </button>
       )}
-      <div className="openui-host flex-1 overflow-y-auto bg-zinc-50 p-3 text-zinc-900">
+      <div
+        className={`openui-host flex-1 overflow-y-auto bg-zinc-50 p-3 text-zinc-900 ${isTargeting ? "openui-host--targeting" : ""}`}
+        onPointerDownCapture={captureTarget}
+      >
         {!code && isStreaming ? (
           <div className="flex min-h-48 items-center justify-center">
             <div className="flex items-center gap-2 text-xs text-zinc-500">

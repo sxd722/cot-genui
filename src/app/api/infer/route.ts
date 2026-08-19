@@ -7,19 +7,13 @@ import type { ProfileDigest } from "@/lib/profileTypes";
 import { classifyQuery, isQueryClassification } from "@/lib/adaptive/classification";
 import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
 import { sanitizeAdaptiveContext } from "@/lib/adaptive/validation";
+import { canCallModelProfile } from "@/lib/modelProfiles";
 
 const isStepName = (value: string): value is PipelineStepName =>
   (PIPELINE_STEPS as readonly string[]).includes(value);
 
 const isModelProfile = (value: unknown): value is ModelProfile =>
   typeof value === "string" && (MODEL_PROFILES as readonly string[]).includes(value);
-
-function canCallModel(profile: ModelProfile): boolean {
-  if (profile === "hf_community_qwen_3_8_27b") return true;
-  if (profile === "nvidia_diffusion_gemma_26b") return !!process.env.NVIDIA_API_KEY;
-  if (profile.startsWith("groq_")) return !!process.env.GROQ_API_KEY;
-  return !!process.env.LLM_API_KEY;
-}
 
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -48,7 +42,7 @@ export async function POST(request: Request) {
     step: body.step as PipelineStepName,
   });
   const adaptiveContext = sanitizeAdaptiveContext(body.adaptiveContext, classification) ?? fallbackAdaptiveContext;
-  const isMock = !canCallModel(modelProfile);
+  const isMock = !canCallModelProfile(modelProfile);
   const run = (onStreamDelta?: (delta: string, cumulativeChars: number) => void) => runPipelineStep({
     name: body.step as PipelineStepName,
     query: body.query as string,

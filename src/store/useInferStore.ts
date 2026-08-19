@@ -11,6 +11,10 @@ import { classifyQuery, refineClassification } from "@/lib/adaptive/classificati
 import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
 import type { AdaptivePolicyEntry, QueryClassification } from "@/lib/adaptive/types";
 import type { StepProvenance } from "@/lib/provenance";
+import type { CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
+import type { GenerationEpisode } from "@/learning/types";
+import { abandonEpisode, appendEpisodeEdit, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordInitialOpenUI } from "@/learning/episode";
+import { exportLearningData, listPolicies, putEpisode } from "@/learning/storage";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -134,6 +138,16 @@ interface InferState {
   runAllPaused: boolean;
   prefetchedSearch: SearchPrefetch | null;
   prefetchStatus: "idle" | "loading" | "ready" | "error";
+  isTargeting: boolean;
+  cardEditTarget: CardEditTarget | null;
+  editDraft: string;
+  editStatus: "idle" | "streaming" | "error" | "done";
+  editError: string | null;
+  editStreamingPatch: string;
+  openuiVersions: OpenUIEditVersion[];
+  openuiVersionIndex: number;
+  currentEpisode: GenerationEpisode | null;
+  isReflectionOpen: boolean;
   setQuery: (query: string) => void;
   selectPreset: (id: string) => void;
   setContextText: (text: string) => void;
@@ -142,6 +156,16 @@ interface InferState {
   setStepModel: (name: StepName, profile: ModelProfile) => void;
   setRightView: (view: ResultView) => void;
   markOpenUIFirstRenderableRoot: (timestamp?: number) => void;
+  initializeLearning: () => Promise<void>;
+  setTargeting: (active: boolean) => void;
+  setCardEditTarget: (target: CardEditTarget | null) => void;
+  setEditDraft: (value: string) => void;
+  submitCardEdit: () => Promise<void>;
+  undoOpenUIEdit: () => void;
+  redoOpenUIEdit: () => void;
+  acceptCurrentEpisode: () => Promise<void>;
+  closeReflection: () => void;
+  exportLearningJson: () => Promise<void>;
   ensureProfileDigest: () => Promise<ProfileDigest | null>;
   prefetchSearch: () => Promise<void>;
   continueGenerate: () => Promise<void>;
@@ -187,6 +211,8 @@ function clearedResult() {
     result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, openuiStreamMetrics: {} as OpenUIStreamMetrics, rightView: null as ResultView | null,
     answers: {}, runAllPaused: false,
     prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
+    isTargeting: false, cardEditTarget: null as CardEditTarget | null, editDraft: "", editStatus: "idle" as const,
+    editError: null as string | null, editStreamingPatch: "", openuiVersions: [] as OpenUIEditVersion[], openuiVersionIndex: -1,
   };
 }
 
@@ -265,6 +291,62 @@ async function readInferResponse(
   return donePayload;
 }
 
+interface EditApiResponse {
+  error?: string;
+  patch?: string;
+  code?: string;
+  beforeSlice?: string;
+  afterSlice?: string;
+  model?: string;
+}
+
+async function readEditResponse(response: Response, onDelta: (delta: string) => void): Promise<EditApiResponse> {
+  if (!response.headers.get("content-type")?.includes("text/event-stream")) return response.json() as Promise<EditApiResponse>;
+  if (!response.body) throw new Error("编辑流式响应缺少 body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminal: EditApiResponse | undefined;
+  const consume = (frame: string) => {
+    let event = "message";
+    const lines: string[] = [];
+    frame.split(/\r?\n/).forEach((line) => {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      if (line.startsWith("data:")) lines.push(line.slice(5).trimStart());
+    });
+    if (!lines.length) return;
+    const payload = JSON.parse(lines.join("\n")) as EditApiResponse & { delta?: string };
+    if (event === "delta" && typeof payload.delta === "string") onDelta(payload.delta);
+    if (event === "done" || event === "error") terminal = payload;
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const frames = buffer.split(/\r?\n\r?\n/);
+    buffer = frames.pop() ?? "";
+    frames.forEach(consume);
+    if (done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+  if (!terminal) throw new Error("编辑流未收到终止事件");
+  return terminal;
+}
+
+function persistAbandoned(episode: GenerationEpisode | null) {
+  if (!episode || episode.status === "accepted" || episode.status === "abandoned") return;
+  void putEpisode(abandonEpisode(episode)).catch(() => undefined);
+}
+
+function downloadJson(value: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 export const useInferStore = create<InferState>((set, get) => ({
   query: DEFAULT_QUERY,
   queryClassification: classifyQuery(DEFAULT_QUERY),
@@ -279,9 +361,14 @@ export const useInferStore = create<InferState>((set, get) => ({
   profileError: null,
   profileContextText: null,
   customContextText: "",
+  currentEpisode: null,
+  isReflectionOpen: false,
   ...clearedResult(),
 
-  setQuery: (query) => set({ query, queryClassification: classifyQuery(query), prefetchedSearch: null, prefetchStatus: "idle" }),
+  setQuery: (query) => {
+    persistAbandoned(get().currentEpisode);
+    set({ query, queryClassification: classifyQuery(query), prefetchedSearch: null, prefetchStatus: "idle", currentEpisode: null, isReflectionOpen: false });
+  },
   setContextText: (contextText) => {
     stepCache.clear();
     set({ contextText, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, steps: emptySteps(), ...clearedResult() });
@@ -293,6 +380,86 @@ export const useInferStore = create<InferState>((set, get) => ({
     steps: { ...state.steps, [name]: emptyStep() },
   })),
   setRightView: (rightView) => set({ rightView }),
+  initializeLearning: async () => {
+    try { set({ stablePolicies: await listPolicies() }); }
+    catch { set({ stablePolicies: [] }); }
+  },
+  setTargeting: (isTargeting) => set({ isTargeting, ...(isTargeting ? { cardEditTarget: null, editError: null } : {}) }),
+  setCardEditTarget: (cardEditTarget) => set({ cardEditTarget, isTargeting: false, editError: null }),
+  setEditDraft: (editDraft) => set({ editDraft }),
+  undoOpenUIEdit: () => set((state) => {
+    const nextIndex = Math.max(0, state.openuiVersionIndex - 1);
+    if (nextIndex === state.openuiVersionIndex || !state.openuiVersions[nextIndex]) return {};
+    return { openuiVersionIndex: nextIndex, openuiCode: state.openuiVersions[nextIndex].code, editStatus: "idle", editError: null };
+  }),
+  redoOpenUIEdit: () => set((state) => {
+    const nextIndex = Math.min(state.openuiVersions.length - 1, state.openuiVersionIndex + 1);
+    if (nextIndex === state.openuiVersionIndex || !state.openuiVersions[nextIndex]) return {};
+    return { openuiVersionIndex: nextIndex, openuiCode: state.openuiVersions[nextIndex].code, editStatus: "idle", editError: null };
+  }),
+  submitCardEdit: async () => {
+    const state = get();
+    if (!state.openuiCode || !state.cardPlan || !state.cardPlanMarkdown || !state.cardEditTarget || !state.editDraft.trim()) {
+      set({ editStatus: "error", editError: "请先点选卡片位置并填写编辑要求" });
+      return;
+    }
+    const requestSnapshot = {
+      currentCode: state.openuiCode,
+      cardPlan: state.cardPlan,
+      cardPlanMarkdown: state.cardPlanMarkdown,
+      cardId: state.cardEditTarget.cardId,
+      target: state.cardEditTarget,
+      instruction: state.editDraft.trim(),
+      modelProfile: state.stepModels.openui_generate,
+    };
+    set({ editStatus: "streaming", editError: null, editStreamingPatch: "" });
+    try {
+      const response = await fetch("/api/openui/edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestSnapshot),
+      });
+      const data = await readEditResponse(response, (delta) => set((current) => ({ editStreamingPatch: `${current.editStreamingPatch}${delta}` })));
+      if (!response.ok || data.error || !data.code || data.beforeSlice === undefined || data.afterSlice === undefined) {
+        throw new Error(data.error ?? "编辑结果不完整");
+      }
+      const version: OpenUIEditVersion = {
+        id: `edit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: new Date().toISOString(),
+        code: data.code,
+        instruction: requestSnapshot.instruction,
+        target: requestSnapshot.target,
+        modelProfile: requestSnapshot.modelProfile,
+        beforeSlice: data.beforeSlice,
+        afterSlice: data.afterSlice,
+      };
+      set((current) => {
+        const branch = current.openuiVersions.slice(0, current.openuiVersionIndex + 1);
+        const versions = [...branch, version];
+        return {
+          openuiCode: data.code,
+          openuiVersions: versions,
+          openuiVersionIndex: versions.length - 1,
+          editStatus: "done",
+          editError: null,
+          editStreamingPatch: data.patch ?? current.editStreamingPatch,
+          editDraft: "",
+          currentEpisode: current.currentEpisode ? appendEpisodeEdit(current.currentEpisode, version) : null,
+        };
+      });
+    } catch (error) {
+      set({ editStatus: "error", editError: error instanceof Error ? error.message : "卡片编辑失败" });
+    }
+  },
+  acceptCurrentEpisode: async () => {
+    const state = get();
+    if (!state.currentEpisode || !state.openuiCode) return;
+    const episode = finalizeEpisode(state.currentEpisode, state.openuiCode);
+    await putEpisode(episode);
+    set({ currentEpisode: episode, isReflectionOpen: true });
+  },
+  closeReflection: () => set({ isReflectionOpen: false }),
+  exportLearningJson: async () => downloadJson(await exportLearningData(), `cot-genui-learning-${new Date().toISOString().slice(0, 10)}.json`),
   markOpenUIFirstRenderableRoot: (timestamp = performance.now()) => set((state) => {
     if (!state.openuiStreamMetrics.requestStartedAt || state.openuiStreamMetrics.firstRenderableRootAt !== undefined) return {};
     return {
@@ -383,6 +550,9 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   runStep: async (name, options = {}) => {
     const { query, contextText } = get();
+    if (name === "intent_analysis" && !get().currentEpisode) {
+      set({ currentEpisode: createGenerationEpisode({ query, classification: get().queryClassification }), isReflectionOpen: false });
+    }
     let deviceContext: Record<string, unknown>;
     try {
       deviceContext = JSON.parse(contextText);
@@ -392,8 +562,8 @@ export const useInferStore = create<InferState>((set, get) => ({
     }
 
     set((state) => ({
-      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, rightView: "cardplan-markdown" as const } : {}),
-      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, openuiStreamMetrics: {}, rightView: "openui" as const } : {}),
+      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, openuiVersions: [], openuiVersionIndex: -1, rightView: "cardplan-markdown" as const } : {}),
+      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, openuiStreamMetrics: {}, openuiVersions: [], openuiVersionIndex: -1, cardEditTarget: null, rightView: "openui" as const } : {}),
       steps: { ...state.steps, [name]: { ...state.steps[name], status: "loading", streamingChars: 0, error: null, logs: [] } },
     }));
 
@@ -495,11 +665,28 @@ export const useInferStore = create<InferState>((set, get) => ({
         return;
       }
 
-      set((current) => ({
-        isMock: !!data._mock,
-        queryClassification: name === "intent_analysis" && data.inferenceState
+      set((current) => {
+        const nextClassification = name === "intent_analysis" && data.inferenceState
           ? refineClassification(current.queryClassification, data.inferenceState)
-          : current.queryClassification,
+          : current.queryClassification;
+        const finalOpenUICode = data.openuiCode ?? current.openuiCode;
+        let episode = current.currentEpisode ?? createGenerationEpisode({ query, classification: nextClassification, userKey: ensuredProfile?.contextHash });
+        episode = { ...episode, queryClassification: nextClassification, userKey: episode.userKey ?? ensuredProfile?.contextHash };
+        episode = recordEpisodeStep(episode, name, {
+          modelProfile: data.modelProfile ?? current.stepModels[name],
+          adaptive: data.adaptive,
+          provenance: data.provenance,
+          usage: data.usage,
+        });
+        if (name === "openui_generate" && finalOpenUICode) episode = recordInitialOpenUI(episode, finalOpenUICode, (data.cardPlan ?? current.cardPlan)?.cards.length ?? 0);
+        const initialVersion: OpenUIEditVersion | null = name === "openui_generate" && finalOpenUICode ? {
+          id: "v0",
+          createdAt: new Date().toISOString(),
+          code: finalOpenUICode,
+        } : null;
+        return {
+        isMock: !!data._mock,
+        queryClassification: nextClassification,
         inferenceState: data.inferenceState ?? current.inferenceState,
         slots: data.slots ?? current.slots,
         conflicts: data.conflicts ?? current.conflicts,
@@ -510,6 +697,8 @@ export const useInferStore = create<InferState>((set, get) => ({
         reasoningGraph: data.reasoningGraph ?? current.reasoningGraph,
         openuiCode: data.openuiCode ?? current.openuiCode,
         openuiDiagnostics: data.openuiDiagnostics ?? current.openuiDiagnostics,
+        currentEpisode: episode,
+        ...(initialVersion ? { openuiVersions: [initialVersion], openuiVersionIndex: 0 } : {}),
         ...(name === "clarification" ? { answers: {} } : {}),
         steps: {
           ...current.steps,
@@ -522,7 +711,8 @@ export const useInferStore = create<InferState>((set, get) => ({
             provenance: data.provenance,
           },
         },
-      }));
+      };
+      });
 
     } catch (error) {
       set((current) => ({ steps: { ...current.steps, [name]: { ...current.steps[name], status: "error", error: error instanceof Error ? error.message : "网络错误" } } }));
@@ -530,7 +720,12 @@ export const useInferStore = create<InferState>((set, get) => ({
   },
 
   runAll: async () => {
-    set({ runAllPaused: false });
+    persistAbandoned(get().currentEpisode);
+    set({
+      runAllPaused: false,
+      currentEpisode: createGenerationEpisode({ query: get().query, classification: get().queryClassification, userKey: get().profileDigest?.contextHash }),
+      isReflectionOpen: false,
+    });
     await get().runStep("intent_analysis", { useCache: true });
     if (get().steps.intent_analysis.status === "error") return;
     await get().runStep("evidence_resolution", { useCache: true });
@@ -559,7 +754,8 @@ export const useInferStore = create<InferState>((set, get) => ({
   },
 
   reset: () => {
+    persistAbandoned(get().currentEpisode);
     stepCache.clear();
-    set({ query: DEFAULT_QUERY, queryClassification: classifyQuery(DEFAULT_QUERY), deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, ...clearedResult() });
+    set({ query: DEFAULT_QUERY, queryClassification: classifyQuery(DEFAULT_QUERY), deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, ...clearedResult() });
   },
 }));

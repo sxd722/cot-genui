@@ -219,3 +219,30 @@ body {
     scroll-snap-type: none;
   }
 }
+
+.openui-host--targeting {
+  cursor: crosshair;
+  box-shadow: inset 0 0 0 2px rgb(6 182 212 / 0.7);
+}
+
+.openui-host--targeting [data-card-id] {
+  transition: outline-color 120ms ease, transform 120ms ease;
+}
+
+.openui-host--targeting [data-card-id]:hover {
+  outline: 2px solid rgb(6 182 212);
+  outline-offset: 2px;
+}
+
+.workspace-openui .openui-card-deck {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(300px, 420px);
+  grid-template-columns: none;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+
+.workspace-openui .openui-generated-card {
+  scroll-snap-align: start;
+}

@@ -21,7 +21,7 @@ export function InputPanel() {
   } = useInferStore();
 
   return (
-    <aside className="flex w-[360px] shrink-0 flex-col gap-3 border-r border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950 overflow-y-auto">
+    <aside className="flex min-h-0 w-full flex-col gap-3 overflow-y-auto border-r border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
       <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">输入</h2>
 
       {/* 用户意图 */}
