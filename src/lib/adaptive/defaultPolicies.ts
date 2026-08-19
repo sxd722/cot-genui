@@ -7,7 +7,7 @@ export const GLOBAL_STEP_HINTS: StepHintMap = {
   clarification: "只询问真正可能改变最终结果的阻塞性不确定项，不追求字段形式上的完整。",
   context_enrichment: "汇总前重新对照原始意图，检查是否遗漏成功标准、禁忌、体验诉求或关键约束。",
   card_plan_generate: "围绕用户最终要完成的事情组织卡片，不按槽位或数据来源机械拆卡。",
-  openui_generate: "把 CardPlan Markdown 当设计 brief，优先突出用户真正关心的结果、决策和操作路径。",
+  openui_generate: "把 CardPlan 当设计 brief；先选最能表达每张卡目的的组件组合，再组织层级与节奏，避免把所有卡都退化为 Stack + TextContent。",
 };
 
 const CLASS_HINT_OVERRIDES: Partial<Record<TaskFamily, Partial<StepHintMap>>> = {
