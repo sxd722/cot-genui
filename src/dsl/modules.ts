@@ -39,8 +39,28 @@ export interface CardNode {
   sourceSlots?: string[];
   /** 展示内容块 */
   blocks: IRBlock[];
+  /** 有界的高层表达意图；不包含组件名、CSS 或任意样式。 */
+  presentation?: CardPresentationIntent;
   /** 可选的操作（按钮）；纯展示卡可为空或省略 */
   actions?: IRAction[];
+}
+
+export type CardPresentationArchetype =
+  | "standard"
+  | "hero"
+  | "editorial"
+  | "comparison"
+  | "timeline"
+  | "data"
+  | "action"
+  | "media";
+
+export type CardDensity = "compact" | "balanced" | "immersive";
+
+export interface CardPresentationIntent {
+  archetype: CardPresentationArchetype;
+  density?: CardDensity;
+  emphasis?: "content" | "data" | "media" | "action";
 }
 
 /* ------------------------------------------------------------------ */

@@ -33,4 +33,16 @@ describe("CardPlan vibe Markdown", () => {
     expect(markdown).toContain("[宿主外链]");
     expect(markdown).not.toContain("https://");
   });
+
+  it("projects bounded presentation intent without prescribing components", () => {
+    const markdown = cardPlanToVibeMarkdown({
+      ...sampleCardPlan,
+      cards: [{ ...sampleCardPlan.cards[0], presentation: { archetype: "timeline", density: "balanced", emphasis: "content" } }],
+    });
+
+    expect(markdown).toContain("### 表达意图");
+    expect(markdown).toContain("- archetype: timeline");
+    expect(markdown).toContain("- density: balanced");
+    expect(markdown).not.toContain("archetype: Stack");
+  });
 });

@@ -61,10 +61,20 @@ export function cardPlanToVibeMarkdown(plan: CardPlan): string {
       "",
       cardVibe(card),
       "可以重新组织信息层级，不必机械复刻下面的 block 顺序；优先让用户先看到结论，再看到依据和下一步。",
-      "",
-      "### 数据",
-      "",
     );
+
+    if (card.presentation) {
+      lines.push(
+        "",
+        "### 表达意图",
+        "",
+        `- archetype: ${card.presentation.archetype}`,
+        ...(card.presentation.density ? [`- density: ${card.presentation.density}`] : []),
+        ...(card.presentation.emphasis ? [`- emphasis: ${card.presentation.emphasis}`] : []),
+      );
+    }
+
+    lines.push("", "### 数据", "");
 
     if (!card.blocks.length) {
       lines.push("- 无额外结构化数据；围绕本卡用途进行简洁表达。");
