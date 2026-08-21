@@ -45,4 +45,31 @@ describe("CardPlan vibe Markdown", () => {
     expect(markdown).toContain("- density: balanced");
     expect(markdown).not.toContain("archetype: Stack");
   });
+
+  it("uses a concise heading and moves the complete purpose into the vibe section", () => {
+    const purpose = "展示整体行程时间线、交通方式及关键节点，帮助用户建立全局预期。";
+    const markdown = cardPlanToVibeMarkdown({
+      ...sampleCardPlan,
+      cards: [{ ...sampleCardPlan.cards[0], title: "旅行时间线", purpose }],
+    });
+
+    expect(markdown).toMatch(/^## 卡片 1 \/ 1 · 旅行时间线$/m);
+    expect(markdown).toContain(`### 感觉与节奏\n\n主题：${purpose}`);
+    expect(markdown).not.toContain(`## 卡片 1 / 1 · ${purpose}`);
+  });
+
+  it("keeps every derived card heading within ten characters", () => {
+    const markdown = cardPlanToVibeMarkdown({
+      ...sampleCardPlan,
+      cards: [{
+        ...sampleCardPlan.cards[0],
+        purpose: "整合预算交通住宿餐饮活动安排与风险提醒（供最终决策使用）",
+      }],
+    });
+    const title = markdown.match(/^## 卡片 1 \/ 1 · (.+)$/m)?.[1] ?? "";
+
+    expect([...title].length).toBeGreaterThan(0);
+    expect([...title].length).toBeLessThanOrEqual(10);
+    expect(title).not.toContain("（");
+  });
 });

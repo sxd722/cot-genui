@@ -38,4 +38,18 @@ describe("OpenUI deterministic bootstrap", () => {
     expect(bootstrap.code).toContain('GeneratedCard("hero", "主结论", [card_0_body], "hero", "immersive")');
     expect(bootstrap.code).toContain('GeneratedCard("metrics", "关键数据", [card_1_body], "data", "compact")');
   });
+
+  it("uses the same concise title as CardPlan Markdown while preserving purpose outside the shell", () => {
+    const bootstrap = buildOpenUIBootstrap({
+      ...sampleCardPlan,
+      cards: [{
+        ...sampleCardPlan.cards[0],
+        title: "旅行时间线",
+        purpose: "展示整体行程时间线、交通方式及关键节点，帮助用户建立全局预期。",
+      }],
+    });
+
+    expect(bootstrap.code).toContain('GeneratedCard("overview/first", "旅行时间线", [card_0_body]');
+    expect(bootstrap.code).not.toContain("帮助用户建立全局预期");
+  });
 });

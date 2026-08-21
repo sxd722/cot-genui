@@ -1,4 +1,5 @@
 import type { CardPlan } from "@/dsl/modules";
+import { conciseCardTitle } from "./cardTitle";
 
 export interface OpenUIBootstrapBodyRef {
   cardId: string;
@@ -28,7 +29,7 @@ export function buildOpenUIBootstrap(cardPlan: CardPlan): OpenUIBootstrap {
     const ref = bodyRefs[index];
     const variant = card.presentation?.archetype ?? "standard";
     const density = card.presentation?.density ?? "balanced";
-    lines.push(`${ref.cardRef} = GeneratedCard(${JSON.stringify(card.id)}, ${JSON.stringify(card.purpose)}, [${ref.bodyRef}], ${JSON.stringify(variant)}, ${JSON.stringify(density)})`);
+    lines.push(`${ref.cardRef} = GeneratedCard(${JSON.stringify(card.id)}, ${JSON.stringify(conciseCardTitle(card.title ?? card.purpose, `卡片 ${index + 1}`))}, [${ref.bodyRef}], ${JSON.stringify(variant)}, ${JSON.stringify(density)})`);
   });
 
   return { code: lines.join("\n"), bodyRefs };

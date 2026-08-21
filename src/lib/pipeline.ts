@@ -13,6 +13,7 @@ import {
 import { buildOpenUIGenerationPayload, buildOpenUIRepairPayload } from "@/openui/payload";
 import { hasCompleteOpenUIStatement } from "@/openui/streamTiming";
 import { cardPlanToVibeMarkdown } from "@/openui/vibeMarkdown";
+import { conciseCardTitle } from "@/openui/cardTitle";
 import { retrieveProfileEvidence } from "@/lib/profile";
 import type { ProfileDigest } from "@/lib/profileTypes";
 import { CARD_PLAN_SYSTEM_PROMPT } from "@/lib/cardPlanPrompt";
@@ -831,6 +832,11 @@ function normalizeCardPlan(plan: CardPlan, allowedExternalUrls: Set<string>, val
     ...plan,
     cards: cards.map((card) => ({
       ...card,
+      title: conciseCardTitle(
+        typeof card.title === "string" && card.title.trim()
+          ? card.title.trim()
+          : card.purpose,
+      ),
       purpose: typeof card.purpose === "string" && card.purpose.trim()
         ? card.purpose.trim()
         : "未命名卡片",
@@ -1101,7 +1107,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         ? CARD_PLAN_SYSTEM_PROMPT
         : `${CARD_PLAN_SYSTEM_PROMPT}\n兼容模式：若 webFacts 非空，必须把其中与任务有关的事实纳入现有业务卡，但仍不得为来源单独增加卡片。`,
       user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
-      schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,purpose,sourceSlots?,presentation?:{archetype:'standard'|'hero'|'editorial'|'comparison'|'timeline'|'data'|'action'|'media',density?:'compact'|'balanced'|'immersive',emphasis?:'content'|'data'|'media'|'action'},blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?,assetRequest?:{kind:'image'|'gallery',query:string,count:number,role:'hero'|'supporting'|'gallery'}}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
+      schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,title,purpose,sourceSlots?,presentation?:{archetype:'standard'|'hero'|'editorial'|'comparison'|'timeline'|'data'|'action'|'media',density?:'compact'|'balanced'|'immersive',emphasis?:'content'|'data'|'media'|'action'},blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?,assetRequest?:{kind:'image'|'gallery',query:string,count:number,role:'hero'|'supporting'|'gallery'}}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
     });
     const raw = llm.value as { reasoning?: string; cardPlan?: unknown };
     if (!validCardPlan(raw.cardPlan)) throw new Error("模型返回的 CardPlan 结构无效");

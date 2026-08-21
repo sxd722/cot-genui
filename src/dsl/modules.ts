@@ -33,6 +33,8 @@ export interface CardPlan {
 export interface CardNode {
   /** 稳定 ID，snake_case，如 "attractions" */
   id: string;
+  /** 不超过10个字的展示标题；旧数据缺失时由宿主从 purpose 派生。 */
+  title?: string;
   /** 这张卡的用途说明 */
   purpose: string;
   /** 这张卡所依赖的推断槽位；用于代码派生证据 DAG */

@@ -1,5 +1,6 @@
 import type { CardNode, CardPlan, IRBlock } from "@/dsl/modules";
 import { safeAssetRefs, type AssetManifest } from "./assetTypes";
+import { conciseCardTitle } from "./cardTitle";
 
 function clean(value: unknown): string {
   return String(value ?? "")
@@ -55,11 +56,13 @@ export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetMani
   plan.cards.forEach((card, cardIndex) => {
     lines.push(
       "",
-      `## 卡片 ${cardIndex + 1} / ${plan.cards.length} · ${clean(card.purpose)}`,
+      `## 卡片 ${cardIndex + 1} / ${plan.cards.length} · ${conciseCardTitle(card.title ?? card.purpose, `卡片 ${cardIndex + 1}`)}`,
       "",
       `> **Card ID:** \`${clean(card.id)}\``,
       "",
       "### 感觉与节奏",
+      "",
+      `主题：${clean(card.purpose)}`,
       "",
       cardVibe(card),
       "可以重新组织信息层级，不必机械复刻下面的 block 顺序；优先让用户先看到结论，再看到依据和下一步。",

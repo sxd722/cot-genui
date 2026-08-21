@@ -181,6 +181,7 @@ CardPlan 包含：
 CardPlan Markdown 不是第二个模型产物，而是 CardPlan 的唯一文本投影：
 
 - 使用语义化 Markdown，不再混入 YAML；
+- 每张卡的 `title` 是不超过 10 个字的展示概括；完整 `purpose` 作为“主题”放在“感觉与节奏”中；旧 CardPlan 没有 title 时由宿主从 purpose 确定性派生；
 - 描述整体 vibe、每张卡的目标、数据和动作；
 - 数据和动作在每张卡 section 末尾集中列出；
 - 只列出宿主已经接受的 `assetRef`，不包含图片 URL；
