@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import type { ComponentType } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { normalizeAssetRequest } from "../../src/lib/cardPlanNormalize";
 import { buildOpenUIGenerationPayload } from "../../src/openui/payload";
 import { collectAssetRequests, isPrivateHostname, resolveAssetManifest } from "../../src/openui/assetResolver";
-import { invalidAssetRefsInTree } from "../../src/openui/assetTypes";
+import { AssetRegistryProvider } from "../../src/openui/assetContext";
+import { AssetImage } from "../../src/openui/components/AssetImage";
+import { invalidAssetRefsInTree, type AssetManifest } from "../../src/openui/assetTypes";
 import { createParser, type LibraryJSONSchema, type LibrarySpec } from "@openuidev/lang-core";
 import librarySpec from "../../src/openui/generated/system-prompt.spec.json";
 import { sampleCardPlan } from "./fixtures";
@@ -39,5 +44,22 @@ describe("host-owned OpenUI assets", () => {
     const parsed = createParser((librarySpec as LibrarySpec).schema as LibraryJSONSchema).parse('root = CardDeck([card], "auto")\ncard = GeneratedCard("a", "A", [image])\nimage = AssetImage("asset_invented")');
     expect(invalidAssetRefsInTree(parsed.root, { requests: [], assets: [] })).toEqual(["asset_invented"]);
     expect(invalidAssetRefsInTree(parsed.root, { requests: [], assets: [{ id: "asset_invented", kind: "image", src: "https://safe.example/a.jpg", alt: "A" }] })).toEqual([]);
+  });
+
+  it("renders an accepted assetRef through the host registry without model-authored URLs", () => {
+    const manifest = {
+      requests: [{ id: "asset_demo", cardId: "demo", kind: "image" as const, query: "demo", count: 1, role: "hero" as const }],
+      assets: [{ id: "asset_demo", kind: "image" as const, src: "https://cdn.example/demo.jpg", alt: "Demo image" }],
+    };
+    const image = createElement(AssetImage.component, {
+      props: { assetRef: "asset_demo", alt: "Resolved demo", aspect: "wide" },
+      renderNode: () => null,
+    });
+    const Registry = AssetRegistryProvider as ComponentType<{ manifest?: AssetManifest | null }>;
+    const html = renderToStaticMarkup(createElement(Registry, { manifest }, image));
+
+    expect(html).toContain('src="https://cdn.example/demo.jpg"');
+    expect(html).toContain('alt="Resolved demo"');
+    expect(html).not.toContain("图片暂不可用");
   });
 });

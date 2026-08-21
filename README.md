@@ -33,6 +33,8 @@ npm run dev
 
 首次生成现在由 CardPlan topology、受限 presentation intent、模型/任务感知 OpenUI palette、宿主媒体注册表和安全局部交互共同驱动。小模型使用 16–22 个高价值组件的 compact prompt，大模型使用 expanded prompt；renderer 始终保留完整运行时组件库。
 
+第⑥步不再把供人阅读的 CardPlan Markdown 当作模型协议。宿主从 CardPlan 确定性构建 `designBrief`：只有 `renderableContent` 可以成为可见文案，`designIntent` 只是 NON-RENDERABLE 的组件、层级、密度和强调提示；媒体与动作分别只暴露 `assetRef` 和 `actionRef`。生成后 validator 会拦截设计字段、Vibe 标题或作者指导语泄漏，并沿现有 repair 路径清理。
+
 静态回归命令：
 
 ```bash
@@ -125,7 +127,7 @@ IMAGE_SEARCH_TIMEOUT_MS=5000
 真实端点 smoke test 仅在配置了 `PEXELS_API_KEY` 或 `IMAGE_SEARCH_API_URL` + `IMAGE_SEARCH_API_KEY` 时运行（Openverse 不作为 smoke 触发条件，保证 `npm test` 不触网）：
 
 ```bash
-npx vitest run tests/openui/asset-provider.smoke.test.ts
+npm run smoke:openui-assets
 ```
 
 成功链路的开发诊断示例：

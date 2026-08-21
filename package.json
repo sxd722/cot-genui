@@ -14,6 +14,7 @@
     "build": "npm run generate:openui && next build",
     "start": "next start",
     "lint": "eslint",
+    "smoke:openui-assets": "node --env-file-if-exists=.env.local --import tsx scripts/smoke-openui-assets.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -42,6 +43,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "tailwindcss": "^4",
+    "tsx": "^4.20.5",
     "typescript": "^5",
     "vitest": "^4.1.10"
   }
