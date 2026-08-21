@@ -28,7 +28,52 @@ export interface SafeAssetRef {
 }
 
 export interface ImageSearchProvider {
-  search(args: { query: string; limit: number }): Promise<Array<{ imageUrl: string; sourceUrl?: string; alt?: string }>>;
+  readonly kind?: string;
+  search(args: { query: string; limit: number }): Promise<unknown[]>;
+}
+
+export type AssetProviderState =
+  | "disabled"
+  | "noop-unconfigured"
+  | "configured"
+  | "provider-error"
+  | "zero-results"
+  | "validation-rejected"
+  | "ready";
+
+export type AssetResolutionStage =
+  | "configuration"
+  | "provider-request"
+  | "provider-response"
+  | "candidate-limit"
+  | "url-parse"
+  | "url-policy"
+  | "dns"
+  | "head"
+  | "redirect"
+  | "get-fallback";
+
+export interface AssetResolutionDiagnosticEvent {
+  stage: AssetResolutionStage;
+  reason: string;
+  requestId?: string;
+  candidateIndex?: number;
+  statusCode?: number;
+}
+
+export interface AssetResolutionDiagnostics {
+  providerState: AssetProviderState;
+  providerKind: string;
+  requests: number;
+  candidates: number;
+  accepted: number;
+  rejected: number;
+  events: AssetResolutionDiagnosticEvent[];
+}
+
+export interface AssetResolutionResult {
+  manifest: AssetManifest;
+  diagnostics: AssetResolutionDiagnostics;
 }
 
 export function safeAssetRefs(manifest: AssetManifest): SafeAssetRef[] {

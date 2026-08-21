@@ -21,11 +21,11 @@ describe("host-owned OpenUI assets", () => {
 
   it("collects stable requests and exposes only safe IDs to the model payload", async () => {
     expect(collectAssetRequests(mediaPlan)[0]).toMatchObject({ id: "asset_overview_first_1", cardId: "overview/first" });
-    const manifest = await resolveAssetManifest(mediaPlan, {
+    const result = await resolveAssetManifest(mediaPlan, {
       provider: { search: async () => [{ imageUrl: "https://cdn.example/image.jpg", alt: "酒店外观" }] },
       validate: async (url) => url,
     });
-    const payload = buildOpenUIGenerationPayload(mediaPlan, manifest);
+    const payload = buildOpenUIGenerationPayload(mediaPlan, result.manifest);
     expect(JSON.stringify(payload)).toContain("asset_overview_first_1");
     expect(JSON.stringify(payload)).not.toContain("https://");
   });

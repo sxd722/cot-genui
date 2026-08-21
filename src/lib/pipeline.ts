@@ -27,7 +27,7 @@ import type { ProfileViewV2, RetrievedEvidence } from "@/lib/profileTypes";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import { analyzeOpenUIQuality } from "@/openui/qualityMetrics";
 import { normalizeAssetRequest, normalizeCardPresentation } from "@/lib/cardPlanNormalize";
-import { resolveAssetManifest } from "@/openui/assetResolver";
+import { disabledAssetResolution, resolveAssetManifest } from "@/openui/assetResolver";
 import {
   PIPELINE_STEPS,
   type InferenceState,
@@ -1124,7 +1124,11 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   } else if (input.name === "openui_generate") {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
     const promptRoute = openUISystemPromptFor({ taskFamily: classification.taskFamily, modelProfile: input.modelProfile ?? DEFAULT_PROFILES.openui_generate });
-    const assetManifest = FEATURE_FLAGS.OPENUI_ASSETS ? await resolveAssetManifest(input.cardPlan) : { requests: [], assets: [] };
+    const assetResolution = FEATURE_FLAGS.OPENUI_ASSETS
+      ? await resolveAssetManifest(input.cardPlan)
+      : disabledAssetResolution(input.cardPlan);
+    const { manifest: assetManifest, diagnostics: assetResolutionDiagnostics } = assetResolution;
+    log(input.onLog, "response", `Host-owned media: ${assetResolutionDiagnostics.providerState} · ${assetResolutionDiagnostics.accepted}/${assetResolutionDiagnostics.candidates} accepted`, assetResolutionDiagnostics);
     const generationPayload = buildOpenUIGenerationPayload(input.cardPlan, assetManifest);
     llm = await callText({
       ...selectedModel,
@@ -1193,9 +1197,11 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         repairMs,
         quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
         promptProfile: promptRoute.promptProfile,
+        assetResolutionDiagnostics,
       },
       openuiCode,
       assetManifest,
+      assetResolutionDiagnostics,
       openuiDiagnostics: {
         coverage: validation.coverage,
         parser: validation.parser,
@@ -1205,6 +1211,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
         promptProfile: promptRoute.promptProfile,
         assetManifest,
+        assetResolutionDiagnostics,
       },
     };
   } else {

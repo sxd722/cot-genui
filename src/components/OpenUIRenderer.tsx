@@ -5,7 +5,7 @@ import { Renderer, type ActionEvent, type OpenUIError, type ParseResult } from "
 import type { CardPlan, IRAction } from "@/dsl/modules";
 import { cotGenUILibrary } from "@/openui/library";
 import { useInferStore, type OpenUIStreamMetrics } from "@/store/useInferStore";
-import type { AssetManifest } from "@/openui/assetTypes";
+import type { AssetManifest, AssetResolutionDiagnostics } from "@/openui/assetTypes";
 import { AssetRegistryProvider } from "@/openui/assetContext";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
@@ -14,6 +14,7 @@ interface OpenUIRendererProps {
   cardPlan: CardPlan;
   isStreaming: boolean;
   assetManifest?: AssetManifest | null;
+  assetResolutionDiagnostics?: AssetResolutionDiagnostics;
 }
 
 function resolveAction(cardPlan: CardPlan, message: string): { action: IRAction; cardId: string } | null {
@@ -45,7 +46,7 @@ function relativeMetric(metrics: OpenUIStreamMetrics, timestamp: number | undefi
   return `${Math.max(0, Math.round(timestamp - metrics.requestStartedAt))}ms`;
 }
 
-export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest }: OpenUIRendererProps) {
+export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, assetResolutionDiagnostics }: OpenUIRendererProps) {
   const [errors, setErrors] = useState<OpenUIError[]>([]);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [feedback, setFeedback] = useState<string>("");
@@ -175,6 +176,26 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest }: O
           <ul className="mt-1 list-disc space-y-1 pl-4">
             {errors.map((error, index) => <li key={`${error.code}-${index}`}>{error.message}</li>)}
           </ul>
+        </details>
+      )}
+      {process.env.NODE_ENV === "development" && !isStreaming && assetResolutionDiagnostics && (
+        <details
+          className="shrink-0 border-t border-zinc-800 bg-zinc-950 px-3 py-2 text-[10px] text-zinc-300"
+          data-asset-provider-state={assetResolutionDiagnostics.providerState}
+        >
+          <summary className="cursor-pointer text-zinc-400">
+            媒体解析 · {assetResolutionDiagnostics.providerState} · requests {assetResolutionDiagnostics.requests} · candidates {assetResolutionDiagnostics.candidates} · accepted {assetResolutionDiagnostics.accepted} · rejected {assetResolutionDiagnostics.rejected}
+          </summary>
+          <div className="mt-1 text-zinc-500">provider: {assetResolutionDiagnostics.providerKind}</div>
+          {assetResolutionDiagnostics.events.length > 0 && (
+            <ul className="mt-1 list-disc space-y-1 pl-4 text-amber-300/90">
+              {assetResolutionDiagnostics.events.map((event, index) => (
+                <li key={`${event.stage}-${event.requestId ?? "global"}-${event.candidateIndex ?? "none"}-${index}`}>
+                  [{event.stage}] {event.requestId ? `${event.requestId} ` : ""}{event.candidateIndex !== undefined ? `candidate ${event.candidateIndex + 1} ` : ""}{event.reason}{event.statusCode ? ` (HTTP ${event.statusCode})` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
         </details>
       )}
     </div>

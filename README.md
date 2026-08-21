@@ -62,6 +62,72 @@ npx tsx scripts/eval-openui-generation.ts --model glm_5_2 --resume glm52-openui-
 
 GLM 完整结果的 1–6 卡协议有效率为 100%，简单单目标单卡率为 100%，媒体型 fixture 的 `assetRequest` 覆盖为 100%，repair 后无无效产物。Qwen 行只是配额中断前的部分观测，且早于最终媒体提示词收紧，不能作为完整模型对比或最终验收结论；未捕获同 provider 的改造前 live baseline，因此不虚构增量数据，compact prompt 相对 full-library baseline 的缩减由静态回归测试约束。
 
+## Host-owned 图片解析
+
+图片检索完全由宿主在第⑥步模型调用前完成：`assetRequest → resolveAssetManifest → image provider → HTTPS/SSRF/DNS/redirect 校验 → safeAssetRefs → OpenUI → AssetImage/AssetGallery → AssetRegistry`。OpenUI 模型只能看到已接受的 `assetRef` ID，看不到图片 URL，也不能调用图片工具；源码中的原始 `http(s)` 仍会被 validator 拒绝。
+
+在 `.env.local` 中配置：
+
+```bash
+NEXT_PUBLIC_OPENUI_ASSETS=true
+IMAGE_SEARCH_API_URL=https://your-image-proxy.example/v1/search
+IMAGE_SEARCH_API_KEY=your-server-only-key
+IMAGE_SEARCH_TIMEOUT_MS=5000
+```
+
+`IMAGE_SEARCH_API_URL` 是明确的 `custom-http-v1` 适配器契约，不是任意图片 API 地址。宿主发送：
+
+```json
+{
+  "query": "北京海淀区酒店外观",
+  "limit": 2
+}
+```
+
+端点必须返回：
+
+```json
+{
+  "schemaVersion": "1",
+  "results": [
+    {
+      "imageUrl": "https://public-cdn.example/hotel.jpg",
+      "sourceUrl": "https://example.com/hotel",
+      "alt": "酒店外观"
+    }
+  ]
+}
+```
+
+请求使用 `POST application/json`；配置 key 时发送 `Authorization: Bearer <IMAGE_SEARCH_API_KEY>`。响应结构不匹配、provider 异常、零结果或 URL 校验失败都会优雅降级，并在开发模式 OpenUI 底部显示 `disabled / noop-unconfigured / configured / provider-error / zero-results / validation-rejected / ready`、计数和拒绝原因。图片 URL 必须为公网 HTTPS；校验先尝试 HEAD，在 403/405、不支持 HEAD 或缺少 Content-Type 时，以 `Range: bytes=0-1023` 做有界 GET 回退，并对每次重定向重新执行 DNS/SSRF 校验。
+
+真实端点 smoke test 仅在 `IMAGE_SEARCH_API_URL` 与 `IMAGE_SEARCH_API_KEY` 都存在时运行：
+
+```bash
+npx vitest run tests/openui/asset-provider.smoke.test.ts
+```
+
+成功链路的开发诊断示例：
+
+```json
+{
+  "providerState": "ready",
+  "requests": 1,
+  "candidates": 2,
+  "accepted": 1,
+  "rejected": 1,
+  "events": [
+    { "stage": "head", "requestId": "asset_hotel_1", "candidateIndex": 1, "reason": "HEAD content-type is not an image: text/html" }
+  ]
+}
+```
+
+只有接受后的 ID 会进入模型上下文和 OpenUI artifact：
+
+```text
+image = AssetImage("asset_hotel_1", "酒店外观", "wide")
+```
+
 ## 接入真实 LLM
 
 复制 `.env.example` 为 `.env.local`，填入兼容 OpenAI 接口的凭据：
