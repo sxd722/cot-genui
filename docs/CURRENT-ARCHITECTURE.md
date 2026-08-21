@@ -1,7 +1,7 @@
 # cot-genui 当前架构总览
 
-> 架构快照：2026-08-20  
-> 主协议：ProfileDigest / ProfileView V2 → InferenceState → CardPlan → CardPlan Markdown → OpenUI Lang v0.5  
+> 架构快照：2026-08-21
+> 主协议：ProfileDigest / ProfileView V2 → InferenceState → CardPlan → OpenUI Design Brief → OpenUI Lang v0.5
 > 主链路：画像预处理 + 冻结的六步推理管线 + 首次生成后的编辑与学习闭环
 
 本文描述当前项目的整体架构、关键产物、模块边界和安全约束。六步管线的逐字段、逐请求细节见 [CURRENT-PIPELINE.md](./CURRENT-PIPELINE.md)；较早的探索设计见 [DESIGN-DOC.md](./DESIGN-DOC.md)，不应作为当前实现的唯一依据。
@@ -35,6 +35,7 @@ flowchart TD
   PIPE[六步推理管线]
   CP[CardPlan 业务 IR]
   MD[CardPlan Markdown]
+  BRIEF[OpenUI Design Brief]
   ASSET[Host-owned Asset Resolver]
   OUI[OpenUI 生成与流式校验]
   RENDER[OpenUI React Renderer]
@@ -49,8 +50,9 @@ flowchart TD
   ADAPT --> PIPE
   PIPE --> CP
   CP --> MD
+  CP --> BRIEF
   CP --> ASSET
-  MD --> OUI
+  BRIEF --> OUI
   ASSET --> OUI
   OUI --> RENDER
   RENDER --> EDIT
@@ -154,7 +156,8 @@ flowchart LR
 | `ProfileViewV2` | ①之前确定性构建 | query-aware、固定预算投影 | ①模型 |
 | `InferenceState` | ①–④累积 | 任务事实、槽位、冲突、问题和搜索证据 | ⑤模型 |
 | `CardPlan` | ⑤模型 + 服务端 normalize | 唯一业务 IR 和动作事实源 | Markdown、shell、validator、编辑器 |
-| `CardPlan Markdown` | CardPlan 确定性派生 | 高容错、语义化创作 brief | ⑥模型、编辑 prompt、调试视图 |
+| `CardPlan Markdown` | CardPlan 确定性派生 | 高容错、供人阅读的文本投影 | 调试视图、编辑与学习上下文 |
+| `OpenUI Design Brief` | CardPlan + safe asset refs 确定性派生 | ⑥模型专用、内容与设计元数据分流 | ⑥模型、leakage validator |
 | `requiredShell` | CardPlan 确定性派生 | 固定 CardDeck、cardId、顺序和 body ref | ⑥模型、repair |
 | `AssetManifest` | ⑥之前由宿主解析 | 已验证 asset ID 到真实 URL 的映射 | safe refs、validator、AssetRegistry |
 | `OpenUI Lang` | ⑥模型 | 可流式解析的视觉程序 | validator、React Renderer、局部编辑 |
@@ -181,7 +184,7 @@ CardPlan Markdown 不是第二个模型产物，而是 CardPlan 的唯一文本�
 - 描述整体 vibe、每张卡的目标、数据和动作；
 - 数据和动作在每张卡 section 末尾集中列出；
 - 只列出宿主已经接受的 `assetRef`，不包含图片 URL；
-- 容许⑥模型重新组织视觉层级，但不容许改变事实边界。
+- 保留给人类/debug UI 阅读，不再作为⑥模型的生成协议。
 
 ### 4.3 第⑥步载荷
 
@@ -189,12 +192,21 @@ CardPlan Markdown 不是第二个模型产物，而是 CardPlan 的唯一文本�
 
 ```ts
 {
-  cardPlanMarkdown,
   requiredShell,
+  designBrief: {
+    cards: [{
+      id,
+      purpose,
+      renderableContent,
+      designIntent,
+      availableAssets,
+      actions,
+    }],
+  },
 }
 ```
 
-CardPlan JSON、action bindings 和 acceptance 不重复进入模型上下文。若首次结果校验失败，repair 只接收 required shell、当前源码、错误和缺失引用，不重复发送 Markdown。
+`renderableContent` 是唯一允许复制或转述为可见 UI 的文本来源；`designIntent` 只包含受限枚举，是 NON-RENDERABLE 元数据。CardPlan Markdown、CardPlan JSON、action bindings 和 acceptance 不重复进入模型上下文。若首次结果校验失败，repair 只接收 required shell、当前源码、错误和缺失引用，不重复发送 design brief。
 
 ---
 
@@ -231,6 +243,7 @@ compact 继续按 general / planning / recommendation / analysis 任务族选择
 - 不使用 Query、Mutation、`@Run`、`@OpenUrl`；
 - 源码不出现原始 `http(s)`；
 - `AssetImage/AssetGallery` 只能引用 manifest 中存在的 ID。
+- 不把 `designIntent` 字段、Vibe 标题、Card ID 标签或作者指导语渲染成可见文案。
 
 首次结果不合法时，系统使用同 provider 的非 Thinking 模型定向 repair 一次；第二次仍失败则结束本步骤并返回明确错误。
 
@@ -260,7 +273,7 @@ assetRequest
   → HTTPS / DNS / SSRF / redirect validation
   → AssetManifest
   → safeAssetRefs
-  → CardPlan Markdown
+  → OpenUI Design Brief.availableAssets
   → AssetImage(assetRef) / AssetGallery(assetRefs)
   → AssetRegistryProvider
   → <img src={hostValidatedUrl}>
