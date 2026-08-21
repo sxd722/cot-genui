@@ -28,7 +28,7 @@ const imageHeaders = { "content-type": "image/jpeg", "content-length": "2048" };
 
 describe("observable host-owned asset resolution", () => {
   it("reports noop-unconfigured instead of silently returning no assets", async () => {
-    const result = await resolveAssetManifest(mediaPlan, { env: {} });
+    const result = await resolveAssetManifest(mediaPlan, { env: { OPENVERSE_IMAGES: "off" } });
 
     expect(result.manifest.assets).toEqual([]);
     expect(result.diagnostics).toMatchObject({

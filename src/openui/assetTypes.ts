@@ -13,6 +13,12 @@ export interface AssetRecord {
   src: string;
   alt: string;
   sourceUrl?: string;
+  /** Which provider produced this asset. Never exposed to the model. */
+  provider?: string;
+  creator?: string;
+  creatorUrl?: string;
+  license?: string;
+  licenseUrl?: string;
 }
 
 export interface AssetManifest {
@@ -27,9 +33,20 @@ export interface SafeAssetRef {
   cardId: string;
 }
 
+/** Normalized image candidate shape shared by all providers. */
+export interface ImageCandidate {
+  imageUrl: string;
+  sourceUrl?: string;
+  alt?: string;
+  creator?: string;
+  creatorUrl?: string;
+  license?: string;
+  licenseUrl?: string;
+}
+
 export interface ImageSearchProvider {
   readonly kind?: string;
-  search(args: { query: string; limit: number }): Promise<unknown[]>;
+  search(args: { query: string; limit: number; signal?: AbortSignal }): Promise<unknown[]>;
 }
 
 export type AssetProviderState =
@@ -59,11 +76,15 @@ export interface AssetResolutionDiagnosticEvent {
   requestId?: string;
   candidateIndex?: number;
   statusCode?: number;
+  /** Which provider in the chain produced this event, when applicable. */
+  provider?: string;
 }
 
 export interface AssetResolutionDiagnostics {
   providerState: AssetProviderState;
   providerKind: string;
+  /** Provider kinds attempted, in order, without duplicates. */
+  providersTried: string[];
   requests: number;
   candidates: number;
   accepted: number;

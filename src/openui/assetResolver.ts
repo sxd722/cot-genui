@@ -7,14 +7,19 @@ import type {
   AssetRequest,
   AssetResolutionDiagnosticEvent,
   AssetResolutionResult,
+  ImageCandidate,
   ImageSearchProvider,
 } from "./assetTypes";
+import {
+  ContractImageSearchProvider,
+  ImageSearchProviderError,
+  NoopImageSearchProvider,
+  createImageSearchProviders,
+} from "./providers";
 
-interface ImageCandidate {
-  imageUrl: string;
-  sourceUrl?: string;
-  alt?: string;
-}
+// Back-compat re-exports: tests and callers import providers from the resolver module.
+export { ContractImageSearchProvider, NoopImageSearchProvider };
+export { ImageSearchProviderError };
 
 export interface ImageUrlValidationSuccess { ok: true; url: string }
 export interface ImageUrlValidationFailure {
@@ -35,79 +40,13 @@ export interface UrlValidationOptions {
 type AssetValidator = (url: string) => Promise<ImageUrlValidationResult | string | null>;
 
 export interface ResolveAssetOptions {
+  /** Single injected provider; kept for tests and explicit overrides. */
   provider?: ImageSearchProvider;
+  /** Provider chain tried in order per request until one yields an accepted asset. */
+  providers?: ImageSearchProvider[];
   validate?: AssetValidator;
   env?: Record<string, string | undefined>;
 }
-
-class ImageSearchProviderError extends Error {
-  constructor(
-    readonly stage: "provider-request" | "provider-response",
-    message: string,
-    readonly statusCode?: number,
-  ) {
-    super(message);
-    this.name = "ImageSearchProviderError";
-  }
-}
-
-export class NoopImageSearchProvider implements ImageSearchProvider {
-  readonly kind = "noop";
-  async search() { return []; }
-}
-
-/**
- * Explicit custom endpoint contract:
- * POST {query, limit} -> {schemaVersion:"1", results:[{imageUrl, sourceUrl?, alt?}]}.
- * Other response shapes are rejected instead of guessed.
- */
-export class ContractImageSearchProvider implements ImageSearchProvider {
-  readonly kind = "custom-http-v1";
-
-  constructor(
-    private readonly endpoint: string,
-    private readonly apiKey?: string,
-    private readonly options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
-  ) {}
-
-  async search(args: { query: string; limit: number }): Promise<unknown[]> {
-    const fetchImpl = this.options.fetchImpl ?? fetch;
-    let response: Response;
-    try {
-      response = await fetchImpl(this.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-        },
-        body: JSON.stringify(args),
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 5_000),
-      });
-    } catch (error) {
-      throw new ImageSearchProviderError("provider-request", error instanceof Error ? error.message : "Image provider request failed");
-    }
-    if (!response.ok) {
-      throw new ImageSearchProviderError("provider-response", `Image provider returned HTTP ${response.status}`, response.status);
-    }
-    let value: unknown;
-    try {
-      value = await response.json();
-    } catch {
-      throw new ImageSearchProviderError("provider-response", "Image provider response is not valid JSON");
-    }
-    if (!value || typeof value !== "object" || (value as Record<string, unknown>).schemaVersion !== "1") {
-      throw new ImageSearchProviderError("provider-response", "Image provider response must declare schemaVersion \"1\"");
-    }
-    const results = (value as Record<string, unknown>).results;
-    if (!Array.isArray(results)) {
-      throw new ImageSearchProviderError("provider-response", "Image provider response must contain a results array");
-    }
-    return results;
-  }
-}
-
-/** @deprecated Use ContractImageSearchProvider. */
-export const HttpImageSearchProvider = ContractImageSearchProvider;
 
 function privateIpv4(value: string) {
   const parts = value.split(".").map(Number);
@@ -256,21 +195,26 @@ export function collectAssetRequests(cardPlan: CardPlan): AssetRequest[] {
   }));
 }
 
-function diagnosticEvent(error: unknown, requestId: string): AssetResolutionDiagnosticEvent {
+function diagnosticEvent(error: unknown, requestId: string, provider?: string): AssetResolutionDiagnosticEvent {
   if (error instanceof ImageSearchProviderError) {
-    return { stage: error.stage, reason: error.message, requestId, ...(error.statusCode ? { statusCode: error.statusCode } : {}) };
+    return { stage: error.stage, reason: error.message, requestId, ...(provider ? { provider } : {}), ...(error.statusCode ? { statusCode: error.statusCode } : {}) };
   }
-  return { stage: "provider-request", reason: error instanceof Error ? error.message : String(error), requestId };
+  return { stage: "provider-request", reason: error instanceof Error ? error.message : String(error), requestId, ...(provider ? { provider } : {}) };
 }
 
 function parseCandidate(value: unknown): ImageCandidate | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   if (typeof record.imageUrl !== "string" || !record.imageUrl.trim()) return null;
+  const optional = (key: string): string | undefined => (typeof record[key] === "string" && (record[key] as string).trim() ? record[key] as string : undefined);
   return {
     imageUrl: record.imageUrl,
-    ...(typeof record.sourceUrl === "string" ? { sourceUrl: record.sourceUrl } : {}),
-    ...(typeof record.alt === "string" ? { alt: record.alt } : {}),
+    ...(optional("sourceUrl") ? { sourceUrl: optional("sourceUrl") } : {}),
+    ...(optional("alt") ? { alt: optional("alt") } : {}),
+    ...(optional("creator") ? { creator: optional("creator") } : {}),
+    ...(optional("creatorUrl") ? { creatorUrl: optional("creatorUrl") } : {}),
+    ...(optional("license") ? { license: optional("license") } : {}),
+    ...(optional("licenseUrl") ? { licenseUrl: optional("licenseUrl") } : {}),
   };
 }
 
@@ -301,6 +245,7 @@ export function disabledAssetResolution(cardPlan: CardPlan): AssetResolutionResu
     diagnostics: {
       providerState: "disabled",
       providerKind: "disabled",
+      providersTried: [],
       requests: requests.length,
       candidates: 0,
       accepted: 0,
@@ -310,77 +255,98 @@ export function disabledAssetResolution(cardPlan: CardPlan): AssetResolutionResu
   };
 }
 
+function isNoopProvider(provider: ImageSearchProvider): boolean {
+  return provider instanceof NoopImageSearchProvider || provider.kind === "noop";
+}
+
 export async function resolveAssetManifest(cardPlan: CardPlan, options: ResolveAssetOptions = {}): Promise<AssetResolutionResult> {
   const requests = collectAssetRequests(cardPlan);
   const env = options.env ?? process.env;
-  const configuredEndpoint = env.IMAGE_SEARCH_API_URL?.trim();
-  const provider = options.provider ?? (configuredEndpoint
-    ? new ContractImageSearchProvider(configuredEndpoint, env.IMAGE_SEARCH_API_KEY, { timeoutMs: Number(env.IMAGE_SEARCH_TIMEOUT_MS) || 5_000 })
-    : new NoopImageSearchProvider());
-  const noop = provider instanceof NoopImageSearchProvider || provider.kind === "noop";
+  const chain: ImageSearchProvider[] = options.providers?.length
+    ? options.providers
+    : options.provider
+      ? [options.provider]
+      : createImageSearchProviders(env);
+  const noop = chain.every(isNoopProvider);
   const validate: AssetValidator = options.validate ?? ((url) => validatePublicImageUrlDetailed(url));
   const assets: AssetRecord[] = [];
   const events: AssetResolutionDiagnosticEvent[] = [];
+  const providersTried = new Set<string>();
   let candidates = 0;
   let rejected = 0;
   let providerErrors = 0;
 
-  if (noop) events.push({ stage: "configuration", reason: "IMAGE_SEARCH_API_URL is not configured; NoopImageSearchProvider is active" });
+  if (noop) events.push({ stage: "configuration", reason: "No image provider is configured (set PEXELS_API_KEY, IMAGE_SEARCH_API_URL, or enable Openverse); NoopImageSearchProvider is active" });
 
   for (const request of requests) {
     if (noop) continue;
-    let rawCandidates: unknown[];
-    try {
-      rawCandidates = await provider.search({ query: request.query, limit: request.count });
-      if (!Array.isArray(rawCandidates)) throw new ImageSearchProviderError("provider-response", "Image provider search result must be an array");
-    } catch (error) {
-      providerErrors += 1;
-      events.push(diagnosticEvent(error, request.id));
-      continue;
-    }
-    let acceptedForRequest = 0;
-    for (const [candidateIndex, rawCandidate] of rawCandidates.entries()) {
-      candidates += 1;
-      if (candidateIndex >= request.count) {
-        rejected += 1;
-        events.push({ stage: "candidate-limit", reason: `Provider returned more than requested limit ${request.count}`, requestId: request.id, candidateIndex });
+    for (const provider of chain) {
+      if (isNoopProvider(provider)) continue;
+      const providerKind = provider.kind ?? "unknown";
+      providersTried.add(providerKind);
+      let rawCandidates: unknown[];
+      try {
+        rawCandidates = await provider.search({ query: request.query, limit: request.count });
+        if (!Array.isArray(rawCandidates)) throw new ImageSearchProviderError("provider-response", "Image provider search result must be an array");
+      } catch (error) {
+        providerErrors += 1;
+        events.push(diagnosticEvent(error, request.id, providerKind));
         continue;
       }
-      const candidate = parseCandidate(rawCandidate);
-      if (!candidate) {
-        rejected += 1;
-        events.push({ stage: "provider-response", reason: "Candidate must contain a non-empty imageUrl", requestId: request.id, candidateIndex });
-        continue;
-      }
-      const validation = await validateCandidate(validate, candidate.imageUrl);
-      if (!validation.ok) {
-        rejected += 1;
-        events.push({
-          stage: validation.stage,
-          reason: validation.reason,
-          requestId: request.id,
-          candidateIndex,
-          ...(validation.statusCode ? { statusCode: validation.statusCode } : {}),
+      let acceptedForRequest = 0;
+      for (const [candidateIndex, rawCandidate] of rawCandidates.entries()) {
+        candidates += 1;
+        if (candidateIndex >= request.count) {
+          rejected += 1;
+          events.push({ stage: "candidate-limit", reason: `Provider returned more than requested limit ${request.count}`, requestId: request.id, candidateIndex, provider: providerKind });
+          continue;
+        }
+        const candidate = parseCandidate(rawCandidate);
+        if (!candidate) {
+          rejected += 1;
+          events.push({ stage: "provider-response", reason: "Candidate must contain a non-empty imageUrl", requestId: request.id, candidateIndex, provider: providerKind });
+          continue;
+        }
+        const validation = await validateCandidate(validate, candidate.imageUrl);
+        if (!validation.ok) {
+          rejected += 1;
+          events.push({
+            stage: validation.stage,
+            reason: validation.reason,
+            requestId: request.id,
+            candidateIndex,
+            provider: providerKind,
+            ...(validation.statusCode ? { statusCode: validation.statusCode } : {}),
+          });
+          continue;
+        }
+        acceptedForRequest += 1;
+        const id = request.count === 1 ? request.id : `${request.id}_${acceptedForRequest}`;
+        assets.push({
+          id,
+          kind: "image",
+          src: validation.url,
+          alt: candidate.alt?.slice(0, 240) || request.query,
+          provider: providerKind,
+          ...(candidate.sourceUrl ? { sourceUrl: candidate.sourceUrl } : {}),
+          ...(candidate.creator ? { creator: candidate.creator } : {}),
+          ...(candidate.creatorUrl ? { creatorUrl: candidate.creatorUrl } : {}),
+          ...(candidate.license ? { license: candidate.license } : {}),
+          ...(candidate.licenseUrl ? { licenseUrl: candidate.licenseUrl } : {}),
         });
-        continue;
       }
-      acceptedForRequest += 1;
-      const id = request.count === 1 ? request.id : `${request.id}_${acceptedForRequest}`;
-      assets.push({
-        id,
-        kind: "image",
-        src: validation.url,
-        alt: candidate.alt?.slice(0, 240) || request.query,
-        ...(candidate.sourceUrl ? { sourceUrl: candidate.sourceUrl } : {}),
-      });
+      // 一个 provider 对该请求产出至少一个已接受资产即视为满足；否则回退到链上下一个。
+      if (acceptedForRequest > 0) break;
     }
   }
 
+  const triedList = [...providersTried];
   return {
     manifest: { requests, assets },
     diagnostics: {
       providerState: finalProviderState({ noop, requests: requests.length, candidates, accepted: assets.length, providerErrors }),
-      providerKind: provider.kind ?? "injected",
+      providerKind: noop ? "noop" : chain.length === 1 ? (chain[0].kind ?? "injected") : triedList.length ? triedList.join("→") : "noop",
+      providersTried: triedList,
       requests: requests.length,
       candidates,
       accepted: assets.length,

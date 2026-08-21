@@ -66,10 +66,29 @@ GLM 完整结果的 1–6 卡协议有效率为 100%，简单单目标单卡率�
 
 图片检索完全由宿主在第⑥步模型调用前完成：`assetRequest → resolveAssetManifest → image provider → HTTPS/SSRF/DNS/redirect 校验 → safeAssetRefs → OpenUI → AssetImage/AssetGallery → AssetRegistry`。OpenUI 模型只能看到已接受的 `assetRef` ID，看不到图片 URL，也不能调用图片工具；源码中的原始 `http(s)` 仍会被 validator 拒绝。
 
-在 `.env.local` 中配置：
+### 图片 Provider 链
+
+Provider 按以下顺序回退——前一个请求失败或未产出可接受资产时自动尝试下一个：
+
+| 顺序 | Provider | 配置 | 说明 |
+|---|---|---|---|
+| 1 | `custom-http-v1` | `IMAGE_SEARCH_API_URL` + `IMAGE_SEARCH_API_KEY` | 显式配置的自定义端点，契约见下 |
+| 2 | Pexels | `PEXELS_API_KEY` | 推荐的免费 provider（视觉质量优先），https://www.pexels.com/api/ |
+| 3 | Openverse | 默认开启，`OPENVERSE_IMAGES=off` 关闭 | 无需 key 的开放授权兜底 |
+| 4 | Noop | 前三者均不可用 | 只负责优雅降级，`providerState=noop-unconfigured` |
+
+在 `.env.local` 中配置（全部可选）：
 
 ```bash
 NEXT_PUBLIC_OPENUI_ASSETS=true
+
+# 推荐主 provider（免费申请 key）
+PEXELS_API_KEY=
+
+# 无 key 兜底（默认 on）
+OPENVERSE_IMAGES=on
+
+# 可选自定义端点（显式配置时优先级最高）
 IMAGE_SEARCH_API_URL=https://your-image-proxy.example/v1/search
 IMAGE_SEARCH_API_KEY=your-server-only-key
 IMAGE_SEARCH_TIMEOUT_MS=5000
@@ -99,9 +118,11 @@ IMAGE_SEARCH_TIMEOUT_MS=5000
 }
 ```
 
-请求使用 `POST application/json`；配置 key 时发送 `Authorization: Bearer <IMAGE_SEARCH_API_KEY>`。响应结构不匹配、provider 异常、零结果或 URL 校验失败都会优雅降级，并在开发模式 OpenUI 底部显示 `disabled / noop-unconfigured / configured / provider-error / zero-results / validation-rejected / ready`、计数和拒绝原因。图片 URL 必须为公网 HTTPS；校验先尝试 HEAD，在 403/405、不支持 HEAD 或缺少 Content-Type 时，以 `Range: bytes=0-1023` 做有界 GET 回退，并对每次重定向重新执行 DNS/SSRF 校验。
+请求使用 `POST application/json`；配置 key 时发送 `Authorization: Bearer <IMAGE_SEARCH_API_KEY>`。Pexels/Openverse 的署名信息（creator/license）保存在宿主 `AssetRecord` 中，不进入模型载荷。
 
-真实端点 smoke test 仅在 `IMAGE_SEARCH_API_URL` 与 `IMAGE_SEARCH_API_KEY` 都存在时运行：
+响应结构不匹配、provider 异常、零结果或 URL 校验失败都会优雅降级，并在开发模式 OpenUI 底部显示 `disabled / noop-unconfigured / configured / provider-error / zero-results / validation-rejected / ready`、计数、`providersTried` 和带 provider 标注的拒绝原因。图片 URL 必须为公网 HTTPS；校验先尝试 HEAD，在 403/405、不支持 HEAD 或缺少 Content-Type 时，以 `Range: bytes=0-1023` 做有界 GET 回退，并对每次重定向重新执行 DNS/SSRF 校验。
+
+真实端点 smoke test 仅在配置了 `PEXELS_API_KEY` 或 `IMAGE_SEARCH_API_URL` + `IMAGE_SEARCH_API_KEY` 时运行（Openverse 不作为 smoke 触发条件，保证 `npm test` 不触网）：
 
 ```bash
 npx vitest run tests/openui/asset-provider.smoke.test.ts

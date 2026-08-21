@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { resolveAssetManifest } from "../../src/openui/assetResolver";
 import { sampleCardPlan } from "./fixtures";
 
-const configured = !!process.env.IMAGE_SEARCH_API_URL && !!process.env.IMAGE_SEARCH_API_KEY;
+// Smoke 只在显式配置了真实凭据（custom endpoint 或 Pexels key）时运行；
+// Openverse 虽默认启用，但不作为 smoke 的触发条件，保证 npm test 不触网。
+const customConfigured = !!process.env.IMAGE_SEARCH_API_URL && !!process.env.IMAGE_SEARCH_API_KEY;
+const pexelsConfigured = !!process.env.PEXELS_API_KEY;
 const mediaPlan = {
   ...sampleCardPlan,
   cards: [{
@@ -14,9 +17,9 @@ const mediaPlan = {
   }],
 };
 
-describe.skipIf(!configured)("configured image-search provider smoke", () => {
+describe.skipIf(!(customConfigured || pexelsConfigured))("configured image-search provider smoke", () => {
   it("resolves at least one validated public image through the host-owned path", async () => {
-    const result = await resolveAssetManifest(mediaPlan);
+    const result = await resolveAssetManifest(mediaPlan, { env: process.env });
 
     expect(result.diagnostics.providerState).toBe("ready");
     expect(result.diagnostics).toMatchObject({ requests: 1 });
