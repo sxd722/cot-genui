@@ -1141,7 +1141,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       user: generationPayload,
     });
     let openuiCode = normalizeOpenUIOutput(String(llm.value ?? ""));
-    let validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest);
+    let validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest, generationPayload.designBrief);
     let repaired = false;
     let repairMs: number | undefined;
     if (!validation.valid) {
@@ -1164,7 +1164,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         doSample: false,
         steeringHint: input.adaptiveContext?.stepHint,
         onLog: input.onLog,
-        system: `${promptRoute.prompt}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure.`,
+        system: `${promptRoute.prompt}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure. If validation reports DESIGN_META_LEAK, remove authoring/design metadata from visible UI. Preserve renderableContent facts, user-facing labels, valid actions, and valid asset references.`,
         user: buildOpenUIRepairPayload(input.cardPlan, openuiCode, validation),
       });
       repairMs = repair.llmMs;

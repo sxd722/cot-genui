@@ -24,6 +24,8 @@ import type { ModelProfile } from "@/lib/pipelineTypes";
 import { containsRawExternalUrl, forbiddenOpenUIActions } from "@/openui/localInteraction";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import { invalidAssetRefsInTree, type AssetManifest } from "@/openui/assetTypes";
+import { detectDesignMetadataLeakage, describeDesignLeakage } from "@/openui/designLeakage";
+import type { OpenUIDesignBrief } from "@/openui/designBrief";
 
 const librarySpec = librarySpecJson as LibrarySpec;
 
@@ -93,7 +95,7 @@ function occurrences(source: string, value: string): number {
   return source.split(value).length - 1;
 }
 
-export function validateOpenUIArtifact(code: string, cardPlan: CardPlan, assetManifest?: AssetManifest): OpenUIValidationResult {
+export function validateOpenUIArtifact(code: string, cardPlan: CardPlan, assetManifest?: AssetManifest, designBrief?: OpenUIDesignBrief): OpenUIValidationResult {
   const errors: string[] = [];
   const parser = createParser(librarySpec.schema as LibraryJSONSchema);
   const parsed = parser.parse(code);
@@ -110,6 +112,8 @@ export function validateOpenUIArtifact(code: string, cardPlan: CardPlan, assetMa
   const forbiddenActions = forbiddenOpenUIActions(code);
   if (forbiddenActions.length) errors.push(`禁止使用 ${forbiddenActions.map((name) => `@${name}`).join("/")}；动作必须引用 CardPlan action`);
   if (containsRawExternalUrl(code)) errors.push("OpenUI 源码不得包含外部 URL；外部能力必须通过 actionRef");
+  const designLeaks = detectDesignMetadataLeakage({ openuiCode: code, cardPlan, designBrief });
+  if (designLeaks.length) errors.push(describeDesignLeakage(designLeaks));
   if (assetManifest && parsed.root) {
     const invalidAssetRefs = invalidAssetRefsInTree(parsed.root, assetManifest);
     if (invalidAssetRefs.length) errors.push(`使用了宿主未提供的 assetRef: ${invalidAssetRefs.join(", ")}`);
