@@ -6,6 +6,7 @@ import type { CardPlan, IRAction } from "@/dsl/modules";
 import { cotGenUILibrary } from "@/openui/library";
 import { useInferStore, type OpenUIStreamMetrics } from "@/store/useInferStore";
 import type { AssetManifest, AssetResolutionDiagnostics } from "@/openui/assetTypes";
+import type { OpenUIAssetUsageMetrics } from "@/openui/qualityMetrics";
 import { AssetRegistryProvider } from "@/openui/assetContext";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 
@@ -15,6 +16,7 @@ interface OpenUIRendererProps {
   isStreaming: boolean;
   assetManifest?: AssetManifest | null;
   assetResolutionDiagnostics?: AssetResolutionDiagnostics;
+  assetUsage?: OpenUIAssetUsageMetrics;
 }
 
 function resolveAction(cardPlan: CardPlan, message: string): { action: IRAction; cardId: string } | null {
@@ -46,7 +48,7 @@ function relativeMetric(metrics: OpenUIStreamMetrics, timestamp: number | undefi
   return `${Math.max(0, Math.round(timestamp - metrics.requestStartedAt))}ms`;
 }
 
-export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, assetResolutionDiagnostics }: OpenUIRendererProps) {
+export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, assetResolutionDiagnostics, assetUsage }: OpenUIRendererProps) {
   const [errors, setErrors] = useState<OpenUIError[]>([]);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [feedback, setFeedback] = useState<string>("");
@@ -184,9 +186,11 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, ass
           data-asset-provider-state={assetResolutionDiagnostics.providerState}
         >
           <summary className="cursor-pointer text-zinc-400">
-            媒体解析 · {assetResolutionDiagnostics.providerState} · requests {assetResolutionDiagnostics.requests} · candidates {assetResolutionDiagnostics.candidates} · accepted {assetResolutionDiagnostics.accepted} · rejected {assetResolutionDiagnostics.rejected}
+            媒体解析 · {assetResolutionDiagnostics.providerState} · requests {assetResolutionDiagnostics.requests} · synthesized {assetResolutionDiagnostics.synthesized ?? 0} · candidates {assetResolutionDiagnostics.candidates} · accepted {assetResolutionDiagnostics.accepted} · required {assetResolutionDiagnostics.required ?? 0} · used {assetResolutionDiagnostics.used ?? 0} · repaired {assetResolutionDiagnostics.repaired ? "yes" : "no"} · cards {assetUsage?.cardsUsingAssets ?? 0}/{assetUsage?.cardsWithAvailableAssets ?? 0} · rejected {assetResolutionDiagnostics.rejected}
           </summary>
           <div className="mt-1 text-zinc-500">provider: {assetResolutionDiagnostics.providerKind}</div>
+          {assetUsage?.diagnosticCode ? <div className="mt-1 text-amber-300/90">{assetUsage.diagnosticCode}</div> : null}
+          {assetUsage?.unusedAssetRefs.length ? <div className="mt-1 break-all text-zinc-500">unused: {assetUsage.unusedAssetRefs.join(", ")}</div> : null}
           {assetResolutionDiagnostics.events.length > 0 && (
             <ul className="mt-1 list-disc space-y-1 pl-4 text-amber-300/90">
               {assetResolutionDiagnostics.events.map((event, index) => (

@@ -5,6 +5,7 @@ import type { QueryClassification } from "@/lib/adaptive/types";
 import type { StepProvenance } from "@/lib/provenance";
 import type { OpenUIQualityMetrics } from "@/openui/qualityMetrics";
 import type { AssetManifest, AssetResolutionDiagnostics } from "@/openui/assetTypes";
+import type { OpenUIAssetCoverage } from "@/openui/assetCoverage";
 
 export const PIPELINE_STEPS = [
   "intent_analysis",
@@ -121,6 +122,7 @@ export interface PipelineStepOutput {
   assetResolutionDiagnostics?: AssetResolutionDiagnostics;
   openuiDiagnostics?: {
     coverage: { required: number; matched: number; missing: string[] };
+    assetCoverage: OpenUIAssetCoverage;
     parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
     repaired: boolean;
     repairTriggered: boolean;

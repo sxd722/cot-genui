@@ -41,6 +41,13 @@ describe("task-specific OpenUI composition examples", () => {
     }
   });
 
+  it("demonstrates role-appropriate media composition in relevant routed families", () => {
+    expect(examplesForTaskFamily("planning").join("\n")).toContain("MediaHero");
+    expect(examplesForTaskFamily("recommendation").join("\n")).toMatch(/RecommendationGrid\([^\n]*assetRef/);
+    expect(examplesForTaskFamily("recommendation").join("\n")).toContain("MediaHero");
+    expect(examplesForTaskFamily("analysis").join("\n")).toContain("AssetImage");
+  });
+
   it("keeps a compact prompt below the captured full-library baseline", () => {
     const prompt = generateSystemPrompt({ library: compactGeneralSpec as LibrarySpec, promptOptions: { ...cotGenUIPromptOptions, examples: examplesForTaskFamily("general") } });
     expect(prompt.length).toBeLessThan(FULL_BASELINE_PROMPT_CHARS);

@@ -29,6 +29,8 @@ import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import { analyzeOpenUIQuality } from "@/openui/qualityMetrics";
 import { normalizeAssetRequest, normalizeCardPresentation } from "@/lib/cardPlanNormalize";
 import { disabledAssetResolution, resolveAssetManifest } from "@/openui/assetResolver";
+import type { AssetResolutionDiagnostics } from "@/openui/assetTypes";
+import { ensureAssetRequests, type MediaPlanningDiagnostics } from "@/openui/mediaPlanning";
 import {
   PIPELINE_STEPS,
   type InferenceState,
@@ -48,6 +50,7 @@ interface RunInput {
   inferenceState?: InferenceState;
   userAnswers?: Record<number, string>;
   cardPlan?: CardPlan;
+  mediaPlanningDiagnostics?: Pick<MediaPlanningDiagnostics, "modelDeclared" | "synthesized">;
   profileDigest?: ProfileDigest;
   profileSourceText?: string;
   classification?: QueryClassification;
@@ -919,6 +922,7 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
       openuiCode: mockOpenUIFromCardPlan(plan),
       openuiDiagnostics: {
         coverage: { required: 0, matched: 0, missing: [] },
+        assetCoverage: { valid: true, required: 0, matched: 0, missing: [], errors: [] },
         parser: { statements: plan.cards.length * 3 + 2, unresolved: [], orphaned: [], incomplete: false },
         repaired: false,
         repairTriggered: false,
@@ -1107,7 +1111,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         ? CARD_PLAN_SYSTEM_PROMPT
         : `${CARD_PLAN_SYSTEM_PROMPT}\n兼容模式：若 webFacts 非空，必须把其中与任务有关的事实纳入现有业务卡，但仍不得为来源单独增加卡片。`,
       user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
-      schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,title,purpose,sourceSlots?,presentation?:{archetype:'standard'|'hero'|'editorial'|'comparison'|'timeline'|'data'|'action'|'media',density?:'compact'|'balanced'|'immersive',emphasis?:'content'|'data'|'media'|'action'},blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?,assetRequest?:{kind:'image'|'gallery',query:string,count:number,role:'hero'|'supporting'|'gallery'}}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
+      schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,title,purpose,sourceSlots?,presentation?:{archetype:'standard'|'hero'|'editorial'|'comparison'|'timeline'|'data'|'action'|'media',density?:'compact'|'balanced'|'immersive',emphasis?:'content'|'data'|'media'|'action'},blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?,assetRequest?:{kind:'image'|'gallery',query:string,count:number,role:'hero'|'supporting'|'gallery',aspect?:'wide'|'square'|'portrait'}}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
     });
     const raw = llm.value as { reasoning?: string; cardPlan?: unknown };
     if (!validCardPlan(raw.cardPlan)) throw new Error("模型返回的 CardPlan 结构无效");
@@ -1124,16 +1128,22 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       ? `URL allowlist 使用 provider 原始结果（${providerUrls.length} 条），模型 webFacts 中 ${webFactUrls.length} 条将按此过滤`
       : `URL allowlist 退回模型 webFacts（${webFactUrls.length} 条）——本次无 provider 原始搜索结果`);
     const validSlotNames = new Set(input.inferenceState.slots.map((slot) => slot.name));
-    const plan = sanitizeCardPlanExternalLinks(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), allowedExternalUrls);
+    const normalizedPlan = sanitizeCardPlanExternalLinks(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), allowedExternalUrls);
+    const mediaPlanning = ensureAssetRequests(normalizedPlan, input.query);
+    const plan = mediaPlanning.plan;
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
-    base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
+    base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount, mediaPlanningDiagnostics: mediaPlanning.diagnostics }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else if (input.name === "openui_generate") {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
     const promptRoute = openUISystemPromptFor({ taskFamily: classification.taskFamily, modelProfile: input.modelProfile ?? DEFAULT_PROFILES.openui_generate });
     const assetResolution = FEATURE_FLAGS.OPENUI_ASSETS
       ? await resolveAssetManifest(input.cardPlan)
       : disabledAssetResolution(input.cardPlan);
-    const { manifest: assetManifest, diagnostics: assetResolutionDiagnostics } = assetResolution;
+    const { manifest: assetManifest, diagnostics: rawAssetResolutionDiagnostics } = assetResolution;
+    let assetResolutionDiagnostics: AssetResolutionDiagnostics = {
+      ...rawAssetResolutionDiagnostics,
+      synthesized: Math.max(0, Math.min(2, Math.round(input.mediaPlanningDiagnostics?.synthesized ?? 0))),
+    };
     log(input.onLog, "response", `Host-owned media: ${assetResolutionDiagnostics.providerState} · ${assetResolutionDiagnostics.accepted}/${assetResolutionDiagnostics.candidates} accepted`, assetResolutionDiagnostics);
     const generationPayload = buildOpenUIGenerationPayload(input.cardPlan, assetManifest);
     llm = await callText({
@@ -1170,7 +1180,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         doSample: false,
         steeringHint: input.adaptiveContext?.stepHint,
         onLog: input.onLog,
-        system: `${promptRoute.prompt}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure. If validation reports DESIGN_META_LEAK, remove authoring/design metadata from visible UI. Preserve renderableContent facts, user-facing labels, valid actions, and valid asset references.`,
+        system: `${promptRoute.prompt}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure. If validation reports DESIGN_META_LEAK, remove authoring/design metadata from visible UI. If missingAssets is present, use only its allowedAssetRefs in its target cardId, satisfy requiredCount, and follow its role/aspect placement guidance. Preserve user-facing facts, labels, valid actions, and valid asset references.`,
         user: buildOpenUIRepairPayload(input.cardPlan, openuiCode, validation),
       });
       repairMs = repair.llmMs;
@@ -1185,11 +1195,18 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         timeToFirstModelStatementMs: first.timeToFirstModelStatementMs,
       };
       openuiCode = normalizeOpenUIOutput(String(repair.value ?? ""));
-      validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest);
+      validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest, generationPayload.designBrief);
       if (!validation.valid) {
         throw new Error(`OpenUI 两次均不可编译：${validation.errors.join("；")}`);
       }
     }
+    const quality = analyzeOpenUIQuality(openuiCode, input.cardPlan, assetManifest);
+    assetResolutionDiagnostics = {
+      ...assetResolutionDiagnostics,
+      required: validation.assetCoverage.required,
+      used: validation.assetCoverage.matched,
+      repaired,
+    };
     base = {
       name: input.name,
       reasoning: repaired ? "OpenUI 初稿经 parser 与 CardPlan 覆盖校验后完成一次定向修复" : "模型直接生成了可编译且完整覆盖 CardPlan 的 OpenUI Lang",
@@ -1198,23 +1215,26 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         userPayloadChars: JSON.stringify(generationPayload).length,
         statements: validation.parser.statements,
         coverage: validation.coverage,
+        assetCoverage: validation.assetCoverage,
         repaired,
         repairTriggered: repaired,
         repairMs,
-        quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
+        quality,
         promptProfile: promptRoute.promptProfile,
         assetResolutionDiagnostics,
       },
       openuiCode,
+      cardPlanMarkdown: cardPlanToVibeMarkdown(input.cardPlan, assetManifest, assetResolutionDiagnostics),
       assetManifest,
       assetResolutionDiagnostics,
       openuiDiagnostics: {
         coverage: validation.coverage,
+        assetCoverage: validation.assetCoverage,
         parser: validation.parser,
         repaired,
         repairTriggered: repaired,
         repairMs,
-        quality: analyzeOpenUIQuality(openuiCode, input.cardPlan),
+        quality,
         promptProfile: promptRoute.promptProfile,
         assetManifest,
         assetResolutionDiagnostics,

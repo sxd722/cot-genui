@@ -24,6 +24,17 @@ describe("initial OpenUI generation regression gate", () => {
     expect(six.root?.props.children).toHaveLength(6);
   });
 
+  it("requests visual evidence selectively without creating media-only cards", () => {
+    expect(CARD_PLAN_SYSTEM_PROMPT).toMatch(/地点、商品、人物、动植物、艺术作品、空间、建筑、书籍封面、菜单|地点.*商品.*人物.*动植物/);
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("用户明确要求图片");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("必须在相关 block 声明 assetRequest");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("多个独立主体优先在各自内容 block 分别声明 image");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("比较同类场景时才使用 gallery");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("不得为了图片增加卡片");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toMatch(/纯数据|抽象分析/);
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("不得生成图片 URL");
+  });
+
   it("keeps compact and expanded prompt surfaces safe and bounded", () => {
     for (const palette of compactPalettes()) {
       expect(palette.components.length).toBeGreaterThanOrEqual(16);

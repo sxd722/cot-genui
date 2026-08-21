@@ -4,6 +4,7 @@ import type { IRBlock } from "@/dsl/modules";
 const ARCHETYPES = new Set(["standard", "hero", "editorial", "comparison", "timeline", "data", "action", "media"]);
 const DENSITIES = new Set(["compact", "balanced", "immersive"]);
 const EMPHASES = new Set(["content", "data", "media", "action"]);
+const ASPECTS = new Set(["wide", "square", "portrait"]);
 
 export function normalizeCardPresentation(value: unknown): CardPresentationIntent | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -25,5 +26,11 @@ export function normalizeAssetRequest(value: unknown): IRBlock["assetRequest"] {
   if (raw.role !== "hero" && raw.role !== "supporting" && raw.role !== "gallery") return undefined;
   if (typeof raw.query !== "string" || !raw.query.trim()) return undefined;
   const count = Math.max(1, Math.min(6, Math.round(Number(raw.count) || 1)));
-  return { kind: raw.kind, query: raw.query.replace(/[\r\n]+/g, " ").trim().slice(0, 160), count, role: raw.role };
+  return {
+    kind: raw.kind,
+    query: raw.query.replace(/[\r\n]+/g, " ").trim().slice(0, 160),
+    count,
+    role: raw.role,
+    ...(typeof raw.aspect === "string" && ASPECTS.has(raw.aspect) ? { aspect: raw.aspect as NonNullable<IRBlock["assetRequest"]>["aspect"] } : {}),
+  };
 }

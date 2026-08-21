@@ -8,11 +8,18 @@ describe("semantic component selection guidance", () => {
     for (const phrase of [
       "Choose components by semantic fit, not novelty.",
       "Avoid rebuilding a semantic pattern",
-      "Do not force charts, tabs, images, forms or carousels",
+      "Do not force charts, tabs, forms or carousels",
       "vary composition when card purposes differ",
       "Use visual hierarchy to distinguish primary conclusion, evidence, comparison and next action.",
       "Card component is allowed inside GeneratedCard as a local visual surface",
     ]) expect(rules).toContain(phrase);
+    expect(rules).toContain("Every distinct requestId with non-empty availableAssets is a required CardPlan image requirement");
+    expect(rules).toContain("omission of an accepted request is invalid and will trigger one repair");
+    expect(rules).toContain("role=hero");
+    expect(rules).toContain("role=supporting");
+    expect(rules).toContain("role=gallery");
+    expect(rules).toContain("Do not repeat an assetRef");
+    expect(rules).toContain("omission of an accepted request is invalid");
     expect(rules).not.toMatch(/use at least \d+|at least \d+ component/i);
   });
 

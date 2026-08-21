@@ -10,6 +10,7 @@ import type {
   ImageCandidate,
   ImageSearchProvider,
 } from "./assetTypes";
+import { assetRequestId } from "./assetTypes";
 import {
   ContractImageSearchProvider,
   ImageSearchProviderError,
@@ -35,6 +36,8 @@ export interface UrlValidationOptions {
   lookupImpl?: (hostname: string) => Promise<Array<{ address: string; family: number }>>;
   timeoutMs?: number;
   maxRedirects?: number;
+  dnsValidationMode?: "system" | "doh-fallback";
+  dohUrl?: string;
 }
 
 type AssetValidator = (url: string) => Promise<ImageUrlValidationResult | string | null>;
@@ -60,6 +63,11 @@ function privateIpv4(value: string) {
     || (parts[0] === 198 && (parts[1] === 18 || parts[1] === 19 || (parts[1] === 51 && parts[2] === 100)))
     || (parts[0] === 203 && parts[1] === 0 && parts[2] === 113)
     || parts[0] >= 224;
+}
+
+function tunFakeIpv4(value: string): boolean {
+  const parts = value.split(".").map(Number);
+  return parts.length === 4 && parts[0] === 198 && (parts[1] === 18 || parts[1] === 19);
 }
 
 function privateIpv6(value: string) {
@@ -90,8 +98,50 @@ async function inspectHttpsUrl(value: string, options: UrlValidationOptions): Pr
   if (isPrivateHostname(url.hostname)) return { ok: false, stage: "url-policy", reason: "Candidate URL targets a private or local hostname" };
   const lookupImpl = options.lookupImpl ?? (async (hostname: string) => lookup(hostname, { all: true, verbatim: true }));
   try {
-    const addresses = await lookupImpl(url.hostname);
+    let addresses = await lookupImpl(url.hostname);
     if (!addresses.length) return { ok: false, stage: "dns", reason: "Candidate hostname resolved to no addresses" };
+    const fakeIpOnly = addresses.every((entry) => entry.family === 4 && tunFakeIpv4(entry.address));
+    if (fakeIpOnly && options.dnsValidationMode === "doh-fallback") {
+      const dohUrl = options.dohUrl ?? "https://cloudflare-dns.com/dns-query";
+      let endpoint: URL;
+      try {
+        endpoint = new URL(dohUrl);
+      } catch {
+        return { ok: false, stage: "dns", reason: "DoH fallback URL is invalid" };
+      }
+      if (endpoint.protocol !== "https:" || isPrivateHostname(endpoint.hostname)) {
+        return { ok: false, stage: "dns", reason: "DoH fallback URL must be a public HTTPS endpoint" };
+      }
+      const fetchImpl = options.fetchImpl ?? fetch;
+      const dohAddresses: Array<{ address: string; family: number }> = [];
+      try {
+        for (const [type, family] of [["A", 4], ["AAAA", 6]] as const) {
+          const queryUrl = new URL(endpoint);
+          queryUrl.searchParams.set("name", url.hostname);
+          queryUrl.searchParams.set("type", type);
+          const response = await fetchImpl(queryUrl.toString(), {
+            headers: { Accept: "application/dns-json" },
+            redirect: "error",
+            signal: AbortSignal.timeout(options.timeoutMs ?? 2_500),
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json() as { Status?: number; Answer?: Array<{ type?: number; data?: string }> };
+          if (payload.Status !== 0 && payload.Status !== undefined) throw new Error(`DNS status ${payload.Status}`);
+          for (const answer of payload.Answer ?? []) {
+            if ((answer.type === 1 || answer.type === 28) && typeof answer.data === "string" && isIP(answer.data) === family) {
+              dohAddresses.push({ address: answer.data, family });
+            }
+          }
+        }
+      } catch (error) {
+        return { ok: false, stage: "dns", reason: error instanceof Error ? `DoH fallback failed: ${error.message}` : "DoH fallback failed" };
+      }
+      if (!dohAddresses.length) return { ok: false, stage: "dns", reason: "DoH fallback resolved to no IP addresses" };
+      if (dohAddresses.some((entry) => isPrivateHostname(entry.address))) {
+        return { ok: false, stage: "dns", reason: "DoH fallback resolved to a private or reserved address" };
+      }
+      addresses = dohAddresses;
+    }
     if (addresses.some((entry) => isPrivateHostname(entry.address))) {
       return { ok: false, stage: "dns", reason: "Candidate hostname resolves to a private or reserved address" };
     }
@@ -190,8 +240,7 @@ export async function validatePublicImageUrl(value: string, options: UrlValidati
 export function collectAssetRequests(cardPlan: CardPlan): AssetRequest[] {
   return cardPlan.cards.flatMap((card) => card.blocks.flatMap((block, blockIndex) => {
     if (!block.assetRequest) return [];
-    const idBase = card.id.replace(/[^a-z0-9_-]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase() || "card";
-    return [{ id: `asset_${idBase}_${blockIndex + 1}`, cardId: card.id, ...block.assetRequest }];
+    return [{ id: assetRequestId(card.id, blockIndex), cardId: card.id, ...block.assetRequest }];
   }));
 }
 
@@ -268,7 +317,10 @@ export async function resolveAssetManifest(cardPlan: CardPlan, options: ResolveA
       ? [options.provider]
       : createImageSearchProviders(env);
   const noop = chain.every(isNoopProvider);
-  const validate: AssetValidator = options.validate ?? ((url) => validatePublicImageUrlDetailed(url));
+  const validate: AssetValidator = options.validate ?? ((url) => validatePublicImageUrlDetailed(url, {
+    dnsValidationMode: env.IMAGE_DNS_VALIDATION_MODE === "doh-fallback" ? "doh-fallback" : "system",
+    ...(env.IMAGE_DNS_DOH_URL ? { dohUrl: env.IMAGE_DNS_DOH_URL } : {}),
+  }));
   const assets: AssetRecord[] = [];
   const events: AssetResolutionDiagnosticEvent[] = [];
   const providersTried = new Set<string>();

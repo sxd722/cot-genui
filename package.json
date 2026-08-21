@@ -13,6 +13,8 @@
     "dev": "npm run generate:openui && next dev",
     "build": "npm run generate:openui && next build",
     "start": "next start",
+    "dev:image-gateway": "node --env-file-if-exists=.env.local --import tsx services/image-gateway/server.ts",
+    "demo:image-gateway:openverse": "node --env-file-if-exists=.env.local --import tsx scripts/demo-image-gateway-openverse.ts",
     "lint": "eslint",
     "smoke:openui-assets": "node --env-file-if-exists=.env.local --import tsx scripts/smoke-openui-assets.ts",
     "test": "vitest run",

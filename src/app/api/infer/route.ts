@@ -9,6 +9,7 @@ import { resolveEffectivePolicy } from "@/lib/adaptive/policy";
 import { sanitizeAdaptiveContext } from "@/lib/adaptive/validation";
 import { canCallModelProfile } from "@/lib/modelProfiles";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
+import type { MediaPlanningDiagnostics } from "@/openui/mediaPlanning";
 
 const isStepName = (value: string): value is PipelineStepName =>
   (PIPELINE_STEPS as readonly string[]).includes(value);
@@ -55,6 +56,7 @@ export async function POST(request: Request) {
     inferenceState: body.inferenceState as InferenceState | undefined,
     userAnswers: body.userAnswers as Record<number, string> | undefined,
     cardPlan: body.cardPlan as CardPlan | undefined,
+    mediaPlanningDiagnostics: body.mediaPlanningDiagnostics as Pick<MediaPlanningDiagnostics, "modelDeclared" | "synthesized"> | undefined,
     profileDigest: body.profileDigest as ProfileDigest | undefined,
     profileSourceText: body.step === "intent_analysis" && typeof body.profileSourceText === "string"
       ? body.profileSourceText.slice(0, 100_000)

@@ -26,6 +26,7 @@ import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import { invalidAssetRefsInTree, type AssetManifest } from "@/openui/assetTypes";
 import { detectDesignMetadataLeakage, describeDesignLeakage } from "@/openui/designLeakage";
 import type { OpenUIDesignBrief } from "@/openui/designBrief";
+import { validateAssetCoverage, type OpenUIAssetCoverage } from "@/openui/assetCoverage";
 
 const librarySpec = librarySpecJson as LibrarySpec;
 
@@ -58,6 +59,7 @@ export interface OpenUIValidationResult {
     matched: number;
     missing: string[];
   };
+  assetCoverage: OpenUIAssetCoverage;
   parser: {
     statements: number;
     unresolved: string[];
@@ -118,6 +120,10 @@ export function validateOpenUIArtifact(code: string, cardPlan: CardPlan, assetMa
     const invalidAssetRefs = invalidAssetRefsInTree(parsed.root, assetManifest);
     if (invalidAssetRefs.length) errors.push(`使用了宿主未提供的 assetRef: ${invalidAssetRefs.join(", ")}`);
   }
+  const assetCoverage = assetManifest && parsed.root
+    ? validateAssetCoverage(parsed.root, assetManifest)
+    : { valid: true, required: 0, matched: 0, missing: [], errors: [] };
+  errors.push(...assetCoverage.errors);
 
   const rootChildren = Array.isArray(parsed.root?.props.children) ? parsed.root.props.children : [];
   const renderedCards = rootChildren.filter(isElementNode);
@@ -151,6 +157,7 @@ export function validateOpenUIArtifact(code: string, cardPlan: CardPlan, assetMa
       matched: required - missing.length,
       missing,
     },
+    assetCoverage,
     parser: {
       statements: parsed.meta.statementCount,
       unresolved: parsed.meta.unresolved,

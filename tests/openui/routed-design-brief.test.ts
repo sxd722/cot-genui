@@ -26,6 +26,18 @@ describe("routed OpenUI design-brief capability", () => {
     expect(routed.prompt).toContain("NON-RENDERABLE");
   });
 
+  it("keeps safe image adoption guidance in every routed prompt", () => {
+    for (const taskFamily of ["general", "planning", "recommendation", "analysis"] as const) {
+      const routed = openUISystemPromptFor({ taskFamily, modelProfile: "groq_qwen_3_6_27b" });
+      expect(routed.prompt).toContain("Every distinct requestId with non-empty availableAssets is a required CardPlan image requirement");
+      expect(routed.prompt).toContain("omission of an accepted request is invalid and will trigger one repair");
+      expect(routed.prompt).toContain("role=hero");
+      expect(routed.prompt).toContain("role=supporting");
+      expect(routed.prompt).toContain("role=gallery");
+      expect(routed.prompt).toContain("Never invent an asset ID");
+    }
+  });
+
   it("does not expose URLs or enable OpenUI tools in routed prompts", () => {
     const routed = openUISystemPromptFor({ taskFamily: "recommendation", modelProfile: "groq_qwen_3_6_27b" });
 

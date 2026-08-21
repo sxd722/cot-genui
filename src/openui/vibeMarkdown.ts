@@ -1,5 +1,5 @@
 import type { CardNode, CardPlan, IRBlock } from "@/dsl/modules";
-import { safeAssetRefs, type AssetManifest } from "./assetTypes";
+import { assetRequestId, safeAssetRefs, type AssetManifest, type AssetResolutionDiagnostics } from "./assetTypes";
 import { conciseCardTitle } from "./cardTitle";
 
 function clean(value: unknown): string {
@@ -37,7 +37,7 @@ function cardVibe(card: CardNode): string {
  * YAML and positional UI instructions: facts/actions stay explicit while the
  * visual composition remains open-ended.
  */
-export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetManifest): string {
+export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetManifest, diagnostics?: AssetResolutionDiagnostics): string {
   const availableAssets = assetManifest ? safeAssetRefs(assetManifest) : [];
   const experienceDirection = plan.cards.length === 1
     ? "这是一个 **单卡体验**。让这一张卡直接、完整地解决用户意图，不要暗示还需要额外卡片。"
@@ -79,9 +79,31 @@ export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetMani
       );
     }
 
-    const cardAssets = availableAssets.filter((asset) => asset.cardId === card.id);
-    if (cardAssets.length) {
-      lines.push("", "### 可用媒体", "", ...cardAssets.map((asset) => `- \`${asset.id}\` · ${asset.kind} · ${clean(asset.alt)}`));
+    const cardRequests = card.blocks.flatMap((block, blockIndex) => block.assetRequest ? [{
+      id: assetRequestId(card.id, blockIndex),
+      ...block.assetRequest,
+    }] : []);
+    if (cardRequests.length) {
+      lines.push("", "### 图片资产", "");
+      for (const request of cardRequests) {
+        const accepted = availableAssets.filter((asset) => asset.requestId === request.id);
+        const failure = diagnostics?.events.find((event) => event.requestId === request.id);
+        const status = !assetManifest
+          ? "待宿主解析"
+          : accepted.length
+            ? `已解析为 ${accepted.map((asset) => `\`${asset.id}\``).join("、")}`
+            : failure
+              ? `未解析（${clean(failure.stage)}：${clean(failure.reason)}）`
+              : `未解析（${clean(diagnostics?.providerState ?? "无可用候选")}）`;
+        lines.push(
+          `- \`${request.id}\``,
+          `  - 主题：${clean(request.query)}`,
+          `  - 用途：${request.role}`,
+          `  - 画幅：${request.aspect ?? (request.role === "hero" ? "wide" : request.role === "gallery" ? "square" : "wide")}`,
+          `  - 数量：${request.count}`,
+          `  - 状态：${status}`,
+        );
+      }
     }
 
     lines.push("", "### 数据", "");

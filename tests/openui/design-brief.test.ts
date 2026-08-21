@@ -97,8 +97,9 @@ describe("buildOpenUIDesignBrief", () => {
     });
 
     expect(brief.cards[0].availableAssets).toEqual([
-      { id: "asset_hotel_1", kind: "image", alt: "酒店外观", cardId: "hotel" },
+      { id: "asset_hotel_1", kind: "image", alt: "酒店外观", cardId: "hotel", role: "hero", requestId: "asset_hotel_1" },
     ]);
+    expect(JSON.stringify(brief.cards[0].availableAssets)).not.toMatch(/https?:\/\/|provider|license/i);
   });
 
   it("scrubs any raw URL that leaks into fact text", () => {

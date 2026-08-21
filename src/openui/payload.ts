@@ -3,6 +3,7 @@ import type { OpenUIValidationResult } from "../lib/openui";
 import { buildOpenUIBootstrap } from "./bootstrap";
 import { buildOpenUIDesignBrief, type OpenUIDesignBrief } from "./designBrief";
 import type { AssetManifest } from "./assetTypes";
+import type { MissingAssetCoverage } from "./assetCoverage";
 
 export interface OpenUIGenerationPayload {
   requiredShell: string;
@@ -14,6 +15,7 @@ export interface OpenUIRepairPayload {
   previousOpenUI: string;
   validationErrors: string[];
   missingCoverage: string[];
+  missingAssets?: MissingAssetCoverage[];
 }
 
 /** The only business content sent to the first-pass OpenUI generation model. */
@@ -35,5 +37,6 @@ export function buildOpenUIRepairPayload(
     previousOpenUI,
     validationErrors: validation.errors,
     missingCoverage: validation.coverage.missing,
+    ...(validation.assetCoverage.missing.length ? { missingAssets: validation.assetCoverage.missing } : {}),
   };
 }

@@ -253,14 +253,20 @@ body {
 .openui-recommendation-grid span, .openui-comparison-grid header span { display: inline-block; margin-bottom: 6px; border-radius: 999px; background: #ecfeff; padding: 3px 7px; color: #0e7490; font-size: 8px; font-weight: 800; }
 .openui-recommendation-grid strong, .openui-recommendation-grid p { display: block; }
 .openui-recommendation-grid p { margin-top: 4px; color: rgb(24 24 27 / 0.58); font-size: 10px; }
+.openui-recommendation-grid__media { aspect-ratio: 16 / 10; overflow: hidden; background: #e4e4e7; }
+.openui-recommendation-grid__media img { width: 100%; height: 100%; object-fit: cover; }
 .openui-semantic-media-placeholder { display: grid; min-height: 76px; place-items: center; background: linear-gradient(135deg, #cffafe, #e4e4e7); color: rgb(14 116 144 / 0.55); font-size: 8px; font-weight: 900; letter-spacing: 0.16em; }
 .openui-comparison-grid header strong { display: block; font-size: 12px; }
 .openui-comparison-grid dl { display: grid; margin-top: 8px; gap: 6px; }
 .openui-comparison-grid dl > div { display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid rgb(24 24 27 / 0.06); padding-top: 6px; font-size: 9px; }
 .openui-comparison-grid dt { color: rgb(24 24 27 / 0.5); }
 .openui-comparison-grid dd { font-weight: 700; text-align: right; }
-.openui-media-hero { display: flex; min-height: 170px; align-items: end; background: radial-gradient(circle at 85% 5%, rgb(34 211 238 / 0.34), transparent 44%), linear-gradient(145deg, #164e63, #0e7490); padding: 22px; color: white; }
-.openui-media-hero--pending { background: radial-gradient(circle at 85% 5%, rgb(255 255 255 / 0.22), transparent 44%), linear-gradient(145deg, #164e63, #0e7490); }
+.openui-media-hero { position: relative; display: flex; min-height: 170px; overflow: hidden; align-items: end; background: radial-gradient(circle at 85% 5%, rgb(34 211 238 / 0.34), transparent 44%), linear-gradient(145deg, #164e63, #0e7490); padding: 22px; color: white; }
+.openui-media-hero__image, .openui-media-hero__overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+.openui-media-hero__image { object-fit: cover; }
+.openui-media-hero__overlay { background: linear-gradient(180deg, rgb(9 9 11 / 0.08) 10%, rgb(9 9 11 / 0.82) 100%); }
+.openui-media-hero__content { position: relative; z-index: 1; width: 100%; }
+.openui-media-hero__placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: rgb(255 255 255 / 0.58); font-size: 9px; font-weight: 700; }
 .openui-media-hero p { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
 .openui-media-hero p span { border-radius: 999px; background: rgb(255 255 255 / 0.16); padding: 3px 7px; font-size: 8px; }
 .openui-media-hero strong { display: block; max-width: 90%; font-size: 22px; line-height: 1.08; }

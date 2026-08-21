@@ -130,6 +130,7 @@ export interface IRBlock {
     query: string;
     count: number;
     role: "hero" | "supporting" | "gallery";
+    aspect?: "wide" | "square" | "portrait";
   };
 
   // —— 缺失信息（系统自动补齐）——

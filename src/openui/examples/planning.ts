@@ -1,7 +1,9 @@
 export const PLANNING_OPENUI_EXAMPLES = [
   `root = CardDeck([card_0], "auto")
 card_0 = GeneratedCard("routine", "两小时流程", [body], "timeline", "balanced")
-body = Timeline([{title:"准备",detail:"清空干扰",meta:"10 分钟"},{title:"专注",detail:"完成最重要任务",meta:"80 分钟"},{title:"收束",detail:"记录下一步",meta:"30 分钟"}])`,
+body = Stack([hero, timeline], "column", "m")
+hero = MediaHero("两小时专注流程", "先建立状态，再进入深度工作", "asset_routine_hero")
+timeline = Timeline([{title:"准备",detail:"清空干扰",meta:"10 分钟"},{title:"专注",detail:"完成最重要任务",meta:"80 分钟"},{title:"收束",detail:"记录下一步",meta:"30 分钟"}])`,
   `root = CardDeck([card_0, card_1, card_2, card_3], "deck")
 card_0 = GeneratedCard("prepare", "准备", [prepare_body], "timeline", "compact")
 card_1 = GeneratedCard("execute", "执行", [execute_body], "timeline", "balanced")

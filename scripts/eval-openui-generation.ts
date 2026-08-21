@@ -97,7 +97,10 @@ async function main() {
     mediaRequestRate: successfulRows.filter((row) => ((row.result.openuiDiagnostics as { assetManifest?: { requests: unknown[] } } | undefined)?.assetManifest?.requests.length ?? 0) > 0).length / Math.max(1, successfulRows.length),
     mediaCapableRequestRate: successfulRows.filter((row) => row.fixture.expectsMedia && ((row.result.openuiDiagnostics as { assetManifest?: { requests: unknown[] } } | undefined)?.assetManifest?.requests.length ?? 0) > 0).length
       / Math.max(1, successfulRows.filter((row) => row.fixture.expectsMedia).length),
-    mediaRenderRate: successfulRows.filter((row) => (row.result.openuiDiagnostics?.quality?.mediaComponentCount ?? 0) > 0).length / Math.max(1, successfulRows.length),
+    mediaComponentUsageRate: successfulRows.filter((row) => (row.result.openuiDiagnostics?.quality?.mediaComponentCount ?? 0) > 0).length / Math.max(1, successfulRows.length),
+    mediaRenderRate: successfulRows.filter((row) => (row.result.openuiDiagnostics?.quality?.assetUsage.resolved ?? 0) > 0).length / Math.max(1, successfulRows.length),
+    acceptedAssetAdoptionRate: successfulRows.filter((row) => (row.result.openuiDiagnostics?.quality?.assetUsage.resolved ?? 0) > 0).length
+      / Math.max(1, successfulRows.filter((row) => (row.result.openuiDiagnostics?.quality?.assetUsage.available ?? 0) > 0).length),
     repairRate: successfulRows.filter((row) => row.result.openuiDiagnostics?.repairTriggered).length / Math.max(1, successfulRows.length),
     invalidAfterRepairRate: rows.filter((row) => /两次|after repair|repair.*invalid/i.test(row.error ?? "")).length / Math.max(1, rows.length),
     promptProfiles: [...new Set(successfulRows.map((row) => row.result.openuiDiagnostics?.promptProfile).filter(Boolean))],

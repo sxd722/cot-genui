@@ -5,6 +5,7 @@ export interface AssetRequest {
   query: string;
   count: number;
   role: "hero" | "supporting" | "gallery";
+  aspect?: "wide" | "square" | "portrait";
 }
 
 export interface AssetRecord {
@@ -31,6 +32,9 @@ export interface SafeAssetRef {
   kind: "image";
   alt: string;
   cardId: string;
+  role: AssetRequest["role"];
+  requestId: string;
+  aspect?: AssetRequest["aspect"];
 }
 
 /** Normalized image candidate shape shared by all providers. */
@@ -90,6 +94,14 @@ export interface AssetResolutionDiagnostics {
   accepted: number;
   rejected: number;
   events: AssetResolutionDiagnosticEvent[];
+  /** Host-synthesized requests carried from Step 5 when known. */
+  synthesized?: number;
+  /** Accepted CardPlan media requirements in Step 6. */
+  required?: number;
+  /** Requirements satisfied by the final OpenUI artifact. */
+  used?: number;
+  /** Whether the single targeted repair path was used. */
+  repaired?: boolean;
 }
 
 export interface AssetResolutionResult {
@@ -100,12 +112,24 @@ export interface AssetResolutionResult {
 export function safeAssetRefs(manifest: AssetManifest): SafeAssetRef[] {
   return manifest.assets.flatMap((asset) => {
     const request = [...manifest.requests].sort((a, b) => b.id.length - a.id.length).find((item) => asset.id === item.id || asset.id.startsWith(`${item.id}_`));
-    return request ? [{ id: asset.id, kind: "image" as const, alt: asset.alt, cardId: request.cardId }] : [];
+    return request ? [{
+      id: asset.id,
+      kind: "image" as const,
+      alt: asset.alt,
+      cardId: request.cardId,
+      role: request.role,
+      requestId: request.id,
+      ...(request.aspect ? { aspect: request.aspect } : {}),
+    }] : [];
   });
 }
 
-export function invalidAssetRefsInTree(root: unknown, manifest: AssetManifest): string[] {
-  const allowed = new Set(manifest.assets.map((asset) => asset.id));
+export function assetRequestId(cardId: string, blockIndex: number): string {
+  const idBase = cardId.replace(/[^a-z0-9_-]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase() || "card";
+  return `asset_${idBase}_${blockIndex + 1}`;
+}
+
+export function assetRefsInTree(root: unknown): string[] {
   const found = new Set<string>();
   const seen = new Set<object>();
   const visit = (value: unknown) => {
@@ -124,5 +148,10 @@ export function invalidAssetRefsInTree(root: unknown, manifest: AssetManifest): 
     Object.values(record).forEach(visit);
   };
   visit(root);
-  return [...found].filter((ref) => !allowed.has(ref)).sort();
+  return [...found].sort();
+}
+
+export function invalidAssetRefsInTree(root: unknown, manifest: AssetManifest): string[] {
+  const allowed = new Set(manifest.assets.map((asset) => asset.id));
+  return assetRefsInTree(root).filter((ref) => !allowed.has(ref));
 }

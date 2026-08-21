@@ -68,6 +68,10 @@ GLM 完整结果的 1–6 卡协议有效率为 100%，简单单目标单卡率�
 
 图片检索完全由宿主在第⑥步模型调用前完成：`assetRequest → resolveAssetManifest → image provider → HTTPS/SSRF/DNS/redirect 校验 → safeAssetRefs → OpenUI → AssetImage/AssetGallery → AssetRegistry`。OpenUI 模型只能看到已接受的 `assetRef` ID，看不到图片 URL，也不能调用图片工具；源码中的原始 `http(s)` 仍会被 validator 拒绝。
 
+图片现在由 CardPlan 显式驱动：第⑤步会为媒体内容声明 query、role 与 `wide | square | portrait` 画幅；若模型在明确图片意图或 media 卡中漏写请求，宿主会在不增加 LLM 调用、不改变卡片数量的前提下最多确定性补两个请求。CardPlan Markdown 会显示请求 ID、主题、用途、画幅、数量和解析状态。第⑥步只强制采用真正通过宿主校验的请求；无候选或 provider 失败时仍降级为纯内容卡片。
+
+在 Clash/Mihomo 等 TUN fake-IP 环境中，系统 DNS 可能把公网图片域名映射到 `198.18.0.0/15`。默认 `IMAGE_DNS_VALIDATION_MODE=system` 会继续安全拒绝；可显式改为 `doh-fallback` 并配置 `IMAGE_DNS_DOH_URL=https://cloudflare-dns.com/dns-query`。DoH 只在系统结果全部属于该 fake-IP 网段时启用，DoH 返回私网地址、IP 字面量、非 HTTPS URL 与不安全重定向仍会被拒绝。
+
 ### 图片 Provider 链
 
 Provider 按以下顺序回退——前一个请求失败或未产出可接受资产时自动尝试下一个：
@@ -123,6 +127,44 @@ IMAGE_SEARCH_TIMEOUT_MS=5000
 请求使用 `POST application/json`；配置 key 时发送 `Authorization: Bearer <IMAGE_SEARCH_API_KEY>`。Pexels/Openverse 的署名信息（creator/license）保存在宿主 `AssetRecord` 中，不进入模型载荷。
 
 响应结构不匹配、provider 异常、零结果或 URL 校验失败都会优雅降级，并在开发模式 OpenUI 底部显示 `disabled / noop-unconfigured / configured / provider-error / zero-results / validation-rejected / ready`、计数、`providersTried` 和带 provider 标注的拒绝原因。图片 URL 必须为公网 HTTPS；校验先尝试 HEAD，在 403/405、不支持 HEAD 或缺少 Content-Type 时，以 `Range: bytes=0-1023` 做有界 GET 回退，并对每次重定向重新执行 DNS/SSRF 校验。
+
+### 本地 Image Gateway
+
+仓库内置 `services/image-gateway`，用于在本地统一 Openverse、Pexels 和可选 SearXNG，并输出上面的 `custom-http-v1` 契约。Gateway 只执行搜索和字段归一化；返回的候选图片仍由 `resolveAssetManifest` 完成公网 HTTPS、SSRF、DNS、redirect 和 MIME 校验，不会绕过宿主安全边界。
+
+最小 Openverse 配置：
+
+```bash
+# Image Gateway 自身
+IMAGE_GATEWAY_HOST=127.0.0.1
+IMAGE_GATEWAY_PORT=4010
+IMAGE_GATEWAY_API_KEY=local-dev
+IMAGE_GATEWAY_PROVIDERS=openverse
+
+# cot-genui 通过 custom-http-v1 调用本地 Gateway
+IMAGE_SEARCH_API_URL=http://127.0.0.1:4010/v1/search
+IMAGE_SEARCH_API_KEY=local-dev
+```
+
+启动 Gateway：
+
+```bash
+npm run dev:image-gateway
+```
+
+另一个终端启动主应用。也可以不启动常驻服务，直接运行一次真实 Openverse 端到端演示；脚本会启动临时 Gateway，并将候选继续送入现有 URL validator：
+
+```bash
+npm run demo:image-gateway:openverse
+# 自定义语义查询
+npm run demo:image-gateway:openverse -- "京都秋日寺庙建筑"
+```
+
+演示脚本仅在 URL 安全校验阶段使用独立公共 DNS 查询，以兼容把公网域名映射到 `198.18.0.0/15` 的本地 VPN/TUN fake-IP 环境；主应用默认 DNS/SSRF 策略保持不变。如果主应用诊断显示公共图片域名被解析到该网段，应优先在本地代理中把图片 CDN 加入 fake-IP bypass，而不是放宽应用的私网地址规则。
+
+Gateway 提供 `GET /health`，返回当前实际启用的 provider。`IMAGE_GATEWAY_PROVIDERS` 控制回退顺序，支持 `pexels,openverse,searxng`；Pexels 需要 `IMAGE_GATEWAY_PEXELS_API_KEY`（未设置时兼容读取 `PEXELS_API_KEY`），SearXNG 需要 `IMAGE_GATEWAY_SEARXNG_URL`，并且实例必须启用 JSON 输出格式。Gateway 在响应头中返回 `X-Image-Provider` 和 `X-Image-Provider-Attempts`，便于定位 provider error、zero results 和最终命中来源。
+
+注意：本地 Gateway 返回的 `imageUrl` 应当仍是公网 HTTPS 图片。不要把 `http://localhost/...` 图片地址作为搜索候选返回；它会被 SSRF 校验正确拒绝。若需要把图片下载并从本机稳定展示，应在 URL 校验之后增加独立的宿主物化/缓存层。
 
 真实端点 smoke test 仅在配置了 `PEXELS_API_KEY` 或 `IMAGE_SEARCH_API_URL` + `IMAGE_SEARCH_API_KEY` 时运行（Openverse 不作为 smoke 触发条件，保证 `npm test` 不触网）：
 

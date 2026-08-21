@@ -1,6 +1,6 @@
 import type { CardPlan, CardPresentationIntent } from "@/dsl/modules";
 import { openUIActionRef } from "./actionRefs";
-import { safeAssetRefs, type AssetManifest } from "./assetTypes";
+import { safeAssetRefs, type AssetManifest, type SafeAssetRef } from "./assetTypes";
 
 /**
  * Step-6 model protocol. This is the machine-facing replacement for
@@ -35,7 +35,7 @@ export interface OpenUICardDesignBrief {
     emphasis?: CardPresentationIntent["emphasis"];
   };
 
-  availableAssets: Array<{ id: string; kind: "image"; alt: string; cardId: string }>;
+  availableAssets: SafeAssetRef[];
 
   actions: Array<{
     actionRef: string;

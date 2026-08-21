@@ -716,7 +716,11 @@ export const useInferStore = create<InferState>((set, get) => ({
         ...(name !== "intent_analysis" && name !== "openui_generate" ? { inferenceState: state.inferenceState } : {}),
         ...(name === "context_enrichment" || name === "card_plan_generate" ? { userAnswers: state.answers } : {}),
         ...(name === "context_enrichment" && freshPrefetch ? { prefetchedSearch: freshPrefetch } : {}),
-        ...(name === "openui_generate" ? { cardPlan: state.cardPlan, stream: true } : {}),
+        ...(name === "openui_generate" ? {
+          cardPlan: state.cardPlan,
+          mediaPlanningDiagnostics: state.steps.card_plan_generate.outputs.mediaPlanningDiagnostics,
+          stream: true,
+        } : {}),
       };
       const cacheKey = `${name}|${state.stepModels[name]}|${stableStringify(requestBody)}`;
       const cached = options.useCache ? cacheGet(cacheKey) : undefined;

@@ -152,6 +152,43 @@ describe("observable host-owned asset resolution", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("uses opt-in DoH when system DNS returns a TUN fake-IP", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith("https://cloudflare-dns.com/dns-query")) {
+        return Response.json({ Status: 0, Answer: [{ type: 1, data: "93.184.216.34" }] });
+      }
+      return new Response(null, { status: 200, headers: imageHeaders });
+    });
+    const result = await validatePublicImageUrlDetailed("https://cdn.example/photo.jpg", {
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      lookupImpl: async () => [{ address: "198.18.0.18", family: 4 }],
+      dnsValidationMode: "doh-fallback",
+      dohUrl: "https://cloudflare-dns.com/dns-query",
+    });
+
+    expect(result).toMatchObject({ ok: true, url: "https://cdn.example/photo.jpg" });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("name=cdn.example"), expect.objectContaining({ headers: { Accept: "application/dns-json" } }));
+  });
+
+  it("keeps fake-IP rejection in system mode and rejects private DoH answers", async () => {
+    const systemFetch = vi.fn() as unknown as typeof fetch;
+    const system = await validatePublicImageUrlDetailed("https://cdn.example/photo.jpg", {
+      fetchImpl: systemFetch,
+      lookupImpl: async () => [{ address: "198.18.0.18", family: 4 }],
+      dnsValidationMode: "system",
+    });
+    expect(system).toMatchObject({ ok: false, stage: "dns" });
+    expect(systemFetch).not.toHaveBeenCalled();
+
+    const dohFetch = vi.fn(async () => Response.json({ Status: 0, Answer: [{ type: 1, data: "127.0.0.1" }] }));
+    const doh = await validatePublicImageUrlDetailed("https://cdn.example/photo.jpg", {
+      fetchImpl: dohFetch as unknown as typeof fetch,
+      lookupImpl: async () => [{ address: "198.18.0.18", family: 4 }],
+      dnsValidationMode: "doh-fallback",
+    });
+    expect(doh).toMatchObject({ ok: false, stage: "dns", reason: expect.stringContaining("DoH") });
+  });
+
   it("revalidates redirect destinations and rejects redirects to private hosts", async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://127.0.0.1/private.jpg" } }));
     const result = await validatePublicImageUrlDetailed("https://cdn.example/photo.jpg", { fetchImpl: fetchMock as unknown as typeof fetch, lookupImpl: publicLookup });
