@@ -11,16 +11,16 @@ import type { CardPlan, IRAction } from "@/dsl/modules";
 import { openUIActionRef } from "@/openui/actionRefs";
 import { buildOpenUIBootstrap } from "@/openui/bootstrap";
 import librarySpecJson from "@/openui/generated/system-prompt.spec.json";
-import compactGeneralSpecJson from "@/openui/generated/compact-general.spec.json";
-import compactPlanningSpecJson from "@/openui/generated/compact-planning.spec.json";
-import compactRecommendationSpecJson from "@/openui/generated/compact-recommendation.spec.json";
-import compactAnalysisSpecJson from "@/openui/generated/compact-analysis.spec.json";
-import expandedSpecJson from "@/openui/generated/expanded.spec.json";
-import { cotGenUIPromptOptions, createCotGenUIPromptOptions, examplesForTaskFamily } from "@/openui/promptOptions";
+
+
+
+
+
+import { cotGenUIPromptOptions } from "@/openui/promptOptions";
 import type { TaskFamily } from "@/lib/adaptive/types";
 import type { ModelProfile } from "@/lib/pipelineTypes";
-import { openUIPromptTierFor } from "@/openui/modelCapabilities";
-import { paletteNameForTaskFamily } from "@/openui/palettes";
+
+
 import { containsRawExternalUrl, forbiddenOpenUIActions } from "@/openui/localInteraction";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import { invalidAssetRefsInTree, type AssetManifest } from "@/openui/assetTypes";
@@ -32,27 +32,11 @@ export const OPENUI_SYSTEM_PROMPT = generateSystemPrompt({
   promptOptions: cotGenUIPromptOptions,
 });
 
-const promptSpecs = {
-  general: compactGeneralSpecJson as LibrarySpec,
-  planning: compactPlanningSpecJson as LibrarySpec,
-  recommendation: compactRecommendationSpecJson as LibrarySpec,
-  analysis: compactAnalysisSpecJson as LibrarySpec,
-  expanded: expandedSpecJson as LibrarySpec,
-};
+import { openUISystemPromptFor as routedPromptFor } from "@/openui/promptRouting";
 
+/** 保持原语义：路由时读取 OPENUI_LOCAL_BINDINGS feature flag。 */
 export function openUISystemPromptFor(args: { taskFamily: TaskFamily; modelProfile: ModelProfile }): { prompt: string; promptProfile: string } {
-  const tier = openUIPromptTierFor(args.modelProfile);
-  const familyPalette = paletteNameForTaskFamily(args.taskFamily);
-  const palette = tier === "expanded" ? "expanded" : familyPalette;
-  const familyExamples = examplesForTaskFamily(args.taskFamily);
-  const examples = tier === "expanded" && familyPalette !== "general"
-    ? [...familyExamples, examplesForTaskFamily("general")[0]]
-    : familyExamples;
-  const promptOptions = createCotGenUIPromptOptions({ localBindings: FEATURE_FLAGS.OPENUI_LOCAL_BINDINGS, examples });
-  return {
-    prompt: generateSystemPrompt({ library: promptSpecs[palette], promptOptions }),
-    promptProfile: `${tier}:${tier === "expanded" ? "general" : palette}`,
-  };
+  return routedPromptFor({ ...args, localBindings: FEATURE_FLAGS.OPENUI_LOCAL_BINDINGS });
 }
 
 export interface OpenUIActionBinding {

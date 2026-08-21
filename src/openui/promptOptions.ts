@@ -20,8 +20,12 @@ export function examplesForTaskFamily(family: TaskFamily): string[] {
 }
 
 const BASE_RULES = [
-    "Treat cardPlanMarkdown as a creative brief, not as a wireframe. Preserve its facts, intent, card order, and action meaning, while freely choosing hierarchy, density, components, and visual rhythm.",
-    "The supplied CardPlan may contain one card or several cards. Never infer a preferred card count from the example; requiredShell is the sole source of truth for the chosen count.",
+    "designBrief.renderableContent is the only textual source that may be copied or paraphrased into visible UI.",
+    "designBrief.designIntent is NON-RENDERABLE metadata. Use it only to choose component composition, hierarchy, density, emphasis, and card treatment.",
+    "Never render field names, Card IDs, schema labels, archetype/density/emphasis values, internal guidance, or authoring instructions as user-facing text.",
+    "availableAssets are capabilities, not visible copy. Use only listed assetRef IDs.",
+    "actions are capabilities. Render their labels through valid actions, never display actionRef as text.",
+    "The supplied brief may contain one card or several cards. Never infer a preferred card count from the example; requiredShell is the sole source of truth for the chosen count.",
     "CardDeck is the only root and GeneratedCard is the only peer card boundary.",
     "Copy every line from requiredShell exactly as the first statements of the complete program, then define every referenced body statement.",
     "Do not add, remove, merge, reorder, or nest GeneratedCard components.",
@@ -33,7 +37,7 @@ const BASE_RULES = [
     "For multi-card results, vary composition when card purposes differ; repeated card purpose may legitimately share a composition.",
     "Use visual hierarchy to distinguish primary conclusion, evidence, comparison and next action.",
     "The Card component is allowed inside GeneratedCard as a local visual surface, inset panel or grouped region; it must never become another peer card boundary.",
-    "Use AssetImage or AssetGallery only with assetRef IDs explicitly listed under 可用媒体. Never invent an asset ID and never place an image URL in OpenUI source.",
+    "Use AssetImage or AssetGallery only with assetRef IDs explicitly listed in designBrief.availableAssets. Never invent an asset ID and never place an image URL in OpenUI source.",
     "Use each supplied actionRef exactly once through Button + @ToAssistant or an approved HostAction component. Never show an actionRef as visible text.",
     "Never use Query, Mutation, @Run, @OpenUrl, or invented URLs. The host owns all side effects.",
     "Return only a complete OpenUI Lang program. Do not return Markdown fences, JSON, HTML, comments, or prose.",
@@ -45,7 +49,7 @@ export function createCotGenUIPromptOptions(args: { localBindings: boolean; exam
     bindings: args.localBindings,
     editMode: false,
     inlineMode: false,
-    preamble: "You are a generative visual designer. Turn CardPlan Markdown into a polished OpenUI card experience.",
+    preamble: "You are a generative visual designer. Turn the supplied design brief (renderableContent + designIntent) into a polished OpenUI card experience. renderableContent is the only text that may become visible UI; designIntent is NON-RENDERABLE metadata for composition decisions only.",
     additionalRules: [
       ...BASE_RULES,
       ...(args.localBindings ? [
