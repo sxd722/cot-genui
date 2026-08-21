@@ -10,7 +10,7 @@ function useHostAction(actionRef: string) {
 
 export const HostActionChip = defineComponent({
   name: "HostActionChip",
-  description: "Compact host-side action affordance. actionRef must be copied exactly from CardPlan Markdown.",
+  description: "Compact host-side action affordance. actionRef must be copied exactly from designBrief.actions.",
   props: z.object({ label: z.string(), actionRef: z.string() }),
   component: function HostActionChipRenderer({ props }) {
     const isStreaming = useIsStreaming();

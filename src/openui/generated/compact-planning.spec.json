@@ -67,7 +67,7 @@
     },
     "HostActionChip": {
       "signature": "HostActionChip(label: string, actionRef: string)",
-      "description": "Compact host-side action affordance. actionRef must be copied exactly from CardPlan Markdown."
+      "description": "Compact host-side action affordance. actionRef must be copied exactly from designBrief.actions."
     },
     "HostActionItem": {
       "signature": "HostActionItem(label: string, actionRef: string, description?: string)",
@@ -1842,7 +1842,7 @@
           "actionRef"
         ],
         "additionalProperties": false,
-        "description": "Compact host-side action affordance. actionRef must be copied exactly from CardPlan Markdown."
+        "description": "Compact host-side action affordance. actionRef must be copied exactly from designBrief.actions."
       },
       "HostActionItem": {
         "type": "object",
