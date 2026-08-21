@@ -8,6 +8,7 @@ import {
   type LibrarySpec,
 } from "@openuidev/lang-core";
 import type { CardPlan, IRAction } from "@/dsl/modules";
+import { openUIActionRef } from "@/openui/actionRefs";
 import { buildOpenUIBootstrap } from "@/openui/bootstrap";
 import librarySpecJson from "@/openui/generated/system-prompt.spec.json";
 import compactGeneralSpecJson from "@/openui/generated/compact-general.spec.json";
@@ -79,9 +80,7 @@ export interface OpenUIValidationResult {
   };
 }
 
-export function openUIActionRef(cardId: string, actionId: string): string {
-  return `plan:${encodeURIComponent(cardId)}:${encodeURIComponent(actionId)}`;
-}
+export { openUIActionRef };
 
 export function buildOpenUIActionBindings(cardPlan: CardPlan): OpenUIActionBinding[] {
   return cardPlan.cards.flatMap((card) => (card.actions ?? []).map((action) => ({

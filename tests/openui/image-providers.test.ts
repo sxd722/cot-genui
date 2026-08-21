@@ -42,7 +42,7 @@ describe("Pexels adapter", () => {
       creator: "Ada Lovelace",
       creatorUrl: "https://www.pexels.com/@ada/",
     }]);
-    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(String(url)).toBe("https://api.pexels.com/v1/search?query=hotel+exterior&per_page=2");
     expect(init.method).toBe("GET");
     expect(init.headers).toEqual({ Authorization: "test-key" });
@@ -94,7 +94,7 @@ describe("Openverse adapter", () => {
       license: "by 2.0",
       licenseUrl: undefined,
     }]);
-    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(String(url)).toBe("https://api.openverse.org/v1/images/?q=kyoto+street&page_size=1");
     expect(init.method).toBe("GET");
   });

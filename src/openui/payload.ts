@@ -1,12 +1,12 @@
 import type { CardPlan } from "../dsl/modules";
 import type { OpenUIValidationResult } from "../lib/openui";
 import { buildOpenUIBootstrap } from "./bootstrap";
-import { cardPlanToVibeMarkdown } from "./vibeMarkdown";
+import { buildOpenUIDesignBrief, type OpenUIDesignBrief } from "./designBrief";
 import type { AssetManifest } from "./assetTypes";
 
 export interface OpenUIGenerationPayload {
-  cardPlanMarkdown: string;
   requiredShell: string;
+  designBrief: OpenUIDesignBrief;
 }
 
 export interface OpenUIRepairPayload {
@@ -19,12 +19,12 @@ export interface OpenUIRepairPayload {
 /** The only business content sent to the first-pass OpenUI generation model. */
 export function buildOpenUIGenerationPayload(cardPlan: CardPlan, assetManifest?: AssetManifest): OpenUIGenerationPayload {
   return {
-    cardPlanMarkdown: cardPlanToVibeMarkdown(cardPlan, assetManifest),
     requiredShell: buildOpenUIBootstrap(cardPlan).code,
+    designBrief: buildOpenUIDesignBrief(cardPlan, assetManifest),
   };
 }
 
-/** Repair receives only structural constraints and diagnostics, never the Markdown brief again. */
+/** Repair receives only structural constraints and diagnostics, never the brief again. */
 export function buildOpenUIRepairPayload(
   cardPlan: CardPlan,
   previousOpenUI: string,
