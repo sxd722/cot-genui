@@ -69,6 +69,7 @@ describe("OpenUI model payload", () => {
       errors: ["missing body"],
       coverage: { required: 4, matched: 3, missing: ["plan:compare:details"] },
       assetCoverage: { valid: true, required: 0, matched: 0, missing: [], errors: [] },
+      layoutCoverage: { mode: "free", valid: true, checkedCards: 0, withinBudget: 0, violations: [] },
       parser: { statements: 3, unresolved: ["card_1_body"], orphaned: [], incomplete: false },
     });
 

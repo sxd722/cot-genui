@@ -86,6 +86,7 @@ action = Button("查看详情", Action([@ToAssistant("plan:hotel:details")]))`;
       errors: [leakageError],
       coverage: { required: 2, matched: 2, missing: [] },
       assetCoverage: { valid: true, required: 0, matched: 0, missing: [], errors: [] },
+      layoutCoverage: { mode: "free" as const, valid: true, checkedCards: 0, withinBudget: 0, violations: [] },
       parser: { statements: 4, unresolved: [], orphaned: [], incomplete: false },
     };
     const payload = buildOpenUIRepairPayload(plan, code, validation);

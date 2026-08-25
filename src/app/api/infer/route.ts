@@ -10,6 +10,8 @@ import { sanitizeAdaptiveContext } from "@/lib/adaptive/validation";
 import { canCallModelProfile } from "@/lib/modelProfiles";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import type { MediaPlanningDiagnostics } from "@/openui/mediaPlanning";
+import { normalizeCardLayoutMode } from "@/openui/layoutPolicy";
+import { sanitizeSkillStepContext } from "@/lib/skillReuse";
 
 const isStepName = (value: string): value is PipelineStepName =>
   (PIPELINE_STEPS as readonly string[]).includes(value);
@@ -48,6 +50,9 @@ export async function POST(request: Request) {
   const adaptiveContext = FEATURE_FLAGS.ADAPTIVE_STEERING
     ? (sanitizeAdaptiveContext(body.adaptiveContext, classification) ?? fallbackAdaptiveContext)
     : undefined;
+  const skillContext = FEATURE_FLAGS.SKILL_REUSE
+    ? sanitizeSkillStepContext(body.skillContext, body.step as PipelineStepName)
+    : undefined;
   const isMock = !canCallModelProfile(modelProfile);
   const run = (onStreamDelta?: (delta: string, cumulativeChars: number) => void) => runPipelineStep({
     name: body.step as PipelineStepName,
@@ -56,6 +61,7 @@ export async function POST(request: Request) {
     inferenceState: body.inferenceState as InferenceState | undefined,
     userAnswers: body.userAnswers as Record<number, string> | undefined,
     cardPlan: body.cardPlan as CardPlan | undefined,
+    layoutMode: normalizeCardLayoutMode(body.layoutMode),
     mediaPlanningDiagnostics: body.mediaPlanningDiagnostics as Pick<MediaPlanningDiagnostics, "modelDeclared" | "synthesized"> | undefined,
     profileDigest: body.profileDigest as ProfileDigest | undefined,
     profileSourceText: body.step === "intent_analysis" && typeof body.profileSourceText === "string"
@@ -63,6 +69,7 @@ export async function POST(request: Request) {
       : undefined,
     classification,
     adaptiveContext,
+    skillContext,
     modelProfile,
     prefetchedSearch: body.prefetchedSearch as { searchQuery: string; webSearchRaw: unknown } | undefined,
     stream: body.step === "openui_generate" && body.stream === true,

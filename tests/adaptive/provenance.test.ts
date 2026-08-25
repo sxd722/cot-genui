@@ -6,7 +6,7 @@ describe("compact provenance", () => {
   it("records hashes and safe structural metadata without code duplication", () => {
     const provenance = summarizeStepForProvenance("openui_generate", {
       classification: classifyQuery("推荐一个方案"),
-      output: { openuiDiagnostics: { coverage: { required: 2, matched: 2, missing: [] }, assetCoverage: { valid: true, required: 0, matched: 0, missing: [], errors: [] }, parser: { statements: 4, unresolved: [], orphaned: [], incomplete: false }, repaired: false, repairTriggered: false } },
+      output: { openuiDiagnostics: { coverage: { required: 2, matched: 2, missing: [] }, assetCoverage: { valid: true, required: 0, matched: 0, missing: [], errors: [] }, layoutCoverage: { mode: "free", valid: true, checkedCards: 0, withinBudget: 0, violations: [] }, parser: { statements: 4, unresolved: [], orphaned: [], incomplete: false }, repaired: false, repairTriggered: false } },
       cardPlan: { skillName: "测试", reasoning: "测试", cards: [{ id: "answer", purpose: "答案", blocks: [] }] },
       openuiCode: "root = CardDeck([])",
     });

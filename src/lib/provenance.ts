@@ -16,6 +16,14 @@ export interface StepProvenance {
   cardIds?: string[];
   cardPlanMarkdown?: string;
   codeHash?: string;
+  skillId?: string;
+  skillVersionId?: string;
+  skillRecipeFingerprint?: string;
+  skillMatchScore?: number;
+  skillExecutionMode?: "normal" | "guided" | "deterministic" | "fallback";
+  skillCallsAvoided?: number;
+  skillMatcherVersion?: string;
+  skillMatcherModel?: string;
 }
 
 export function stableTextHash(value: string): string {
@@ -49,6 +57,14 @@ export function summarizeStepForProvenance(step: PipelineStepName, args: {
     policyId: args.adaptiveContext?.policyId,
     policyVersion: args.adaptiveContext?.policyVersion,
     steeringHint: args.adaptiveContext?.stepHint,
+    skillId: args.output.skillReuse?.skillId,
+    skillVersionId: args.output.skillReuse?.skillVersionId,
+    skillRecipeFingerprint: args.output.skillReuse?.recipeFingerprint,
+    skillMatchScore: args.output.skillReuse?.score,
+    skillExecutionMode: args.output.skillReuse?.executionMode,
+    skillCallsAvoided: args.output.skillReuse?.callsAvoided,
+    skillMatcherVersion: args.output.skillReuse?.matcherVersion,
+    skillMatcherModel: args.output.skillReuse?.matcherModel,
   };
   if (step === "intent_analysis") return {
     ...base,

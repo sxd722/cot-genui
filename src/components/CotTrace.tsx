@@ -95,6 +95,14 @@ function StepRow({ name }: { name: StepName }) {
           <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`} title={s.status === "done" ? `步骤端到端耗时 ${(s.durationMs / 1000).toFixed(1)}s` : undefined}>
             {badgeText}
           </span>
+          {s.skillReuse && (
+            <span
+              className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${s.skillReuse.executionMode === "deterministic" ? "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300" : s.skillReuse.executionMode === "fallback" ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300" : "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300"}`}
+              title={`Skill ${s.skillReuse.skillVersionId} · ${s.skillReuse.matcherModel ?? s.skillReuse.matcherVersion} · score ${s.skillReuse.score.toFixed(2)}${s.skillReuse.fallbackReason ? ` · ${s.skillReuse.fallbackReason}` : ""}`}
+            >
+              Skill · {s.skillReuse.executionMode === "deterministic" ? `跳过 ${s.skillReuse.callsAvoided} 次` : s.skillReuse.executionMode === "fallback" ? "回退" : "引导"}
+            </span>
+          )}
           {/* 统计标签：token · 费用 */}
           {s.tokens && s.tokens.total > 0 && (
             <span className="shrink-0 text-[10px] text-zinc-400" title={`prompt ${s.tokens.prompt}（缓存 ${s.tokens.cached}）+ completion ${s.tokens.completion}`}>

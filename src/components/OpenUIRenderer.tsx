@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Renderer, type ActionEvent, type OpenUIError, type ParseResult } from "@openuidev/react-lang";
 import type { CardPlan, IRAction } from "@/dsl/modules";
 import { cotGenUILibrary } from "@/openui/library";
@@ -9,6 +9,9 @@ import type { AssetManifest, AssetResolutionDiagnostics } from "@/openui/assetTy
 import type { OpenUIAssetUsageMetrics } from "@/openui/qualityMetrics";
 import { AssetRegistryProvider } from "@/openui/assetContext";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
+import { cardPlanLayoutMode } from "@/openui/layoutPolicy";
+import type { OpenUILayoutCoverage } from "@/openui/layoutValidation";
+import type { OpenUILayoutMeasurement } from "@/openui/layoutRuntime";
 
 interface OpenUIRendererProps {
   code: string;
@@ -17,6 +20,7 @@ interface OpenUIRendererProps {
   assetManifest?: AssetManifest | null;
   assetResolutionDiagnostics?: AssetResolutionDiagnostics;
   assetUsage?: OpenUIAssetUsageMetrics;
+  layoutCoverage?: OpenUILayoutCoverage;
 }
 
 function resolveAction(cardPlan: CardPlan, message: string): { action: IRAction; cardId: string } | null {
@@ -48,21 +52,28 @@ function relativeMetric(metrics: OpenUIStreamMetrics, timestamp: number | undefi
   return `${Math.max(0, Math.round(timestamp - metrics.requestStartedAt))}ms`;
 }
 
-export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, assetResolutionDiagnostics, assetUsage }: OpenUIRendererProps) {
+export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, assetResolutionDiagnostics, assetUsage, layoutCoverage }: OpenUIRendererProps) {
   const [errors, setErrors] = useState<OpenUIError[]>([]);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [feedback, setFeedback] = useState<string>("");
+  const [layoutOverflowCardIds, setLayoutOverflowCardIds] = useState<string[]>([]);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const layoutMode = cardPlanLayoutMode(cardPlan);
   const streamMetrics = useInferStore((state) => state.openuiStreamMetrics);
   const markFirstRenderableRoot = useInferStore((state) => state.markOpenUIFirstRenderableRoot);
+  const layoutStabilization = useInferStore((state) => state.layoutStabilization);
+  const reportOpenUILayout = useInferStore((state) => state.reportOpenUILayout);
   const isTargeting = useInferStore((state) => state.isTargeting);
   const setCardEditTarget = useInferStore((state) => state.setCardEditTarget);
 
   const status = useMemo(() => {
     if (isStreaming) return `流式生成 · ${code.length} 字`;
+    if (layoutMode === "fixed-600x300" && (layoutStabilization.status === "repairing" || layoutStabilization.status === "measuring" || layoutStabilization.status === "idle")) return "正在优化布局";
+    if (layoutMode === "fixed-600x300" && layoutStabilization.status === "error") return "固定布局未稳定";
     if (errors.length) return `${errors.length} 个渲染诊断`;
     if (!parseResult?.root) return "等待可渲染 root";
     return `${parseResult.meta.statementCount} 条语句 · 可编译`;
-  }, [code.length, errors.length, isStreaming, parseResult]);
+  }, [code.length, errors.length, isStreaming, layoutMode, layoutStabilization.status, parseResult]);
 
   const timingStatus = useMemo(() => [
     `bootstrap ${relativeMetric(streamMetrics, streamMetrics.bootstrapReceivedAt)}`,
@@ -128,6 +139,78 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, ass
     });
   }, [isTargeting, setCardEditTarget]);
 
+  useEffect(() => {
+    if (layoutMode !== "fixed-600x300" || isStreaming || !hostRef.current) {
+      setLayoutOverflowCardIds([]);
+      return;
+    }
+    const host = hostRef.current;
+    let frame = 0;
+    let disposed = false;
+    let measurementSequence = 0;
+    const waitForStableResources = async () => {
+      try { await document.fonts?.ready; } catch { /* browser font readiness is best effort */ }
+      const images = [...host.querySelectorAll<HTMLImageElement>("img")];
+      const decoded = Promise.all(images.map(async (image) => {
+        if (image.complete) {
+          try { await image.decode(); } catch { /* broken images retain their bounded placeholder area */ }
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          image.addEventListener("load", () => resolve(), { once: true });
+          image.addEventListener("error", () => resolve(), { once: true });
+        });
+      }));
+      await Promise.race([decoded, new Promise<void>((resolve) => window.setTimeout(resolve, 1500))]);
+    };
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      const sequence = ++measurementSequence;
+      frame = requestAnimationFrame(() => void (async () => {
+        await waitForStableResources();
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        if (disposed || sequence !== measurementSequence) return;
+        const measurements: OpenUILayoutMeasurement[] = [...host.querySelectorAll<HTMLElement>("[data-card-id]")].map((card) => {
+          const body = card.querySelector<HTMLElement>(".openui-generated-card__body");
+          const header = card.querySelector<HTMLElement>(".openui-generated-card__header");
+          const overflow = card.scrollHeight > card.clientHeight + 2
+            || card.scrollWidth > card.clientWidth + 2
+            || !!header && (header.scrollHeight > header.clientHeight + 2 || header.scrollWidth > header.clientWidth + 2)
+            || !!body && (body.scrollHeight > body.clientHeight + 2 || body.scrollWidth > body.clientWidth + 2);
+          card.dataset.layoutOverflow = overflow ? "true" : "false";
+          const componentTypes = [...card.querySelectorAll<HTMLElement>("[class*='openui-fixed-']")]
+            .flatMap((element) => [...element.classList].filter((name) => name.startsWith("openui-fixed-")))
+            .filter((name, index, all) => all.indexOf(name) === index);
+          return {
+            cardId: card.dataset.cardId ?? "unknown",
+            clientWidth: card.clientWidth,
+            clientHeight: card.clientHeight,
+            scrollWidth: card.scrollWidth,
+            scrollHeight: card.scrollHeight,
+            bodyClientHeight: body?.clientHeight ?? 0,
+            bodyScrollHeight: body?.scrollHeight ?? 0,
+            headerClientHeight: header?.clientHeight ?? 0,
+            headerScrollHeight: header?.scrollHeight ?? 0,
+            overflowing: overflow,
+            componentTypes,
+          };
+        });
+        const overflowing = measurements.filter((measurement) => measurement.overflowing).map((measurement) => measurement.cardId);
+        setLayoutOverflowCardIds((current) => current.join("\u0000") === overflowing.join("\u0000") ? current : overflowing);
+        if (measurements.length) void reportOpenUILayout(measurements);
+      })());
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    host.querySelectorAll<HTMLElement>("[data-card-id]").forEach((card) => observer.observe(card));
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [code, isStreaming, layoutMode, parseResult, reportOpenUILayout]);
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-black">
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-800 px-3 py-2 text-[10px] text-zinc-400">
@@ -147,7 +230,10 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, ass
         </button>
       )}
       <div
-        className={`openui-host flex-1 overflow-y-auto bg-zinc-50 p-3 text-zinc-900 ${isTargeting ? "openui-host--targeting" : ""}`}
+        ref={hostRef}
+        className={`openui-host flex-1 bg-zinc-50 p-3 text-zinc-900 ${layoutMode === "fixed-600x300" ? "overflow-y-hidden" : "overflow-y-auto"} ${isTargeting ? "openui-host--targeting" : ""}`}
+        data-card-layout={layoutMode}
+        data-layout-stabilization={layoutMode === "fixed-600x300" ? layoutStabilization.status : undefined}
         data-local-bindings={FEATURE_FLAGS.OPENUI_LOCAL_BINDINGS ? "enabled" : "disabled"}
         onPointerDownCapture={captureTarget}
       >
@@ -200,6 +286,24 @@ export function OpenUIRenderer({ code, cardPlan, isStreaming, assetManifest, ass
               ))}
             </ul>
           )}
+        </details>
+      )}
+      {process.env.NODE_ENV === "development" && !isStreaming && layoutMode === "fixed-600x300" && (
+        <details className="shrink-0 border-t border-zinc-800 bg-zinc-950 px-3 py-2 text-[10px] text-zinc-300">
+          <summary className={layoutOverflowCardIds.length ? "cursor-pointer text-amber-300" : "cursor-pointer text-emerald-400"}>
+            固定布局 · 600×300 · planned {layoutStabilization.planned.withinBudget}/{layoutStabilization.planned.total || cardPlan.cards.length} · static {layoutCoverage?.withinBudget ?? layoutStabilization.static.withinBudget}/{layoutCoverage?.checkedCards ?? (layoutStabilization.static.total || cardPlan.cards.length)} · measured {layoutStabilization.measured.withinBudget}/{layoutStabilization.measured.total || cardPlan.cards.length} · repaired {layoutStabilization.repairSucceeded ? 1 : 0} · fallback {layoutStabilization.fallbackCardIds.length}
+          </summary>
+          {layoutCoverage?.violations.length ? (
+            <ul className="mt-1 list-disc space-y-1 pl-4 text-amber-300/90">
+              {layoutCoverage.violations.map((violation) => <li key={violation.cardId}>{violation.cardId}: {violation.reasons.join("；")}</li>)}
+            </ul>
+          ) : null}
+          {layoutOverflowCardIds.length ? (
+            <div className="mt-1 break-all text-amber-300/90">正在处理溢出：{layoutOverflowCardIds.join(", ")}</div>
+          ) : (
+            <div className="mt-1 text-zinc-500">所有卡片均通过浏览器实际尺寸检查；未追加模型调用。</div>
+          )}
+          {layoutStabilization.error ? <div className="mt-1 text-amber-300/90">{layoutStabilization.error}</div> : null}
         </details>
       )}
     </div>

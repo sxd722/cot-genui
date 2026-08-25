@@ -12,16 +12,16 @@ import { buildOpenUIBootstrap } from "../../src/openui/bootstrap";
 import { containsRawExternalUrl, forbiddenOpenUIActions } from "../../src/openui/localInteraction";
 import { compactPalettes, EXPANDED_PALETTE } from "../../src/openui/palettes";
 import { examplesForTaskFamily } from "../../src/openui/promptOptions";
-import { sampleCardPlan, sixCardPlan } from "./fixtures";
+import { manyCardPlan, sampleCardPlan } from "./fixtures";
 
 describe("initial OpenUI generation regression gate", () => {
-  it("preserves flexible 1-6 topology and exact bootstrap card counts", () => {
-    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("可生成1-6张");
+  it("preserves unbounded topology and exact bootstrap card counts", () => {
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("不设固定上限");
     const parser = createParser((runtimeSpec as LibrarySpec).schema as LibraryJSONSchema);
     const one = parser.parse(buildOpenUIBootstrap({ ...sampleCardPlan, cards: [sampleCardPlan.cards[0]] }).code);
-    const six = parser.parse(buildOpenUIBootstrap(sixCardPlan).code);
+    const many = parser.parse(buildOpenUIBootstrap(manyCardPlan(12)).code);
     expect(one.root?.props.children).toHaveLength(1);
-    expect(six.root?.props.children).toHaveLength(6);
+    expect(many.root?.props.children).toHaveLength(12);
   });
 
   it("requests visual evidence selectively without creating media-only cards", () => {

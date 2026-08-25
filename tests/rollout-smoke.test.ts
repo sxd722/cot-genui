@@ -67,7 +67,7 @@ describe("adaptive rollout smoke matrix", () => {
   });
 
   it("allows every adaptive/edit/reflection flag to fail closed independently", () => {
-    const env = Object.fromEntries(["ADAPTIVE_QUERY_CLASSIFICATION", "ADAPTIVE_STEERING", "PROFILE_VIEW_V2", "WEB_FACTS_OPTIONAL", "OPENUI_CARD_EDIT", "OPENUI_ASSETS", "OPENUI_LOCAL_BINDINGS", "REFLECTION_ATTRIBUTION", "REFLECTION_GRADIENT", "GUARDED_AUTO_LEARN"].map((name) => [`NEXT_PUBLIC_${name}`, "false"]));
+    const env = Object.fromEntries(["ADAPTIVE_QUERY_CLASSIFICATION", "ADAPTIVE_STEERING", "PROFILE_VIEW_V2", "WEB_FACTS_OPTIONAL", "OPENUI_CARD_EDIT", "OPENUI_ASSETS", "OPENUI_LOCAL_BINDINGS", "REFLECTION_ATTRIBUTION", "REFLECTION_GRADIENT", "GUARDED_AUTO_LEARN", "SKILL_REUSE"].map((name) => [`NEXT_PUBLIC_${name}`, "false"]));
     expect(Object.values(resolveFeatureFlags(env)).every((value) => value === false)).toBe(true);
   });
 });

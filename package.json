@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "generate:openui": "npm run generate:openui:runtime && npm run generate:openui:compact-general && npm run generate:openui:compact-planning && npm run generate:openui:compact-recommendation && npm run generate:openui:compact-analysis && npm run generate:openui:expanded",
+    "generate:openui": "npm run generate:openui:runtime && npm run generate:openui:fixed && npm run generate:openui:compact-general && npm run generate:openui:compact-planning && npm run generate:openui:compact-recommendation && npm run generate:openui:compact-analysis && npm run generate:openui:expanded",
     "generate:openui:runtime": "openui generate src/openui/library.tsx --spec --out src/openui/generated/system-prompt.spec.json --export library --no-interactive --agent-name codex",
+    "generate:openui:fixed": "openui generate src/openui/libraries/fixed.tsx --spec --out src/openui/generated/fixed.spec.json --export library --no-interactive --agent-name codex",
     "generate:openui:compact-general": "openui generate src/openui/libraries/compact-general.tsx --spec --out src/openui/generated/compact-general.spec.json --export library --no-interactive --agent-name codex",
     "generate:openui:compact-planning": "openui generate src/openui/libraries/compact-planning.tsx --spec --out src/openui/generated/compact-planning.spec.json --export library --no-interactive --agent-name codex",
     "generate:openui:compact-recommendation": "openui generate src/openui/libraries/compact-recommendation.tsx --spec --out src/openui/generated/compact-recommendation.spec.json --export library --no-interactive --agent-name codex",
@@ -18,6 +19,7 @@
     "lint": "eslint",
     "smoke:openui-assets": "node --env-file-if-exists=.env.local --import tsx scripts/smoke-openui-assets.ts",
     "test": "vitest run",
+    "test:layout": "playwright test",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -26,6 +28,7 @@
     "@openuidev/react-lang": "0.2.11",
     "@openuidev/react-ui": "0.13.6",
     "ai": "6.0.116",
+    "dexie": "^4.4.5",
     "lit": "^3.3.3",
     "next": "16.3.0",
     "openai": "^7.4.0",
@@ -38,12 +41,14 @@
   },
   "devDependencies": {
     "@openuidev/cli": "^0.2.8",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "fake-indexeddb": "^6.2.5",
     "tailwindcss": "^4",
     "tsx": "^4.20.5",
     "typescript": "^5",

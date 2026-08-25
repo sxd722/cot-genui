@@ -1,7 +1,8 @@
-import type { QueryClassification, AdaptivePolicyEntry, TaskFamily } from "@/lib/adaptive/types";
-import type { CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
-import type { ModelProfile, PipelineStepName, TokenUsage } from "@/lib/pipelineTypes";
-import type { StepProvenance } from "@/lib/provenance";
+import type { QueryClassification, AdaptivePolicyEntry, TaskFamily } from "../lib/adaptive/types";
+import type { CardEditTarget, OpenUIEditVersion } from "../lib/cardEditingTypes";
+import type { ModelProfile, PipelineStepName, TokenUsage } from "../lib/pipelineTypes";
+import type { StepProvenance } from "../lib/provenance";
+import type { ArtifactRecord, ExternalSkillMatcherModel, SkillCandidateRecord, SkillRecord, SkillStepReuseSettings, SkillVersionRecord, StepRunRecord, TaskRunRecord } from "./workflowTypes";
 
 export type EpisodeStatus = "generating" | "editing" | "accepted" | "abandoned";
 
@@ -81,13 +82,26 @@ export interface LearningSettings {
   id: "settings";
   enabled: boolean;
   learningMode: "manual" | "guarded-auto";
+  /** v2：旧 IndexedDB 记录缺失时由 storage 默认补为 true。 */
+  skillReuseEnabled?: boolean;
+  skillStepReuse?: SkillStepReuseSettings;
+  skillMatchModel?: ExternalSkillMatcherModel;
   updatedAt: string;
 }
 
 export interface LearningExport {
+  schemaVersion: 2;
   exportedAt: string;
   episodes: GenerationEpisode[];
   policies: AdaptivePolicyEntry[];
   observations: PolicyObservation[];
   settings: LearningSettings;
+  workflow: {
+    taskRuns: TaskRunRecord[];
+    stepRuns: StepRunRecord[];
+    artifacts: ArtifactRecord[];
+    skills: SkillRecord[];
+    skillVersions: SkillVersionRecord[];
+    skillCandidates: SkillCandidateRecord[];
+  };
 }

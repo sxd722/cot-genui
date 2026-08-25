@@ -16,6 +16,7 @@ export interface OpenUIRepairPayload {
   validationErrors: string[];
   missingCoverage: string[];
   missingAssets?: MissingAssetCoverage[];
+  layoutViolations?: OpenUIValidationResult["layoutCoverage"]["violations"];
 }
 
 /** The only business content sent to the first-pass OpenUI generation model. */
@@ -38,5 +39,6 @@ export function buildOpenUIRepairPayload(
     validationErrors: validation.errors,
     missingCoverage: validation.coverage.missing,
     ...(validation.assetCoverage.missing.length ? { missingAssets: validation.assetCoverage.missing } : {}),
+    ...(validation.layoutCoverage.violations.length ? { layoutViolations: validation.layoutCoverage.violations } : {}),
   };
 }

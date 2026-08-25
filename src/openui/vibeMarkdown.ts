@@ -1,6 +1,7 @@
 import type { CardNode, CardPlan, IRBlock } from "@/dsl/modules";
 import { assetRequestId, safeAssetRefs, type AssetManifest, type AssetResolutionDiagnostics } from "./assetTypes";
 import { conciseCardTitle } from "./cardTitle";
+import { cardPlanLayoutMode, estimateCardLayout, FIXED_CARD_HEIGHT, FIXED_CARD_WIDTH } from "./layoutPolicy";
 
 function clean(value: unknown): string {
   return String(value ?? "")
@@ -39,6 +40,7 @@ function cardVibe(card: CardNode): string {
  */
 export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetManifest, diagnostics?: AssetResolutionDiagnostics): string {
   const availableAssets = assetManifest ? safeAssetRefs(assetManifest) : [];
+  const layoutMode = cardPlanLayoutMode(plan);
   const experienceDirection = plan.cards.length === 1
     ? "这是一个 **单卡体验**。让这一张卡直接、完整地解决用户意图，不要暗示还需要额外卡片。"
     : `这是一个由 **${plan.cards.length} 张平级卡片**组成的体验。每张卡应有独立目标和清晰焦点，但整组仍像同一套作品。`;
@@ -50,10 +52,19 @@ export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetMani
     "## 整体创作方向",
     "",
     experienceDirection,
-    "内容事实和动作语义必须保留；版式、层级、图表、标签、折叠、对比方式与留白可以自由发挥。",
+    ...(layoutMode === "fixed-600x300" ? [
+      `布局：固定卡片 **${FIXED_CARD_WIDTH}×${FIXED_CARD_HEIGHT}px**。`,
+      "约束：卡内不可滚动，内容必须在可视范围内完成表达；空间不足时按独立主题拆卡。",
+      "内容事实和动作语义必须保留；在固定画布内，版式、层级、图表、标签、对比方式与留白可以自由发挥。",
+    ] : [
+      "布局：自由生成。",
+      "内容事实和动作语义必须保留；版式、层级、图表、标签、折叠、对比方式与留白可以自由发挥。",
+    ]),
   ];
 
   plan.cards.forEach((card, cardIndex) => {
+    const layoutBudget = layoutMode === "fixed-600x300" ? estimateCardLayout(card) : null;
+    const splitSourceId = card.id.includes("__") ? card.id.slice(0, card.id.indexOf("__")) : null;
     lines.push(
       "",
       `## 卡片 ${cardIndex + 1} / ${plan.cards.length} · ${conciseCardTitle(card.title ?? card.purpose, `卡片 ${cardIndex + 1}`)}`,
@@ -63,6 +74,10 @@ export function cardPlanToVibeMarkdown(plan: CardPlan, assetManifest?: AssetMani
       "### 感觉与节奏",
       "",
       `主题：${clean(card.purpose)}`,
+      ...(layoutBudget ? [
+        `空间预算：预计 ${layoutBudget.estimatedHeightPx}px / 可用 ${layoutBudget.maxHeightPx}px；内容槽位 ${layoutBudget.contentSlots}。`,
+        ...(splitSourceId ? [`拆卡来源：\`${clean(splitSourceId)}\`。`] : []),
+      ] : []),
       "",
       cardVibe(card),
       "可以重新组织信息层级，不必机械复刻下面的 block 顺序；优先让用户先看到结论，再看到依据和下一步。",

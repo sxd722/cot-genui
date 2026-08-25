@@ -4,8 +4,11 @@ import type { ProfileDigest, RetrievalRequest } from "@/lib/profileTypes";
 import type { QueryClassification } from "@/lib/adaptive/types";
 import type { StepProvenance } from "@/lib/provenance";
 import type { OpenUIQualityMetrics } from "@/openui/qualityMetrics";
+import type { OpenUILayoutCoverage } from "@/openui/layoutValidation";
 import type { AssetManifest, AssetResolutionDiagnostics } from "@/openui/assetTypes";
 import type { OpenUIAssetCoverage } from "@/openui/assetCoverage";
+import type { OpenUILayoutStabilizationDiagnostics } from "@/openui/layoutRuntime";
+import type { SkillExecutionMode } from "@/learning/workflowTypes";
 
 export const PIPELINE_STEPS = [
   "intent_analysis",
@@ -123,6 +126,8 @@ export interface PipelineStepOutput {
   openuiDiagnostics?: {
     coverage: { required: number; matched: number; missing: string[] };
     assetCoverage: OpenUIAssetCoverage;
+    layoutCoverage: OpenUILayoutCoverage;
+    layout?: OpenUILayoutStabilizationDiagnostics;
     parser: { statements: number; unresolved: string[]; orphaned: string[]; incomplete: boolean };
     repaired: boolean;
     repairTriggered: boolean;
@@ -143,6 +148,18 @@ export interface PipelineStepOutput {
     policyVersion: number;
     classification: QueryClassification;
     steeringHint: string;
+  };
+  skillReuse?: {
+    skillId: string;
+    skillVersionId: string;
+    recipeFingerprint: string;
+    score: number;
+    activation: "auto" | "suggested" | "manual";
+    matcherVersion: "local-lexical-v1" | "external-llm-v1";
+    matcherModel?: "groq_qwen_3_6_27b" | "glm_5_2";
+    executionMode: SkillExecutionMode;
+    callsAvoided: number;
+    fallbackReason?: string;
   };
   provenance?: StepProvenance;
 }

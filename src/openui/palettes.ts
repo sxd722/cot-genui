@@ -25,6 +25,14 @@ export const EXPANDED_PALETTE: OpenUIPalette = {
   ],
 };
 
+export const FIXED_LAYOUT_PALETTE: OpenUIPalette = {
+  name: "expanded",
+  components: [
+    "CardDeck", "GeneratedCard", "FixedCardContent", "FixedFacts", "FixedList", "FixedMetrics",
+    "FixedTimeline", "FixedComparison", "FixedMedia", "FixedGallery", "FixedActions", "HostActionChip", "HostActionItem",
+  ],
+};
+
 export function compactPalettes(): OpenUIPalette[] {
   return Object.values(COMPACT_PALETTES);
 }

@@ -1,0 +1,20 @@
+export const FIXED_OPENUI_EXAMPLES = [
+  `root = CardDeck([card_0], "deck")
+card_0 = GeneratedCard("answer", "核心结论", [card_0_body], "standard", "compact")
+card_0_body = FixedCardContent([answer_facts])
+answer_facts = FixedFacts(["先给出最重要的结论。", "补充一项直接影响决策的依据。"])`,
+  `root = CardDeck([card_0, card_1], "deck")
+card_0 = GeneratedCard("overview", "行程概览", [card_0_body], "timeline", "compact")
+card_1 = GeneratedCard("next", "下一步", [card_1_body], "action", "compact")
+card_0_body = FixedCardContent([overview_timeline])
+overview_timeline = FixedTimeline([{title:"准备",detail:"确认范围"},{title:"执行",detail:"推进重点"},{title:"收束",detail:"记录结果"}])
+card_1_body = FixedCardContent([next_facts], next_actions)
+next_facts = FixedFacts(["确认后由宿主执行对应动作。"])
+next_actions = FixedActions([confirm_action])
+confirm_action = HostActionChip("确认", "plan:next:confirm")`,
+  `root = CardDeck([card_0], "deck")
+card_0 = GeneratedCard("destination", "目的地", [card_0_body], "media", "compact")
+card_0_body = FixedCardContent([destination_media, destination_facts])
+destination_media = FixedMedia("适合当前需求的地点", "环境与体验一目了然", "asset_destination_1", ["推荐"])
+destination_facts = FixedFacts(["保留最影响选择的一项补充信息。"])`,
+];

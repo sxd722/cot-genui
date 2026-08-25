@@ -24,6 +24,18 @@ export interface CardPlan {
   reasoning: string;
   /** 卡片序列（顺序即默认展示顺序） */
   cards: CardNode[];
+  /** 宿主拥有的卡片画布策略；模型输出会被服务端选择覆盖。 */
+  layoutPolicy?: CardLayoutPolicy;
+}
+
+export type CardLayoutMode = "fixed-600x300" | "free";
+
+export interface CardLayoutPolicy {
+  mode: CardLayoutMode;
+  cardWidth?: 600;
+  cardHeight?: 300;
+  overflow?: "forbid";
+  innerScroll?: false;
 }
 
 /* ------------------------------------------------------------------ */

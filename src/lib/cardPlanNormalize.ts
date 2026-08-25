@@ -1,10 +1,22 @@
-import type { CardPresentationIntent } from "@/dsl/modules";
-import type { IRBlock } from "@/dsl/modules";
+import type { CardNode, CardPresentationIntent, IRBlock } from "@/dsl/modules";
 
 const ARCHETYPES = new Set(["standard", "hero", "editorial", "comparison", "timeline", "data", "action", "media"]);
 const DENSITIES = new Set(["compact", "balanced", "immersive"]);
 const EMPHASES = new Set(["content", "data", "media", "action"]);
 const ASPECTS = new Set(["wide", "square", "portrait"]);
+
+/** Normalize stable, unique IDs without imposing a card-count ceiling. */
+export function normalizeCardSequence(cards: CardNode[]): CardNode[] {
+  const usedCardIds = new Set<string>();
+  return cards.map((card, cardIndex) => {
+    const baseId = typeof card.id === "string" && card.id.trim() ? card.id.trim() : `card_${cardIndex + 1}`;
+    let id = baseId;
+    let suffix = 2;
+    while (usedCardIds.has(id)) id = `${baseId}_${suffix++}`;
+    usedCardIds.add(id);
+    return { ...card, id };
+  });
+}
 
 export function normalizeCardPresentation(value: unknown): CardPresentationIntent | undefined {
   if (!value || typeof value !== "object") return undefined;

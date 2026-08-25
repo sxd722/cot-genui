@@ -172,6 +172,7 @@ describe("CardPlan-driven media requirements", () => {
       errors: missing.errors,
       coverage: { required: 2, matched: 2, missing: [] },
       assetCoverage: missing,
+      layoutCoverage: { mode: "free", valid: true, checkedCards: 0, withinBudget: 0, violations: [] },
       parser: { statements: 5, unresolved: [], orphaned: [], incomplete: false },
     })).toHaveProperty("missingAssets.0.requestId", "asset_detail_1");
 

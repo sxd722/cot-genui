@@ -50,6 +50,19 @@ export const sixCardPlan: CardPlan = {
   ],
 };
 
+export function manyCardPlan(count = 12): CardPlan {
+  return {
+    skillName: `${count}卡长任务`,
+    reasoning: "每张卡对应一个不可合并的独立阶段。",
+    cards: Array.from({ length: count }, (_, index) => ({
+      id: `stage_${index + 1}`,
+      title: `阶段${index + 1}`,
+      purpose: `完成第 ${index + 1} 个独立阶段`,
+      blocks: [{ kind: "summary" as const, text: `第 ${index + 1} 阶段的必要内容` }],
+    })),
+  };
+}
+
 export function simpleTwoCardPlan(): CardPlan {
   return {
     skillName: "双卡比较",

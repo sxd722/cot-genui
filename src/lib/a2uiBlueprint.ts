@@ -239,7 +239,7 @@ export function compileA2UIResponse(value: unknown, cardPlan?: CardPlan): A2UICo
     if (coverageErrors.length) throw new Error(`CardPlan 覆盖不完整：${coverageErrors.join("；")}`);
   }
 
-  surfaces.slice(0, 6).forEach((surface, surfaceIndex) => {
+  surfaces.forEach((surface, surfaceIndex) => {
     const surfaceId = safeId(surface.sourceCardId ?? surface.id ?? surface.surfaceId, `card_${surfaceIndex + 1}`);
     const components: Record<string, unknown>[] = [];
     const usedIds = new Set<string>();

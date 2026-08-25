@@ -3,18 +3,20 @@ import { CARD_PLAN_SYSTEM_PROMPT } from "../../src/lib/cardPlanPrompt";
 import { cotGenUIPromptOptions } from "../../src/openui/promptOptions";
 import { cardPlanToVibeMarkdown } from "../../src/openui/vibeMarkdown";
 import { sampleCardPlan } from "./fixtures";
+import { normalizeCardSequence } from "../../src/lib/cardPlanNormalize";
 
 describe("adaptive CardPlan card count", () => {
-  it("lets the CardPlan model choose one to six cards and favors one card for simple intents", () => {
-    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("可生成1-6张");
+  it("sets no hard card-count ceiling while favoring one card for simple intents", () => {
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("不设固定上限");
+    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("1张或任意多张");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("简单意图优先用1张完整卡解决");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("卡片数量没有默认值");
-    expect(CARD_PLAN_SYSTEM_PROMPT).toContain("1、2、3、4、5、6");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("概览 / 详情 / 下一步");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("先判断需要几个独立用户界面");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("1张也不是默认值");
     expect(CARD_PLAN_SYSTEM_PROMPT).toContain("增加认知负担");
     expect(CARD_PLAN_SYSTEM_PROMPT).not.toContain("生成3-6张卡");
+    expect(CARD_PLAN_SYSTEM_PROMPT).not.toContain("可生成1-6张");
   });
 
   it("does not bias OpenUI toward multiple cards after CardPlan chose the count", () => {
@@ -26,6 +28,18 @@ describe("adaptive CardPlan card count", () => {
     expect(examples.some((value) => value.includes("CardDeck([card_0],"))).toBe(true);
     expect(examples.some((value) => value.includes("CardDeck([card_0, card_1],"))).toBe(true);
     expect(examples.some((value) => value.includes("card_3"))).toBe(true);
+  });
+
+  it("normalizes every card without truncating long plans", () => {
+    const cards = Array.from({ length: 20 }, (_, index) => ({
+      id: index === 19 ? "card_1" : `card_${index + 1}`,
+      purpose: `独立任务 ${index + 1}`,
+      blocks: [],
+    }));
+    const normalized = normalizeCardSequence(cards);
+
+    expect(normalized).toHaveLength(20);
+    expect(new Set(normalized.map((card) => card.id)).size).toBe(20);
   });
 
   it("describes a one-card plan as a complete single-card experience", () => {

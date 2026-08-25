@@ -7,14 +7,16 @@ import { MODEL_PROFILE_LABELS } from "@/lib/pipelineTypes";
 
 export function EditComposer() {
   const state = useInferStore();
-  const canEdit = FEATURE_FLAGS.OPENUI_CARD_EDIT && !!state.openuiCode && state.steps.openui_generate.status === "done";
-  const canUndo = state.openuiVersionIndex > 0;
-  const canRedo = state.openuiVersionIndex >= 0 && state.openuiVersionIndex < state.openuiVersions.length - 1;
+  const layoutReady = state.layoutMode !== "fixed-600x300" || state.layoutStabilization.stable;
+  const canEdit = FEATURE_FLAGS.OPENUI_CARD_EDIT && !!state.openuiCode && state.steps.openui_generate.status === "done" && layoutReady;
+  const canUndo = layoutReady && state.openuiVersionIndex > 0;
+  const canRedo = layoutReady && state.openuiVersionIndex >= 0 && state.openuiVersionIndex < state.openuiVersions.length - 1;
   return (
     <section className="relative flex min-h-0 flex-col gap-2 overflow-y-auto bg-white p-3 dark:bg-black">
       <div className="flex items-center gap-2">
         <strong className="text-xs">卡片局部编辑</strong>
         {!FEATURE_FLAGS.OPENUI_CARD_EDIT ? <span className="text-[10px] text-zinc-400">feature flag 已关闭</span> : null}
+        {!layoutReady ? <span className="text-[10px] text-amber-500">{state.layoutStabilization.status === "error" ? "布局未能稳定" : "正在优化布局"}</span> : null}
         <label className="flex items-center gap-1 text-[10px] text-zinc-500">
           二次编辑模型
           <select

@@ -1,6 +1,7 @@
 import type { CardPlan, CardPresentationIntent } from "@/dsl/modules";
 import { openUIActionRef } from "./actionRefs";
 import { safeAssetRefs, type AssetManifest, type SafeAssetRef } from "./assetTypes";
+import { cardPlanLayoutMode, estimateCardLayout, FIXED_CARD_CONTENT_HEIGHT, FIXED_CARD_HEIGHT, FIXED_CARD_WIDTH } from "./layoutPolicy";
 
 /**
  * Step-6 model protocol. This is the machine-facing replacement for
@@ -10,12 +11,25 @@ import { safeAssetRefs, type AssetManifest, type SafeAssetRef } from "./assetTyp
  */
 
 export interface OpenUIDesignBrief {
+  layout: {
+    mode: "fixed-600x300" | "free";
+    cardWidth?: number;
+    cardHeight?: number;
+    innerScroll?: false;
+    maxContentHeightPx?: number;
+  };
   cards: OpenUICardDesignBrief[];
 }
 
 export interface OpenUICardDesignBrief {
   id: string;
   purpose: string;
+  layoutBudget?: {
+    estimatedHeightPx: number;
+    maxContentHeightPx: number;
+    contentSlots: number;
+  };
+  allowedCompositions?: Array<"facts" | "list" | "metrics" | "timeline" | "comparison" | "media" | "actions">;
 
   /** ONLY content that may appear visibly in the final UI. */
   renderableContent: {
@@ -63,7 +77,11 @@ function designIntentOf(presentation?: CardPresentationIntent): OpenUICardDesign
 
 export function buildOpenUIDesignBrief(cardPlan: CardPlan, assetManifest?: AssetManifest): OpenUIDesignBrief {
   const availableAssets = assetManifest ? safeAssetRefs(assetManifest) : [];
+  const layoutMode = cardPlanLayoutMode(cardPlan);
   return {
+    layout: layoutMode === "fixed-600x300"
+      ? { mode: layoutMode, cardWidth: FIXED_CARD_WIDTH, cardHeight: FIXED_CARD_HEIGHT, innerScroll: false, maxContentHeightPx: FIXED_CARD_CONTENT_HEIGHT }
+      : { mode: layoutMode },
     cards: cardPlan.cards.map((card) => {
       const facts: string[] = [];
       const metrics: NonNullable<OpenUICardDesignBrief["renderableContent"]["metrics"]> = [];
@@ -91,9 +109,21 @@ export function buildOpenUIDesignBrief(cardPlan: CardPlan, assetManifest?: Asset
           if (text) options.push(text);
         }
       }
+      const layout = estimateCardLayout(card);
+      const allowedCompositions: NonNullable<OpenUICardDesignBrief["allowedCompositions"]> = [];
+      if (card.blocks.some((block) => block.assetRequest || block.kind === "image" || block.kind === "infographic")) allowedCompositions.push("media");
+      if (card.blocks.some((block) => block.items?.length)) allowedCompositions.push(card.presentation?.archetype === "timeline" ? "timeline" : "list");
+      if (card.blocks.some((block) => block.metrics?.length)) allowedCompositions.push("metrics");
+      if (card.presentation?.archetype === "comparison") allowedCompositions.push("comparison");
+      if (facts.length) allowedCompositions.push("facts");
+      if (card.actions?.length) allowedCompositions.push("actions");
       return {
         id: card.id,
         purpose: scrub(card.purpose),
+        ...(layoutMode === "fixed-600x300" ? {
+          layoutBudget: { estimatedHeightPx: layout.estimatedHeightPx, maxContentHeightPx: layout.maxHeightPx, contentSlots: layout.contentSlots },
+          allowedCompositions: [...new Set(allowedCompositions)],
+        } : {}),
         renderableContent: {
           facts: [...new Set(facts)],
           metrics,

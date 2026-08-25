@@ -62,7 +62,7 @@ npx tsx scripts/eval-openui-generation.ts --model glm_5_2 --resume glm52-openui-
 | GLM-5.2 | 24/24 | `expanded:general` | 12.5% | 11 | 41.7% | 4.2% | 4,185 + 629 | 7,177 ms |
 | Qwen 27B / Groq | 7/24（TPD 配额中断） | task-routed `compact:*` | 0% | 7 | 33.3% | 0% | 3,113 + 492 | 27,098 ms |
 
-GLM 完整结果的 1–6 卡协议有效率为 100%，简单单目标单卡率为 100%，媒体型 fixture 的 `assetRequest` 覆盖为 100%，repair 后无无效产物。Qwen 行只是配额中断前的部分观测，且早于最终媒体提示词收紧，不能作为完整模型对比或最终验收结论；未捕获同 provider 的改造前 live baseline，因此不虚构增量数据，compact prompt 相对 full-library baseline 的缩减由静态回归测试约束。
+GLM 在旧版 1–6 卡评估集上的协议有效率为 100%，简单单目标单卡率为 100%，媒体型 fixture 的 `assetRequest` 覆盖为 100%，repair 后无无效产物。当前 CardPlan 卡片数量已不设固定上限。Qwen 行只是配额中断前的部分观测，且早于最终媒体提示词收紧，不能作为完整模型对比或最终验收结论；未捕获同 provider 的改造前 live baseline，因此不虚构增量数据，compact prompt 相对 full-library baseline 的缩减由静态回归测试约束。
 
 ## Host-owned 图片解析
 
@@ -87,6 +87,7 @@ Provider 按以下顺序回退——前一个请求失败或未产出可接受�
 
 ```bash
 NEXT_PUBLIC_OPENUI_ASSETS=true
+NEXT_PUBLIC_SKILL_REUSE=true
 
 # 推荐主 provider（免费申请 key）
 PEXELS_API_KEY=
@@ -99,6 +100,12 @@ IMAGE_SEARCH_API_URL=https://your-image-proxy.example/v1/search
 IMAGE_SEARCH_API_KEY=your-server-only-key
 IMAGE_SEARCH_TIMEOUT_MS=5000
 ```
+
+### Skill 匹配模型
+
+Skill 复用默认使用 Groq 上的 Qwen 27B，也可在输入面板切换为 GLM-5.2。系统先独立把 `去北京旅游` 抽象为 `旅游(destination=北京)`，再用不含具体值的通用意图检索最多 24 个脱敏 Skill 索引并完成匹配。SkillRecipe v3 只保存 `旅游(destination)`；北京、西安等值仅保留在当前私有 TaskRun，不进入分享包。
+
+匹配详情可展开查看参数映射、结构化依据、冲突、逐步复用计划、耗时和 token。这里展示的是经 schema 校验的模型决策 JSON，不包含或持久化模型私有 CoT。第二阶段发给匹配模型的 abstraction 会移除北京、西安等参数值；请求不会发送完整 recipe、设备上下文原文、历史具体值、图片 URL 或 OpenUI 源码。抽象或匹配失败时会明确回退本地评分。
 
 `IMAGE_SEARCH_API_URL` 是明确的 `custom-http-v1` 适配器契约，不是任意图片 API 地址。宿主发送：
 

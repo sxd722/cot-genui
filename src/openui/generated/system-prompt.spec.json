@@ -257,6 +257,42 @@
       "signature": "AssetGallery(assetRefs: string[], columns?: 2 | 3)",
       "description": "Displays host-resolved image IDs as a two- or three-column gallery. Never pass URLs."
     },
+    "FixedFacts": {
+      "signature": "FixedFacts(items: string[])",
+      "description": "Bounded fixed-canvas fact list. Use 1-4 concise facts; every fact remains visible."
+    },
+    "FixedList": {
+      "signature": "FixedList(items: {title: string, detail?: string}[])",
+      "description": "Bounded fixed-canvas list with at most four visible rows."
+    },
+    "FixedMetrics": {
+      "signature": "FixedMetrics(items: {label: string, value: string, detail?: string}[])",
+      "description": "One fixed-height row containing one to three metrics."
+    },
+    "FixedTimeline": {
+      "signature": "FixedTimeline(items: {title: string, detail?: string, meta?: string}[])",
+      "description": "Bounded timeline with at most four compact milestones."
+    },
+    "FixedComparison": {
+      "signature": "FixedComparison(columns: {title: string, badge?: string, rows: {label: string, value: string}[]}[])",
+      "description": "Two compact comparison columns with at most three rows each."
+    },
+    "FixedMedia": {
+      "signature": "FixedMedia(title: string, subtitle?: string, assetRef?: string, badges?: string[])",
+      "description": "Fixed-height host-owned media hero. assetRef is an optional host-provided ID, never a URL."
+    },
+    "FixedGallery": {
+      "signature": "FixedGallery(assetRefs: string[])",
+      "description": "Fixed-height two-image gallery using only host-owned assetRef IDs."
+    },
+    "FixedActions": {
+      "signature": "FixedActions(actions: (HostActionChip | HostActionItem)[])",
+      "description": "One fixed-height action row with one or two host-bound actions."
+    },
+    "FixedCardContent": {
+      "signature": "FixedCardContent(content: (FixedFacts | FixedList | FixedMetrics | FixedTimeline | FixedComparison | FixedMedia | FixedGallery | FixedFacts | FixedList | FixedMetrics)[], actions?: FixedActions)",
+      "description": "Required body grammar for a 600x300 GeneratedCard: one primary region, optional compact secondary region, and optional FixedActions row."
+    },
     "HostActionChip": {
       "signature": "HostActionChip(label: string, actionRef: string)",
       "description": "Compact host-side action affordance. actionRef must be copied exactly from designBrief.actions."
@@ -453,6 +489,24 @@
         "HostAction components must receive actionRef values supplied by the host.",
         "Prefer a semantic component when it directly represents the content pattern.",
         "AssetImage and AssetGallery accept only host-supplied assetRef IDs, never URLs."
+      ]
+    },
+    {
+      "name": "Fixed 600x300 Card Layout",
+      "components": [
+        "FixedCardContent",
+        "FixedFacts",
+        "FixedList",
+        "FixedMetrics",
+        "FixedTimeline",
+        "FixedComparison",
+        "FixedMedia",
+        "FixedGallery",
+        "FixedActions"
+      ],
+      "notes": [
+        "Use these components only when the host selects fixed-600x300 mode.",
+        "FixedCardContent is the required body grammar and keeps all content visible without internal scrolling."
       ]
     }
   ],
@@ -652,6 +706,33 @@
       "AssetGallery": {
         "$ref": "#/$defs/AssetGallery"
       },
+      "FixedFacts": {
+        "$ref": "#/$defs/FixedFacts"
+      },
+      "FixedList": {
+        "$ref": "#/$defs/FixedList"
+      },
+      "FixedMetrics": {
+        "$ref": "#/$defs/FixedMetrics"
+      },
+      "FixedTimeline": {
+        "$ref": "#/$defs/FixedTimeline"
+      },
+      "FixedComparison": {
+        "$ref": "#/$defs/FixedComparison"
+      },
+      "FixedMedia": {
+        "$ref": "#/$defs/FixedMedia"
+      },
+      "FixedGallery": {
+        "$ref": "#/$defs/FixedGallery"
+      },
+      "FixedActions": {
+        "$ref": "#/$defs/FixedActions"
+      },
+      "FixedCardContent": {
+        "$ref": "#/$defs/FixedCardContent"
+      },
       "HostActionChip": {
         "$ref": "#/$defs/HostActionChip"
       },
@@ -733,6 +814,15 @@
       "ActionPanel",
       "AssetImage",
       "AssetGallery",
+      "FixedFacts",
+      "FixedList",
+      "FixedMetrics",
+      "FixedTimeline",
+      "FixedComparison",
+      "FixedMedia",
+      "FixedGallery",
+      "FixedActions",
+      "FixedCardContent",
       "HostActionChip",
       "HostActionItem",
       "HostActionMenu",
@@ -3108,6 +3198,318 @@
         ],
         "additionalProperties": false,
         "description": "Displays host-resolved image IDs as a two- or three-column gallery. Never pass URLs."
+      },
+      "FixedFacts": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 180
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Bounded fixed-canvas fact list. Use 1-4 concise facts; every fact remains visible."
+      },
+      "FixedList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "detail": {
+                  "type": "string",
+                  "maxLength": 140
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Bounded fixed-canvas list with at most four visible rows."
+      },
+      "FixedMetrics": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "maxLength": 24
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 24
+                },
+                "detail": {
+                  "type": "string",
+                  "maxLength": 32
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "One fixed-height row containing one to three metrics."
+      },
+      "FixedTimeline": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                "detail": {
+                  "type": "string",
+                  "maxLength": 56
+                },
+                "meta": {
+                  "type": "string",
+                  "maxLength": 20
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Bounded timeline with at most four compact milestones."
+      },
+      "FixedComparison": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "minItems": 2,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "maxLength": 28
+                },
+                "badge": {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                "rows": {
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "maxLength": 24
+                      },
+                      "value": {
+                        "type": "string",
+                        "maxLength": 32
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "title",
+                "rows"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "columns"
+        ],
+        "additionalProperties": false,
+        "description": "Two compact comparison columns with at most three rows each."
+      },
+      "FixedMedia": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "subtitle": {
+            "type": "string",
+            "maxLength": 180
+          },
+          "assetRef": {
+            "type": "string"
+          },
+          "badges": {
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 24
+            }
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false,
+        "description": "Fixed-height host-owned media hero. assetRef is an optional host-provided ID, never a URL."
+      },
+      "FixedGallery": {
+        "type": "object",
+        "properties": {
+          "assetRefs": {
+            "minItems": 2,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "assetRefs"
+        ],
+        "additionalProperties": false,
+        "description": "Fixed-height two-image gallery using only host-owned assetRef IDs."
+      },
+      "FixedActions": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HostActionChip"
+                },
+                {
+                  "$ref": "#/$defs/HostActionItem"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "additionalProperties": false,
+        "description": "One fixed-height action row with one or two host-bound actions."
+      },
+      "FixedCardContent": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FixedFacts"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedList"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedMetrics"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedTimeline"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedComparison"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedMedia"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedGallery"
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FixedFacts"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedList"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedMetrics"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "actions": {
+            "$ref": "#/$defs/FixedActions"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false,
+        "description": "Required body grammar for a 600x300 GeneratedCard: one primary region, optional compact secondary region, and optional FixedActions row."
       },
       "HostActionMenu": {
         "type": "object",

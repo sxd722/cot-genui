@@ -1,0 +1,566 @@
+{
+  "root": "CardDeck",
+  "components": {
+    "CardDeck": {
+      "signature": "CardDeck(children: GeneratedCard[], layout?: \"auto\" | \"deck\" | \"grid\" | \"featured\")",
+      "description": "The only OpenUI root. Lays out GeneratedCard peers as a horizontal snap deck in narrow containers and a responsive grid in wide containers."
+    },
+    "GeneratedCard": {
+      "signature": "GeneratedCard(cardId: string, title: string, children: any[], variant?: \"standard\" | \"hero\" | \"editorial\" | \"comparison\" | \"timeline\" | \"data\" | \"action\" | \"media\", density?: \"compact\" | \"balanced\" | \"immersive\", subtitle?: string)",
+      "description": "One peer card in a CardDeck. The host supplies cardId and title; compose its children freely without adding another card boundary."
+    },
+    "FixedCardContent": {
+      "signature": "FixedCardContent(content: (FixedFacts | FixedList | FixedMetrics | FixedTimeline | FixedComparison | FixedMedia | FixedGallery | FixedFacts | FixedList | FixedMetrics)[], actions?: FixedActions)",
+      "description": "Required body grammar for a 600x300 GeneratedCard: one primary region, optional compact secondary region, and optional FixedActions row."
+    },
+    "FixedFacts": {
+      "signature": "FixedFacts(items: string[])",
+      "description": "Bounded fixed-canvas fact list. Use 1-4 concise facts; every fact remains visible."
+    },
+    "FixedList": {
+      "signature": "FixedList(items: {title: string, detail?: string}[])",
+      "description": "Bounded fixed-canvas list with at most four visible rows."
+    },
+    "FixedMetrics": {
+      "signature": "FixedMetrics(items: {label: string, value: string, detail?: string}[])",
+      "description": "One fixed-height row containing one to three metrics."
+    },
+    "FixedTimeline": {
+      "signature": "FixedTimeline(items: {title: string, detail?: string, meta?: string}[])",
+      "description": "Bounded timeline with at most four compact milestones."
+    },
+    "FixedComparison": {
+      "signature": "FixedComparison(columns: {title: string, badge?: string, rows: {label: string, value: string}[]}[])",
+      "description": "Two compact comparison columns with at most three rows each."
+    },
+    "FixedMedia": {
+      "signature": "FixedMedia(title: string, subtitle?: string, assetRef?: string, badges?: string[])",
+      "description": "Fixed-height host-owned media hero. assetRef is an optional host-provided ID, never a URL."
+    },
+    "FixedGallery": {
+      "signature": "FixedGallery(assetRefs: string[])",
+      "description": "Fixed-height two-image gallery using only host-owned assetRef IDs."
+    },
+    "FixedActions": {
+      "signature": "FixedActions(actions: (HostActionChip | HostActionItem)[])",
+      "description": "One fixed-height action row with one or two host-bound actions."
+    },
+    "HostActionChip": {
+      "signature": "HostActionChip(label: string, actionRef: string)",
+      "description": "Compact host-side action affordance. actionRef must be copied exactly from designBrief.actions."
+    },
+    "HostActionItem": {
+      "signature": "HostActionItem(label: string, actionRef: string, description?: string)",
+      "description": "A host-side action rendered as a descriptive list or menu row."
+    }
+  },
+  "componentGroups": [
+    {
+      "name": "Prompt Capability Palette",
+      "components": [
+        "CardDeck",
+        "GeneratedCard",
+        "FixedCardContent",
+        "FixedFacts",
+        "FixedList",
+        "FixedMetrics",
+        "FixedTimeline",
+        "FixedComparison",
+        "FixedMedia",
+        "FixedGallery",
+        "FixedActions",
+        "HostActionChip",
+        "HostActionItem"
+      ],
+      "notes": [
+        "CardDeck is the only root.",
+        "GeneratedCard is the only peer-card boundary.",
+        "Raw URLs and external tool calls are forbidden."
+      ]
+    }
+  ],
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "CardDeck": {
+        "$ref": "#/$defs/CardDeck"
+      },
+      "GeneratedCard": {
+        "$ref": "#/$defs/GeneratedCard"
+      },
+      "FixedCardContent": {
+        "$ref": "#/$defs/FixedCardContent"
+      },
+      "FixedFacts": {
+        "$ref": "#/$defs/FixedFacts"
+      },
+      "FixedList": {
+        "$ref": "#/$defs/FixedList"
+      },
+      "FixedMetrics": {
+        "$ref": "#/$defs/FixedMetrics"
+      },
+      "FixedTimeline": {
+        "$ref": "#/$defs/FixedTimeline"
+      },
+      "FixedComparison": {
+        "$ref": "#/$defs/FixedComparison"
+      },
+      "FixedMedia": {
+        "$ref": "#/$defs/FixedMedia"
+      },
+      "FixedGallery": {
+        "$ref": "#/$defs/FixedGallery"
+      },
+      "FixedActions": {
+        "$ref": "#/$defs/FixedActions"
+      },
+      "HostActionChip": {
+        "$ref": "#/$defs/HostActionChip"
+      },
+      "HostActionItem": {
+        "$ref": "#/$defs/HostActionItem"
+      }
+    },
+    "required": [
+      "CardDeck",
+      "GeneratedCard",
+      "FixedCardContent",
+      "FixedFacts",
+      "FixedList",
+      "FixedMetrics",
+      "FixedTimeline",
+      "FixedComparison",
+      "FixedMedia",
+      "FixedGallery",
+      "FixedActions",
+      "HostActionChip",
+      "HostActionItem"
+    ],
+    "additionalProperties": false,
+    "$defs": {
+      "CardDeck": {
+        "type": "object",
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/GeneratedCard"
+            }
+          },
+          "layout": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "deck",
+              "grid",
+              "featured"
+            ]
+          }
+        },
+        "required": [
+          "children"
+        ],
+        "additionalProperties": false,
+        "description": "The only OpenUI root. Lays out GeneratedCard peers as a horizontal snap deck in narrow containers and a responsive grid in wide containers."
+      },
+      "GeneratedCard": {
+        "type": "object",
+        "properties": {
+          "cardId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {}
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "hero",
+              "editorial",
+              "comparison",
+              "timeline",
+              "data",
+              "action",
+              "media"
+            ]
+          },
+          "density": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "balanced",
+              "immersive"
+            ]
+          },
+          "subtitle": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId",
+          "title",
+          "children"
+        ],
+        "additionalProperties": false,
+        "description": "One peer card in a CardDeck. The host supplies cardId and title; compose its children freely without adding another card boundary."
+      },
+      "FixedCardContent": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FixedFacts"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedList"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedMetrics"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedTimeline"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedComparison"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedMedia"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedGallery"
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FixedFacts"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedList"
+                    },
+                    {
+                      "$ref": "#/$defs/FixedMetrics"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "actions": {
+            "$ref": "#/$defs/FixedActions"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false,
+        "description": "Required body grammar for a 600x300 GeneratedCard: one primary region, optional compact secondary region, and optional FixedActions row."
+      },
+      "FixedFacts": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 180
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Bounded fixed-canvas fact list. Use 1-4 concise facts; every fact remains visible."
+      },
+      "FixedList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "detail": {
+                  "type": "string",
+                  "maxLength": 140
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Bounded fixed-canvas list with at most four visible rows."
+      },
+      "FixedMetrics": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "maxLength": 24
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 24
+                },
+                "detail": {
+                  "type": "string",
+                  "maxLength": 32
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "One fixed-height row containing one to three metrics."
+      },
+      "FixedTimeline": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                "detail": {
+                  "type": "string",
+                  "maxLength": 56
+                },
+                "meta": {
+                  "type": "string",
+                  "maxLength": 20
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Bounded timeline with at most four compact milestones."
+      },
+      "FixedComparison": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "minItems": 2,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "maxLength": 28
+                },
+                "badge": {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                "rows": {
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "maxLength": 24
+                      },
+                      "value": {
+                        "type": "string",
+                        "maxLength": 32
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "title",
+                "rows"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "columns"
+        ],
+        "additionalProperties": false,
+        "description": "Two compact comparison columns with at most three rows each."
+      },
+      "FixedMedia": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "subtitle": {
+            "type": "string",
+            "maxLength": 180
+          },
+          "assetRef": {
+            "type": "string"
+          },
+          "badges": {
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 24
+            }
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false,
+        "description": "Fixed-height host-owned media hero. assetRef is an optional host-provided ID, never a URL."
+      },
+      "FixedGallery": {
+        "type": "object",
+        "properties": {
+          "assetRefs": {
+            "minItems": 2,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "assetRefs"
+        ],
+        "additionalProperties": false,
+        "description": "Fixed-height two-image gallery using only host-owned assetRef IDs."
+      },
+      "FixedActions": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HostActionChip"
+                },
+                {
+                  "$ref": "#/$defs/HostActionItem"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "additionalProperties": false,
+        "description": "One fixed-height action row with one or two host-bound actions."
+      },
+      "HostActionChip": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "actionRef": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "actionRef"
+        ],
+        "additionalProperties": false,
+        "description": "Compact host-side action affordance. actionRef must be copied exactly from designBrief.actions."
+      },
+      "HostActionItem": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "actionRef": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "actionRef"
+        ],
+        "additionalProperties": false,
+        "description": "A host-side action rendered as a descriptive list or menu row."
+      }
+    }
+  },
+  "id": "cot-genui-fixed-600x300"
+}

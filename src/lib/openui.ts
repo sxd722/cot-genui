@@ -27,6 +27,9 @@ import { invalidAssetRefsInTree, type AssetManifest } from "@/openui/assetTypes"
 import { detectDesignMetadataLeakage, describeDesignLeakage } from "@/openui/designLeakage";
 import type { OpenUIDesignBrief } from "@/openui/designBrief";
 import { validateAssetCoverage, type OpenUIAssetCoverage } from "@/openui/assetCoverage";
+import { validateOpenUILayout, type OpenUILayoutCoverage } from "@/openui/layoutValidation";
+import { buildDeterministicFixedOpenUI } from "@/openui/fixedArtifact";
+import { cardPlanLayoutMode } from "@/openui/layoutPolicy";
 
 const librarySpec = librarySpecJson as LibrarySpec;
 
@@ -38,7 +41,7 @@ export const OPENUI_SYSTEM_PROMPT = generateSystemPrompt({
 import { openUISystemPromptFor as routedPromptFor } from "@/openui/promptRouting";
 
 /** 保持原语义：路由时读取 OPENUI_LOCAL_BINDINGS feature flag。 */
-export function openUISystemPromptFor(args: { taskFamily: TaskFamily; modelProfile: ModelProfile }): { prompt: string; promptProfile: string } {
+export function openUISystemPromptFor(args: { taskFamily: TaskFamily; modelProfile: ModelProfile; layoutMode?: import("@/dsl/modules").CardLayoutMode }): { prompt: string; promptProfile: string } {
   return routedPromptFor({ ...args, localBindings: FEATURE_FLAGS.OPENUI_LOCAL_BINDINGS });
 }
 
@@ -60,6 +63,7 @@ export interface OpenUIValidationResult {
     missing: string[];
   };
   assetCoverage: OpenUIAssetCoverage;
+  layoutCoverage: OpenUILayoutCoverage;
   parser: {
     statements: number;
     unresolved: string[];
@@ -131,6 +135,10 @@ export function validateOpenUIArtifact(code: string, cardPlan: CardPlan, assetMa
   if (nonCardChildren.length) errors.push("CardDeck 的直接子项只能是 GeneratedCard");
 
   const generatedCards = renderedCards.filter((item) => item.typeName === "GeneratedCard");
+  const layoutCoverage = validateOpenUILayout(generatedCards, cardPlan);
+  for (const violation of layoutCoverage.violations) {
+    errors.push(`固定卡片 ${violation.cardId} 超出静态布局预算：${violation.reasons.join("；")}`);
+  }
   if (generatedCards.length !== cardPlan.cards.length) {
     errors.push(`OpenUI 独立卡片数量不匹配：CardPlan 要求 ${cardPlan.cards.length} 张，实际生成 ${generatedCards.length} 张`);
   }
@@ -158,6 +166,7 @@ export function validateOpenUIArtifact(code: string, cardPlan: CardPlan, assetMa
       missing,
     },
     assetCoverage,
+    layoutCoverage,
     parser: {
       statements: parsed.meta.statementCount,
       unresolved: parsed.meta.unresolved,
@@ -181,6 +190,7 @@ function cardBodyText(card: CardPlan["cards"][number]): string {
 
 /** Minimal deterministic artifact used only when the selected model is unavailable. */
 export function mockOpenUIFromCardPlan(cardPlan: CardPlan): string {
+  if (cardPlanLayoutMode(cardPlan) === "fixed-600x300") return buildDeterministicFixedOpenUI(cardPlan);
   const bootstrap = buildOpenUIBootstrap(cardPlan);
   const lines = [bootstrap.code];
   cardPlan.cards.forEach((card, index) => {

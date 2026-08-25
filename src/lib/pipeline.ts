@@ -2,7 +2,7 @@ import "server-only";
 
 import OpenAI from "openai";
 import { createLLMClient, extractJson, hasAnyLLMKey, type CallLog, type LLMProvider } from "@/lib/llm";
-import type { CardPlan } from "@/dsl/modules";
+import type { CardLayoutMode, CardPlan } from "@/dsl/modules";
 import type { InferConflict, InferQuestion, InferSlot } from "@/lib/schemas";
 import {
   mockOpenUIFromCardPlan,
@@ -16,7 +16,7 @@ import { cardPlanToVibeMarkdown } from "@/openui/vibeMarkdown";
 import { conciseCardTitle } from "@/openui/cardTitle";
 import { retrieveProfileEvidence } from "@/lib/profile";
 import type { ProfileDigest } from "@/lib/profileTypes";
-import { CARD_PLAN_SYSTEM_PROMPT } from "@/lib/cardPlanPrompt";
+import { cardPlanSystemPromptFor } from "@/lib/cardPlanPrompt";
 import { sanitizeCardPlanExternalLinks } from "@/lib/webFactIntegration";
 import { NVIDIA_DIFFUSION_GEMMA_MODEL, nvidiaChatOptions } from "@/lib/nvidia";
 import { resolveModelProfile, type GroqReasoningEffort } from "@/lib/modelProfiles";
@@ -27,10 +27,13 @@ import { summarizeStepForProvenance } from "@/lib/provenance";
 import type { ProfileViewV2, RetrievedEvidence } from "@/lib/profileTypes";
 import { FEATURE_FLAGS } from "@/lib/featureFlags";
 import { analyzeOpenUIQuality } from "@/openui/qualityMetrics";
-import { normalizeAssetRequest, normalizeCardPresentation } from "@/lib/cardPlanNormalize";
+import { normalizeAssetRequest, normalizeCardPresentation, normalizeCardSequence } from "@/lib/cardPlanNormalize";
 import { disabledAssetResolution, resolveAssetManifest } from "@/openui/assetResolver";
 import type { AssetResolutionDiagnostics } from "@/openui/assetTypes";
 import { ensureAssetRequests, type MediaPlanningDiagnostics } from "@/openui/mediaPlanning";
+import type { SkillStepContext } from "@/learning/workflowTypes";
+import { deterministicClarification, deterministicEnrichment, deterministicIntent, skillPriorText } from "@/lib/skillReuse";
+import { cardLayoutPolicy, estimateCardLayout, fitCardPlanToLayout, fixedOpenUILayoutPrompt, normalizeCardLayoutMode, withCardLayoutPolicy } from "@/openui/layoutPolicy";
 import {
   PIPELINE_STEPS,
   type InferenceState,
@@ -50,11 +53,13 @@ interface RunInput {
   inferenceState?: InferenceState;
   userAnswers?: Record<number, string>;
   cardPlan?: CardPlan;
+  layoutMode?: CardLayoutMode;
   mediaPlanningDiagnostics?: Pick<MediaPlanningDiagnostics, "modelDeclared" | "synthesized">;
   profileDigest?: ProfileDigest;
   profileSourceText?: string;
   classification?: QueryClassification;
   adaptiveContext?: EffectiveAdaptiveContext;
+  skillContext?: SkillStepContext;
   modelProfile?: ModelProfile;
   /** 暂停期预取的搜索结果：searchQuery 与 ④ 最终计算一致时注入，跳过 tool 调用 */
   prefetchedSearch?: { searchQuery: string; webSearchRaw: unknown };
@@ -820,15 +825,7 @@ function validCardPlan(value: unknown): value is CardPlan {
 function normalizeCardPlan(plan: CardPlan, allowedExternalUrls: Set<string>, validSlotNames: Set<string>): CardPlan {
   const validRoles = new Set(["primary", "secondary", "tertiary"]);
   const validBlockKinds = new Set(["text", "hero", "summary", "list", "progress", "status", "metric", "choice", "toggle", "image", "chart", "infographic"]);
-  const usedCardIds = new Set<string>();
-  const cards = plan.cards.slice(0, 6).map((card, cardIndex) => {
-    const baseId = typeof card.id === "string" && card.id.trim() ? card.id.trim() : `card_${cardIndex + 1}`;
-    let id = baseId;
-    let suffix = 2;
-    while (usedCardIds.has(id)) id = `${baseId}_${suffix++}`;
-    usedCardIds.add(id);
-    return { ...card, id };
-  });
+  const cards = normalizeCardSequence(plan.cards);
   const cardIds = new Set(cards.map((card) => card.id));
   const validSlot = (value: unknown): value is string => typeof value === "string" && validSlotNames.has(value);
   return {
@@ -892,7 +889,8 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
     slotRequirements: [{ name: "request", description: "用户目标", required: true, explicitValue: input.query }],
     slots: [slot], conflicts: [], questions: [], assumptions: [],
   };
-  const plan: CardPlan = input.cardPlan ?? {
+  const layoutMode = normalizeCardLayoutMode(input.layoutMode);
+  const rawPlan: CardPlan = input.cardPlan ?? {
     skillName: input.query,
     iconText: "S",
     reasoning: "根据简单 mock 意图生成一张完整卡片",
@@ -909,12 +907,13 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
       },
     ],
   };
+  const { plan, diagnostics: layoutPlanningDiagnostics } = fitCardPlanToLayout(rawPlan, layoutMode);
   const table: Record<PipelineStepName, Omit<PipelineStepOutput, "durationMs" | "timing" | "model">> = {
     intent_analysis: { name: input.name, reasoning: "识别任务及最小槽位（mock）", outputs: { taskType: state.taskType, needsContext: false }, inferenceState: state, slots: state.slots },
     evidence_resolution: { name: input.name, reasoning: "无需额外上下文（mock）", outputs: {}, inferenceState: input.inferenceState ?? state, slots: (input.inferenceState ?? state).slots, conflicts: [], questions: [] },
     clarification: { name: input.name, reasoning: "没有需要澄清的关键槽位（mock）", outputs: { questionCount: 0 }, inferenceState: input.inferenceState ?? state, slots: (input.inferenceState ?? state).slots, questions: [] },
     context_enrichment: { name: input.name, reasoning: "完成总结与能力补齐（mock）", outputs: { summary: "mock summary", capabilityCalls: [] }, inferenceState: { ...(input.inferenceState ?? state), summary: "mock summary", webFacts: [], capabilityCalls: [] }, slots: (input.inferenceState ?? state).slots },
-    card_plan_generate: { name: input.name, reasoning: plan.reasoning, outputs: { cardCount: plan.cards.length }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState?.slots ?? [slot]), result: { summary: plan.skillName, assumptions: input.inferenceState?.assumptions ?? [] } },
+    card_plan_generate: { name: input.name, reasoning: plan.reasoning, outputs: { cardCount: plan.cards.length, layoutPlanningDiagnostics }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState?.slots ?? [slot]), result: { summary: plan.skillName, assumptions: input.inferenceState?.assumptions ?? [] } },
     openui_generate: {
       name: input.name,
       reasoning: "生成可编译 OpenUI Lang（mock）",
@@ -923,6 +922,7 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
       openuiDiagnostics: {
         coverage: { required: 0, matched: 0, missing: [] },
         assetCoverage: { valid: true, required: 0, matched: 0, missing: [], errors: [] },
+        layoutCoverage: { mode: layoutMode, valid: true, checkedCards: plan.cards.length, withinBudget: plan.cards.length, violations: [] },
         parser: { statements: plan.cards.length * 3 + 2, unresolved: [], orphaned: [], incomplete: false },
         repaired: false,
         repairTriggered: false,
@@ -946,7 +946,8 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         profileOverlay: input.adaptiveContext?.profileOverlay,
       })
     : undefined;
-  const steering = { steeringHint: input.adaptiveContext?.stepHint };
+  const reusablePrior = skillPriorText(input.skillContext);
+  const steering = { steeringHint: [input.adaptiveContext?.stepHint, reusablePrior].filter(Boolean).join("\n\n") || undefined };
   log(input.onLog, "request", "Adaptive policy context", {
     policyId: input.adaptiveContext?.policyId,
     policyVersion: input.adaptiveContext?.policyVersion,
@@ -962,6 +963,45 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       selectedDomains: [...new Set(profileView.selectedDetails.map((detail) => detail.domain))],
     });
   }
+  if (input.mock && input.skillContext?.mode === "deterministic") {
+    const deterministic = input.name === "intent_analysis"
+      ? deterministicIntent(input.skillContext, input.profileDigest)
+      : input.name === "clarification" && input.inferenceState
+        ? deterministicClarification(input.skillContext, input.inferenceState)
+        : input.name === "context_enrichment" && input.inferenceState
+          ? deterministicEnrichment(input.skillContext, input.inferenceState, input.userAnswers ?? {})
+          : null;
+    if (deterministic) {
+      const callsAvoided = input.name === "clarification" && !(deterministic.questions?.length) ? 0 : 1;
+      const totalMs = Math.max(1, Date.now() - started);
+      const output: PipelineStepOutput = {
+        name: input.name,
+        reasoning: deterministic.reasoning,
+        outputs: { skillDeterministic: true, callsAvoided, questionCount: deterministic.questions?.length ?? 0 },
+        inferenceState: deterministic.state,
+        slots: deterministic.state.slots,
+        conflicts: deterministic.state.conflicts,
+        questions: deterministic.questions ?? deterministic.state.questions,
+        durationMs: totalMs,
+        timing: { totalMs, llmMs: 0, overheadMs: totalMs },
+        model: `skill:${input.skillContext.selection.skillVersionId}`,
+        modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name],
+        skillReuse: {
+          skillId: input.skillContext.selection.skillId,
+          skillVersionId: input.skillContext.selection.skillVersionId,
+          recipeFingerprint: input.skillContext.selection.recipeFingerprint,
+          score: input.skillContext.selection.score,
+          activation: input.skillContext.selection.activation,
+          matcherVersion: input.skillContext.selection.matcherVersion,
+          matcherModel: input.skillContext.selection.matcherModel,
+          executionMode: "deterministic",
+          callsAvoided,
+        },
+      };
+      output.provenance = summarizeStepForProvenance(input.name, { classification, adaptiveContext: input.adaptiveContext, profileView, inputState: input.inferenceState, output });
+      return output;
+    }
+  }
   if (input.mock) {
     const base = mockResult(input);
     if (input.name === "openui_generate" && input.stream && base.openuiCode && input.onStreamDelta) {
@@ -975,14 +1015,65 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     }
     const totalMs = Math.max(1, Date.now() - started);
     const provenance = summarizeStepForProvenance(input.name, { classification, adaptiveContext: input.adaptiveContext, profileView, inputState: input.inferenceState, output: base, cardPlan: base.cardPlan ?? input.cardPlan, cardPlanMarkdown: base.cardPlanMarkdown, openuiCode: base.openuiCode });
-    return { ...base, adaptive: input.adaptiveContext ? { policyId: input.adaptiveContext.policyId, policyVersion: input.adaptiveContext.policyVersion, classification, steeringHint: input.adaptiveContext.stepHint } : undefined, provenance, model: "mock", modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], durationMs: totalMs, timing: { totalMs, llmMs: 0, overheadMs: totalMs } };
+    return {
+      ...base,
+      adaptive: input.adaptiveContext ? { policyId: input.adaptiveContext.policyId, policyVersion: input.adaptiveContext.policyVersion, classification, steeringHint: input.adaptiveContext.stepHint } : undefined,
+      skillReuse: input.skillContext ? {
+        skillId: input.skillContext.selection.skillId, skillVersionId: input.skillContext.selection.skillVersionId,
+        recipeFingerprint: input.skillContext.selection.recipeFingerprint, score: input.skillContext.selection.score,
+        activation: input.skillContext.selection.activation,
+        matcherVersion: input.skillContext.selection.matcherVersion,
+        matcherModel: input.skillContext.selection.matcherModel,
+        executionMode: input.skillContext.mode === "deterministic" ? "fallback" : "guided",
+        callsAvoided: 0, fallbackReason: input.skillContext.mode === "deterministic" ? "deterministic_preconditions_not_met" : undefined,
+      } : undefined,
+      provenance, model: "mock", modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], durationMs: totalMs,
+      timing: { totalMs, llmMs: 0, overheadMs: totalMs },
+    };
   }
 
   let llm: LLMResult;
   let base: Omit<PipelineStepOutput, "durationMs" | "timing" | "model" | "usage" | "cost">;
   let retrievedEvidenceForProvenance: RetrievedEvidence[] | undefined;
+  let skillExecutionMode: NonNullable<PipelineStepOutput["skillReuse"]>["executionMode"] = input.skillContext ? "guided" : "normal";
+  let skillCallsAvoided = 0;
+  let skillFallbackReason: string | undefined;
+  const deterministicResult = input.skillContext?.mode === "deterministic"
+    ? input.name === "intent_analysis"
+      ? deterministicIntent(input.skillContext, input.profileDigest)
+      : input.name === "clarification" && input.inferenceState
+        ? deterministicClarification(input.skillContext, input.inferenceState)
+        : input.name === "context_enrichment" && input.inferenceState
+          ? deterministicEnrichment(input.skillContext, input.inferenceState, input.userAnswers ?? {})
+          : null
+    : null;
+  if (input.skillContext?.mode === "deterministic" && !deterministicResult) {
+    skillExecutionMode = "fallback";
+    skillFallbackReason = "deterministic_preconditions_not_met";
+    log(input.onLog, "fallback", "Skill 确定性执行条件不完整，回退本步骤原始模型链路");
+  }
 
-  if (input.name === "intent_analysis") {
+  if (deterministicResult) {
+    skillExecutionMode = "deterministic";
+    skillCallsAvoided = input.name === "clarification" && !(deterministicResult.questions?.length) ? 0 : 1;
+    llm = { value: {}, model: `skill:${input.skillContext!.selection.skillVersionId}`, llmMs: 0 };
+    base = {
+      name: input.name,
+      reasoning: deterministicResult.reasoning,
+      outputs: {
+        skillDeterministic: true,
+        callsAvoided: skillCallsAvoided,
+        taskType: deterministicResult.state.taskType,
+        slotCount: deterministicResult.state.slotRequirements.length,
+        questionCount: deterministicResult.questions?.length ?? 0,
+        summary: deterministicResult.state.summary,
+      },
+      inferenceState: deterministicResult.state,
+      slots: deterministicResult.state.slots,
+      conflicts: deterministicResult.state.conflicts,
+      questions: deterministicResult.questions ?? deterministicResult.state.questions,
+    };
+  } else if (input.name === "intent_analysis") {
     llm = await callJson({
       ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
       system: "你负责根据用户请求和 query-independent 通用画像胶囊建立任务模型。taskType 必须是任务领域名称（如饮食推荐/职业决策/旅行规划），不能写 ideas/actionable；交付等级单独写 fulfillment。先判断用户最终要灵感、经验证的具体推荐，还是可执行动作；再从最终交付物反推所有会影响内容、排序、约束、个性化和外部检索的槽位。画像胶囊只用于发现可用领域和候选槽位，不可直接当作最终证据。必须输出 requestedDomains 和 retrievalRequests，让下一阶段按需回查原始记录；每个 semanticQuery 必须同时包含中文关键词和对应英文关键词，以空格分隔，提升对中英文 JSON path/value 的召回。通常覆盖时间、地点、对象、预算、偏好、限制和交付方式；不要用固定槽位数量截断。对可能需要用户确认的槽位提供2-4个互斥 options。只把 query 明示内容写入 explicitValue。",
@@ -1105,12 +1196,14 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
   } else if (input.name === "card_plan_generate") {
     if (!input.inferenceState) throw new Error("缺少 evidence_resolution 的 inferenceState");
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
+    const layoutMode = normalizeCardLayoutMode(input.layoutMode);
+    const layoutPrompt = cardPlanSystemPromptFor(layoutMode);
     llm = await callJson({
       ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
       system: FEATURE_FLAGS.WEB_FACTS_OPTIONAL
-        ? CARD_PLAN_SYSTEM_PROMPT
-        : `${CARD_PLAN_SYSTEM_PROMPT}\n兼容模式：若 webFacts 非空，必须把其中与任务有关的事实纳入现有业务卡，但仍不得为来源单独增加卡片。`,
-      user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {} },
+        ? layoutPrompt
+        : `${layoutPrompt}\n兼容模式：若 webFacts 非空，必须把其中与任务有关的事实纳入现有业务卡，但仍不得为来源单独增加卡片。`,
+      user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {}, layoutPolicy: cardLayoutPolicy(layoutMode) },
       schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,title,purpose,sourceSlots?,presentation?:{archetype:'standard'|'hero'|'editorial'|'comparison'|'timeline'|'data'|'action'|'media',density?:'compact'|'balanced'|'immersive',emphasis?:'content'|'data'|'media'|'action'},blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?,assetRequest?:{kind:'image'|'gallery',query:string,count:number,role:'hero'|'supporting'|'gallery',aspect?:'wide'|'square'|'portrait'}}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
     });
     const raw = llm.value as { reasoning?: string; cardPlan?: unknown };
@@ -1130,22 +1223,30 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     const validSlotNames = new Set(input.inferenceState.slots.map((slot) => slot.name));
     const normalizedPlan = sanitizeCardPlanExternalLinks(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), allowedExternalUrls);
     const mediaPlanning = ensureAssetRequests(normalizedPlan, input.query);
-    const plan = mediaPlanning.plan;
+    const fitted = fitCardPlanToLayout(mediaPlanning.plan, layoutMode);
+    if (!fitted.diagnostics.valid) {
+      const details = fitted.diagnostics.cards.filter((card) => !card.fits).map((card) => `${card.cardId}: ${card.reasons.join(", ")}`).join("；");
+      throw new Error(`固定卡片内容预算超限：${details}`);
+    }
+    const plan = fitted.plan;
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
-    base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount, mediaPlanningDiagnostics: mediaPlanning.diagnostics }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
+    base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount, mediaPlanningDiagnostics: mediaPlanning.diagnostics, layoutPlanningDiagnostics: fitted.diagnostics }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else if (input.name === "openui_generate") {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
-    const promptRoute = openUISystemPromptFor({ taskFamily: classification.taskFamily, modelProfile: input.modelProfile ?? DEFAULT_PROFILES.openui_generate });
+    const layoutMode = normalizeCardLayoutMode(input.layoutMode ?? input.cardPlan.layoutPolicy?.mode);
+    const cardPlan = withCardLayoutPolicy(input.cardPlan, layoutMode);
+    const promptRoute = openUISystemPromptFor({ taskFamily: classification.taskFamily, modelProfile: input.modelProfile ?? DEFAULT_PROFILES.openui_generate, layoutMode });
     const assetResolution = FEATURE_FLAGS.OPENUI_ASSETS
-      ? await resolveAssetManifest(input.cardPlan)
-      : disabledAssetResolution(input.cardPlan);
+      ? await resolveAssetManifest(cardPlan)
+      : disabledAssetResolution(cardPlan);
     const { manifest: assetManifest, diagnostics: rawAssetResolutionDiagnostics } = assetResolution;
     let assetResolutionDiagnostics: AssetResolutionDiagnostics = {
       ...rawAssetResolutionDiagnostics,
       synthesized: Math.max(0, Math.min(2, Math.round(input.mediaPlanningDiagnostics?.synthesized ?? 0))),
     };
     log(input.onLog, "response", `Host-owned media: ${assetResolutionDiagnostics.providerState} · ${assetResolutionDiagnostics.accepted}/${assetResolutionDiagnostics.candidates} accepted`, assetResolutionDiagnostics);
-    const generationPayload = buildOpenUIGenerationPayload(input.cardPlan, assetManifest);
+    const generationPayload = buildOpenUIGenerationPayload(cardPlan, assetManifest);
+    const layoutPrompt = fixedOpenUILayoutPrompt(layoutMode);
     llm = await callText({
       ...selectedModel,
       ...sampling,
@@ -1153,11 +1254,11 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       onLog: input.onLog,
       stream: input.stream,
       onStreamDelta: input.onStreamDelta,
-      system: promptRoute.prompt,
+      system: layoutPrompt ? `${promptRoute.prompt}\n\n${layoutPrompt}` : promptRoute.prompt,
       user: generationPayload,
     });
     let openuiCode = normalizeOpenUIOutput(String(llm.value ?? ""));
-    let validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest, generationPayload.designBrief);
+    let validation = validateOpenUIArtifact(openuiCode, cardPlan, assetManifest, generationPayload.designBrief);
     let repaired = false;
     let repairMs: number | undefined;
     if (!validation.valid) {
@@ -1180,8 +1281,8 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         doSample: false,
         steeringHint: input.adaptiveContext?.stepHint,
         onLog: input.onLog,
-        system: `${promptRoute.prompt}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure. If validation reports DESIGN_META_LEAK, remove authoring/design metadata from visible UI. If missingAssets is present, use only its allowedAssetRefs in its target cardId, satisfy requiredCount, and follow its role/aspect placement guidance. Preserve user-facing facts, labels, valid actions, and valid asset references.`,
-        user: buildOpenUIRepairPayload(input.cardPlan, openuiCode, validation),
+        system: `${promptRoute.prompt}${layoutPrompt ? `\n\n${layoutPrompt}` : ""}\n\nYou are repairing an existing OpenUI program. Return the full corrected program, not a patch. Fix every supplied validation error while preserving valid visual structure. If validation reports DESIGN_META_LEAK, remove authoring/design metadata from visible UI. If missingAssets is present, use only its allowedAssetRefs in its target cardId, satisfy requiredCount, and follow its role/aspect placement guidance. If layoutViolations is present, simplify only those target cards until they fit the fixed canvas; replace risky components with compact semantic equivalents and do not remove required facts or actions. Preserve user-facing facts, labels, valid actions, and valid asset references.`,
+        user: buildOpenUIRepairPayload(cardPlan, openuiCode, validation),
       });
       repairMs = repair.llmMs;
       const first = llm;
@@ -1195,12 +1296,21 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         timeToFirstModelStatementMs: first.timeToFirstModelStatementMs,
       };
       openuiCode = normalizeOpenUIOutput(String(repair.value ?? ""));
-      validation = validateOpenUIArtifact(openuiCode, input.cardPlan, assetManifest, generationPayload.designBrief);
+      validation = validateOpenUIArtifact(openuiCode, cardPlan, assetManifest, generationPayload.designBrief);
       if (!validation.valid) {
         throw new Error(`OpenUI 两次均不可编译：${validation.errors.join("；")}`);
       }
     }
-    const quality = analyzeOpenUIQuality(openuiCode, input.cardPlan, assetManifest);
+    const quality = analyzeOpenUIQuality(openuiCode, cardPlan, assetManifest);
+    const plannedCards = cardPlan.cards.map(estimateCardLayout);
+    const layoutStabilization = {
+      status: "idle" as const,
+      planned: { withinBudget: plannedCards.filter((card) => card.fits).length, total: plannedCards.length },
+      static: { withinBudget: validation.layoutCoverage.withinBudget, total: validation.layoutCoverage.checkedCards },
+      measured: { withinBudget: 0, total: 0 },
+      measurements: [], overflowCardIds: [], repairAttempted: false, repairSucceeded: false,
+      fallbackCardIds: [], stable: layoutMode === "free",
+    };
     assetResolutionDiagnostics = {
       ...assetResolutionDiagnostics,
       required: validation.assetCoverage.required,
@@ -1216,6 +1326,8 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         statements: validation.parser.statements,
         coverage: validation.coverage,
         assetCoverage: validation.assetCoverage,
+        layoutCoverage: validation.layoutCoverage,
+        layout: layoutStabilization,
         repaired,
         repairTriggered: repaired,
         repairMs,
@@ -1224,12 +1336,14 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         assetResolutionDiagnostics,
       },
       openuiCode,
-      cardPlanMarkdown: cardPlanToVibeMarkdown(input.cardPlan, assetManifest, assetResolutionDiagnostics),
+      cardPlanMarkdown: cardPlanToVibeMarkdown(cardPlan, assetManifest, assetResolutionDiagnostics),
       assetManifest,
       assetResolutionDiagnostics,
       openuiDiagnostics: {
         coverage: validation.coverage,
         assetCoverage: validation.assetCoverage,
+        layoutCoverage: validation.layoutCoverage,
+        layout: layoutStabilization,
         parser: validation.parser,
         repaired,
         repairTriggered: repaired,
@@ -1253,12 +1367,24 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     timeToFirstContentMs: llm.timeToFirstContentMs,
     timeToFirstModelStatementMs: llm.timeToFirstModelStatementMs,
   };
+  const skillReuse: PipelineStepOutput["skillReuse"] = input.skillContext ? {
+    skillId: input.skillContext.selection.skillId,
+    skillVersionId: input.skillContext.selection.skillVersionId,
+    recipeFingerprint: input.skillContext.selection.recipeFingerprint,
+    score: input.skillContext.selection.score,
+    activation: input.skillContext.selection.activation,
+    matcherVersion: input.skillContext.selection.matcherVersion,
+    matcherModel: input.skillContext.selection.matcherModel,
+    executionMode: skillExecutionMode,
+    callsAvoided: skillCallsAvoided,
+    fallbackReason: skillFallbackReason,
+  } : undefined;
   const provenance = summarizeStepForProvenance(input.name, {
     classification,
     adaptiveContext: input.adaptiveContext,
     profileView,
     inputState: input.inferenceState,
-    output: base,
+    output: { ...base, skillReuse },
     retrievedEvidence: retrievedEvidenceForProvenance,
     cardPlan: base.cardPlan ?? input.cardPlan,
     cardPlanMarkdown: base.cardPlanMarkdown,
@@ -1272,6 +1398,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       classification,
       steeringHint: input.adaptiveContext.stepHint,
     } : undefined,
+    skillReuse,
     provenance,
     model: llm.model,
     modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name],

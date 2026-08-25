@@ -7,6 +7,7 @@ import { ResultPane } from "@/components/workspace/ResultPane";
 import { EditComposer } from "@/components/workspace/EditComposer";
 import { ReflectionOverlay } from "@/components/reflection/ReflectionOverlay";
 import { useInferStore } from "@/store/useInferStore";
+import { SkillCenter } from "@/components/learning/SkillCenter";
 
 export default function Home() {
   const { isMock, steps, runAll, runAllPaused, continueGenerate, initializeLearning } = useInferStore();
@@ -33,6 +34,7 @@ export default function Home() {
         </main>
       </div>
       <ReflectionOverlay />
+      <SkillCenter />
     </div>
   );
 }

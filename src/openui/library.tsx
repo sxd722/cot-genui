@@ -13,6 +13,7 @@ import { MediaHero } from "./components/MediaHero";
 import { ActionPanel } from "./components/ActionPanel";
 import { AssetImage } from "./components/AssetImage";
 import { AssetGallery } from "./components/AssetGallery";
+import { FIXED_LAYOUT_COMPONENTS } from "./components/FixedLayout";
 
 export const cotGenUILibrary = createLibrary({
   id: "cot-genui-carddeck-v1",
@@ -29,6 +30,7 @@ export const cotGenUILibrary = createLibrary({
     ActionPanel,
     AssetImage,
     AssetGallery,
+    ...FIXED_LAYOUT_COMPONENTS,
     HostActionChip,
     HostActionItem,
     HostActionMenu,
@@ -47,6 +49,11 @@ export const cotGenUILibrary = createLibrary({
         "Prefer a semantic component when it directly represents the content pattern.",
         "AssetImage and AssetGallery accept only host-supplied assetRef IDs, never URLs.",
       ],
+    },
+    {
+      name: "Fixed 600x300 Card Layout",
+      components: ["FixedCardContent", "FixedFacts", "FixedList", "FixedMetrics", "FixedTimeline", "FixedComparison", "FixedMedia", "FixedGallery", "FixedActions"],
+      notes: ["Use these components only when the host selects fixed-600x300 mode.", "FixedCardContent is the required body grammar and keeps all content visible without internal scrolling."],
     },
   ],
 });

@@ -16,6 +16,7 @@ export function resolveFeatureFlags(env: Record<string, string | undefined>) {
     REFLECTION_ATTRIBUTION: enabled(env, "REFLECTION_ATTRIBUTION", true),
     REFLECTION_GRADIENT: enabled(env, "REFLECTION_GRADIENT", true),
     GUARDED_AUTO_LEARN: enabled(env, "GUARDED_AUTO_LEARN", false),
+    SKILL_REUSE: enabled(env, "SKILL_REUSE", true),
   });
 }
 
@@ -30,4 +31,5 @@ export const FEATURE_FLAGS = resolveFeatureFlags({
   NEXT_PUBLIC_REFLECTION_ATTRIBUTION: process.env.NEXT_PUBLIC_REFLECTION_ATTRIBUTION,
   NEXT_PUBLIC_REFLECTION_GRADIENT: process.env.NEXT_PUBLIC_REFLECTION_GRADIENT,
   NEXT_PUBLIC_GUARDED_AUTO_LEARN: process.env.NEXT_PUBLIC_GUARDED_AUTO_LEARN,
+  NEXT_PUBLIC_SKILL_REUSE: process.env.NEXT_PUBLIC_SKILL_REUSE,
 });
