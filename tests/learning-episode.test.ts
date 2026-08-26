@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendEpisodeEdit, createGenerationEpisode, finalizeEpisode, recordInitialOpenUI } from "../src/learning/episode";
+import { appendEpisodeEdit, appendEpisodeFeedback, createGenerationEpisode, finalizeEpisode, recordInitialOpenUI } from "../src/learning/episode";
 
 const classification = { taskFamily: "general" as const, decisionMode: "explore" as const, confidence: 0.8, source: "heuristic" as const };
 
@@ -22,5 +22,16 @@ describe("generation episode", () => {
     expect(edited.edits).toHaveLength(1);
     expect(edited.edits[0]).not.toHaveProperty("code");
     expect(finalizeEpisode(edited, "final").status).toBe("accepted");
+  });
+
+  it("records overall card-flow feedback without changing the generated artifact", () => {
+    const initial = recordInitialOpenUI(createGenerationEpisode({ query: "test", classification }), "root = CardDeck([])", 0);
+    const withFeedback = appendEpisodeFeedback(initial, "整体卡片太碎，希望先给结论，再展开细节。");
+    expect(withFeedback.feedback).toHaveLength(1);
+    expect(withFeedback.initialOpenUI?.code).toBe(initial.initialOpenUI?.code);
+    const accepted = finalizeEpisode(withFeedback, "root = CardDeck([])");
+    expect(accepted.finalOpenUI).toBe("root = CardDeck([])");
+    expect(accepted.rewardMetrics?.feedbackCount).toBe(1);
+    expect(accepted.rewardMetrics?.acceptedWithoutEdit).toBe(true);
   });
 });

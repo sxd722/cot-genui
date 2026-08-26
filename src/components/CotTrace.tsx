@@ -130,6 +130,19 @@ function StepRow({ name }: { name: StepName }) {
               <p className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-700 dark:text-zinc-300">
                 {toText(s.reasoning)}
               </p>
+              {s.skillReuse ? (
+                <section className="mt-2 rounded border border-violet-200 bg-violet-50 p-2 text-[10px] text-violet-900 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-200">
+                  <strong className="block text-[11px]">Skill 对本步骤的具体影响</strong>
+                  <p className="mt-1 whitespace-pre-wrap leading-relaxed">{s.skillReuse.effectSummary || "本步骤已应用 Skill 结构先验。"}</p>
+                  <p className="mt-1 text-violet-600 dark:text-violet-400">使用投影：{(s.skillReuse.projectionKeys ?? []).join("、") || "无"}</p>
+                  {s.skillReuse.promptAddition ? (
+                    <details className="mt-1.5">
+                      <summary className="cursor-pointer font-medium">查看加入本步骤的额外 prompt</summary>
+                      <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded bg-white p-2 font-mono text-[9px] text-zinc-600 dark:bg-zinc-950 dark:text-zinc-300">{s.skillReuse.promptAddition}</pre>
+                    </details>
+                  ) : <p className="mt-1 text-violet-600 dark:text-violet-400">本步骤未向模型增加 prompt。</p>}
+                </section>
+              ) : null}
               {Object.keys(s.outputs).length > 0 && (
                 <pre className="mt-2 overflow-x-auto rounded bg-zinc-50 p-2 font-mono text-[10px] text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
                   {JSON.stringify(s.outputs, null, 2)}

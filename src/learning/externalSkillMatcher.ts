@@ -13,6 +13,7 @@ import { displayQueryAbstraction } from "./queryAbstraction";
 
 export const EXTERNAL_SKILL_MATCHER_VERSION = "external-llm-v1" as const;
 export const EXTERNAL_SKILL_CANDIDATE_LIMIT = 24;
+export const EXTERNAL_PARAMETER_CONFIDENCE_THRESHOLD = 0.8;
 
 export interface ExternalSkillCandidateView {
   skillId: string;
@@ -35,7 +36,6 @@ export interface ExternalSkillCandidateView {
   layoutModes: CardLayoutMode[];
   actionTypes: string[];
   requiresFreshData: boolean;
-  localScore: number;
 }
 
 export interface ExternalSkillMatchRequest {
@@ -87,7 +87,6 @@ export function toExternalCandidateView(candidate: SkillMatchCandidate): Externa
     layoutModes: profile.layoutModes,
     actionTypes: profile.actionTypes.slice(0, 12),
     requiresFreshData: profile.requiresFreshData,
-    localScore: candidate.score,
   };
 }
 
@@ -101,6 +100,7 @@ export function applyExternalSkillRanking(
   wire: ExternalSkillMatchWireResult,
   modelProfile: ExternalSkillMatcherModel,
   abstraction: QueryAbstractionV1,
+  layoutMode?: CardLayoutMode,
 ): SkillMatchCandidate[] {
   const byId = new Map(candidates.map((candidate) => [candidate.skill.id, candidate]));
   const currentParameters = new Map(abstraction.parameters.map((parameter) => [parameter.key, parameter]));
@@ -111,7 +111,6 @@ export function applyExternalSkillRanking(
     if (!candidate || match.decision === "rejected") return [];
     seen.add(match.skillId);
     const llmScore = boundedScore(match.score);
-    const score = Math.round((llmScore * 0.7 + candidate.score * 0.3) * 10_000) / 10_000;
     const skillKeys = new Set(candidate.recipe.intentTemplate.parameters.map((parameter) => parameter.key));
     const mappings = (Array.isArray(match.parameterMappings) ? match.parameterMappings : []).flatMap((mapping) => {
       const current = currentParameters.get(mapping.currentKey);
@@ -123,17 +122,6 @@ export function applyExternalSkillRanking(
         confidence: boundedScore(mapping.confidence),
       }];
     });
-    const mappedCurrent = new Set(mappings.map((mapping) => mapping.currentKey));
-    const mappedSkill = new Set(mappings.map((mapping) => mapping.skillKey));
-    for (const current of abstraction.parameters) {
-      if (mappedCurrent.has(current.key) || mappedSkill.has(current.key) || !skillKeys.has(current.key)) continue;
-      mappings.push({
-        currentKey: current.key,
-        skillKey: current.key,
-        value: current.value,
-        confidence: Math.min(current.confidence, 0.95),
-      });
-    }
     const reusableSteps = [...new Set([
       ...(match.reusableSteps ?? []),
       "intent_analysis" as const,
@@ -160,28 +148,86 @@ export function applyExternalSkillRanking(
       rerunSteps: rerunSteps.slice(0, 6),
       reasonCodes: (match.reasonCodes ?? []).map((item) => safeIndexText(item, 80)).filter(Boolean).slice(0, 12),
     };
+    const confidentlyMappedCurrent = new Set(mappings
+      .filter((mapping) => mapping.confidence >= EXTERNAL_PARAMETER_CONFIDENCE_THRESHOLD)
+      .map((mapping) => mapping.currentKey));
+    const missingCurrentKeys = abstraction.parameters
+      .filter((parameter) => !confidentlyMappedCurrent.has(parameter.key))
+      .map((parameter) => parameter.key);
+    const guardBlockReasons = [
+      ...(abstraction.confidence < EXTERNAL_PARAMETER_CONFIDENCE_THRESHOLD
+        ? [`任务抽象置信度 ${Math.round(abstraction.confidence * 100)}% 低于 ${Math.round(EXTERNAL_PARAMETER_CONFIDENCE_THRESHOLD * 100)}%`]
+        : []),
+      ...(missingCurrentKeys.length ? [`当前参数未完整映射：${missingCurrentKeys.join(", ")}`] : []),
+    ];
+    const decisionNotes = layoutMode && !candidate.version.indexProfile.layoutModes.includes(layoutMode)
+      ? [`历史 Skill 布局 ${candidate.version.indexProfile.layoutModes.join("/") || "unknown"} 已由当前布局 ${layoutMode} 覆盖`]
+      : [];
     return [{
-      ...candidate,
-      score,
-      matcherVersion: EXTERNAL_SKILL_MATCHER_VERSION,
-      matcherModel: modelProfile,
-      reasons: ["external-semantic", ...candidate.reasons].slice(0, 12),
-      matchExplanation: comparison.summary,
-      matchComparison: comparison,
+      candidate: {
+        ...candidate,
+        score: llmScore,
+        matcherVersion: EXTERNAL_SKILL_MATCHER_VERSION,
+        matcherModel: modelProfile,
+        reasons: ["external-semantic", ...candidate.reasons].slice(0, 12),
+        matchExplanation: comparison.summary,
+        matchComparison: comparison,
+      },
+      guardBlockReasons,
+      decisionNotes,
     }];
-  }).sort((left, right) => right.score - left.score);
-  return ranked.map((candidate, index) => {
-    const margin = Math.max(0, candidate.score - (ranked[index + 1]?.score ?? 0));
+  }).sort((left, right) => right.candidate.score - left.candidate.score);
+  return ranked.map(({ candidate, guardBlockReasons, decisionNotes }, index) => {
+    const margin = Math.max(0, candidate.score - (ranked[index + 1]?.candidate.score ?? 0));
+    const autoBlockReasons = [
+      ...(index !== 0 ? ["不是最高分候选"] : []),
+      ...(candidate.matchComparison?.decision !== "compatible" ? [`模型决策为 ${candidate.matchComparison?.decision ?? "unknown"}`] : []),
+      ...(candidate.matchComparison?.conflicts.length ? [`存在冲突：${candidate.matchComparison.conflicts.join("；")}`] : []),
+      ...guardBlockReasons,
+      ...(candidate.score < SKILL_AUTO_THRESHOLD
+        ? [`模型分数 ${Math.round(candidate.score * 100)}% 低于自动阈值 ${Math.round(SKILL_AUTO_THRESHOLD * 100)}%`]
+        : []),
+      ...(index === 0 && margin < SKILL_AUTO_MARGIN
+        ? [`领先差值 ${Math.round(margin * 100)}% 低于阈值 ${Math.round(SKILL_AUTO_MARGIN * 100)}%`]
+        : []),
+    ];
     return {
       ...candidate,
       margin,
-      activation: index === 0 && candidate.matchComparison?.decision === "compatible"
-        && !(candidate.matchComparison?.conflicts.length)
-        && candidate.score >= SKILL_AUTO_THRESHOLD && margin >= SKILL_AUTO_MARGIN
-        ? "auto" as const
-        : "suggested" as const,
+      autoBlockReasons,
+      decisionNotes: [
+        ...decisionNotes,
+        ...(!autoBlockReasons.length ? ["模型决策与宿主安全门槛均通过"] : []),
+      ],
+      activation: !autoBlockReasons.length ? "auto" as const : "suggested" as const,
     };
   }).filter((candidate) => candidate.score >= SKILL_SUGGEST_THRESHOLD);
+}
+
+/** Compact, value-free logs suitable for the development UI and failure diagnosis. */
+export function buildSkillMatchDecisionLogs(
+  candidates: SkillMatchCandidate[],
+  wire: ExternalSkillMatchWireResult,
+  matches: SkillMatchCandidate[],
+): string[] {
+  const candidateById = new Map(candidates.map((candidate) => [candidate.skill.id, candidate]));
+  const matchById = new Map(matches.map((candidate) => [candidate.skill.id, candidate]));
+  const logs = (wire.comparisons ?? []).map((comparison) => {
+    const source = candidateById.get(comparison.skillId);
+    const match = matchById.get(comparison.skillId);
+    const name = source?.skill.name ?? comparison.skillId;
+    if (!match) {
+      const reason = comparison.decision === "rejected"
+        ? `模型拒绝${comparison.conflicts.length ? `：${comparison.conflicts.join("；")}` : ""}`
+        : `模型分数 ${Math.round(comparison.score * 100)}% 低于建议阈值 ${Math.round(SKILL_SUGGEST_THRESHOLD * 100)}%`;
+      return `REJECTED · ${name} · ${reason}`;
+    }
+    if (match.activation === "auto") {
+      return `AUTO · ${name} · 模型 ${Math.round(match.score * 100)}% · margin ${Math.round(match.margin * 100)}%${match.decisionNotes?.length ? ` · ${match.decisionNotes.join("；")}` : ""}`;
+    }
+    return `SUGGESTED · ${name} · 模型 ${Math.round(match.score * 100)}% · 未自动应用：${match.autoBlockReasons?.join("；") || "未通过宿主门槛"}`;
+  });
+  return logs.length ? logs : [wire.noMatchReason ? `NO_MATCH · ${wire.noMatchReason}` : "NO_MATCH · 匹配模型未返回候选比较"];
 }
 
 export function buildSkillMatchReport(wire: ExternalSkillMatchWireResult, candidates: SkillMatchCandidate[] = []): SkillMatchReport {
@@ -227,8 +273,9 @@ export function buildSkillInvocation(candidate: SkillMatchCandidate, abstraction
     reusableSteps: comparison?.reusableSteps ?? [],
     rerunSteps: comparison?.rerunSteps ?? [],
     deterministicIntentEligible: comparison?.decision === "compatible"
-      && abstraction.confidence >= 0.75
+      && abstraction.confidence >= EXTERNAL_PARAMETER_CONFIDENCE_THRESHOLD
       && !conflicts.length
-      && !unmatchedParameters.length,
+      && !unmatchedParameters.length
+      && bindings.every((binding) => binding.confidence >= EXTERNAL_PARAMETER_CONFIDENCE_THRESHOLD),
   };
 }

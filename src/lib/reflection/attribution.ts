@@ -31,6 +31,7 @@ export function normalizeAttributionReport(value: unknown, editIntents: EditInte
 }
 
 export function deterministicAttribution(episode: GenerationEpisode): AttributionReport | null {
+  if (episode.feedback?.length) return null;
   if (!episode.edits.length) return { editIntents: [], distribution: ZERO(), topTargets: [], reasonCodes: ["accepted_without_edits"], modelUsed: false, entropy: 0 };
   const inferred = episode.edits.map(inferEditIntentHeuristic);
   if (!inferred.every((item) => ["visual", "layout", "interaction"].includes(item.intent) && !item.semanticCorrection)) return null;
@@ -95,7 +96,11 @@ export function buildReflectionEpisodeView(episode: GenerationEpisode): Reflecti
     step3: { questions: signals(episode, "clarification").filter((item) => item.startsWith("question:")).slice(0, 20) },
     step4: { summary: step4Signals[0], assumptions: step4Signals.slice(1, 30) },
     step5: { cardPlanMarkdown: episode.steps.card_plan_generate?.provenance?.cardPlanMarkdown },
-    step6: { relevantInitialCardSlices: [...new Set(episode.edits.map((edit) => edit.beforeSlice))].slice(0, 8) },
+    step6: {
+      relevantInitialCardSlices: [...new Set(episode.edits.map((edit) => edit.beforeSlice))].slice(0, 8),
+      overallOpenUI: (episode.finalOpenUI ?? episode.initialOpenUI?.code)?.slice(0, 40_000),
+    },
+    overallFeedback: (episode.feedback ?? []).map(({ id, text, createdAt }) => ({ id, text, createdAt })).slice(-20),
     edits: episode.edits.map((edit) => ({ cardId: edit.cardId, target: edit.target, instruction: edit.instruction, beforeCardSlice: edit.beforeSlice, afterCardSlice: edit.afterSlice })),
   };
 }

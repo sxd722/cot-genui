@@ -121,21 +121,31 @@ export function InputPanel() {
             已{selectedSkill.activation === "auto" ? "自动" : "手动"}锁定 · {Math.round(selectedSkill.score * 100)}% · {skillMatches.find((item) => item.skill.id === selectedSkill.skillId)?.skill.name}
           </p>
         ) : skillMatches.length ? (
-          <p className="mt-1 text-amber-700 dark:text-amber-400">发现候选，但置信度不足以自动应用；可手动选择。</p>
+          <p className="mt-1 text-amber-700 dark:text-amber-400">发现候选，但模型决策或安全门槛不足以自动应用；可手动选择。</p>
         ) : (
-          <p className="mt-1 text-zinc-500">{skillMatchStatus === "matching" ? "正在调用外部模型匹配…" : "外部模型进行语义匹配，本地评分仅用于候选预筛和故障回退。"}</p>
+          <p className="mt-1 text-zinc-500">{skillMatchStatus === "matching" ? "正在调用外部模型匹配…" : "外部模型独立决定语义分；本地评分只用于候选预筛，故障时仅提供人工候选。"}</p>
         )}
         {skillMatchError && <p className="mt-1 text-amber-700 dark:text-amber-400">{skillMatchError}</p>}
         {skillMatchDiagnostics && (
-          <p className="mt-1 text-[9px] text-zinc-500">
-            候选 {skillMatchDiagnostics.candidateCount}
-            {skillMatchDiagnostics.abstractionModel ? ` · 抽象 ${skillMatchDiagnostics.abstractionModel}` : ""}
-            {skillMatchDiagnostics.abstractionDurationMs !== undefined ? ` ${skillMatchDiagnostics.abstractionDurationMs}ms` : ""}
-            {skillMatchDiagnostics.abstractionPromptTokens !== undefined ? `/${skillMatchDiagnostics.abstractionPromptTokens} tok` : ""}
-            {skillMatchDiagnostics.model ? ` · ${skillMatchDiagnostics.model}` : ""}
-            {skillMatchDiagnostics.durationMs !== undefined ? ` · ${skillMatchDiagnostics.durationMs}ms` : ""}
-            {skillMatchDiagnostics.promptTokens !== undefined ? ` · ${skillMatchDiagnostics.promptTokens} prompt tok` : ""}
-          </p>
+          <>
+            <p className="mt-1 text-[9px] text-zinc-500">
+              候选 {skillMatchDiagnostics.candidateCount}
+              {skillMatchDiagnostics.abstractionModel ? ` · 抽象 ${skillMatchDiagnostics.abstractionModel}` : ""}
+              {skillMatchDiagnostics.abstractionDurationMs !== undefined ? ` ${skillMatchDiagnostics.abstractionDurationMs}ms` : ""}
+              {skillMatchDiagnostics.abstractionPromptTokens !== undefined ? `/${skillMatchDiagnostics.abstractionPromptTokens} tok` : ""}
+              {skillMatchDiagnostics.model ? ` · ${skillMatchDiagnostics.model}` : ""}
+              {skillMatchDiagnostics.durationMs !== undefined ? ` · ${skillMatchDiagnostics.durationMs}ms` : ""}
+              {skillMatchDiagnostics.promptTokens !== undefined ? ` · ${skillMatchDiagnostics.promptTokens} prompt tok` : ""}
+            </p>
+            {!!skillMatchDiagnostics.decisionLogs?.length && (
+              <details className="mt-1 rounded border border-emerald-200 bg-white/70 p-1.5 text-[9px] dark:border-emerald-900 dark:bg-zinc-950/60">
+                <summary className="cursor-pointer font-medium text-zinc-600 dark:text-zinc-400">Skill 匹配调试日志</summary>
+                <ul className="mt-1 list-disc space-y-1 pl-4 text-zinc-500">
+                  {skillMatchDiagnostics.decisionLogs.map((entry, index) => <li key={`${index}-${entry}`} className="break-words">{entry}</li>)}
+                </ul>
+              </details>
+            )}
+          </>
         )}
         {skillMatches.length > 0 && !skillDecisionLocked && (
           <select
@@ -174,6 +184,8 @@ export function InputPanel() {
                     <p>{comparison.summary || comparison.reasonCodes.join(" · ") || "模型未提供摘要"}</p>
                     {!!comparison.matchedInvariants.length && <p>命中：{comparison.matchedInvariants.join("、")}</p>}
                     {!!comparison.conflicts.length && <p className="text-amber-700">冲突：{comparison.conflicts.join("；")}</p>}
+                    {!!candidate?.autoBlockReasons?.length && <p className="text-amber-700">未自动应用：{candidate.autoBlockReasons.join("；")}</p>}
+                    {!!candidate?.decisionNotes?.length && <p className="text-zinc-500">宿主决策：{candidate.decisionNotes.join("；")}</p>}
                   </div>
                 );
               })}

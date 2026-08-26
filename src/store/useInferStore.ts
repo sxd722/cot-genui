@@ -13,7 +13,7 @@ import type { AdaptivePolicyEntry, QueryClassification } from "@/lib/adaptive/ty
 import type { StepProvenance } from "@/lib/provenance";
 import type { CardEditModelProfile, CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
 import type { GenerationEpisode, LearningSettings, PolicyObservation } from "@/learning/types";
-import { abandonEpisode, appendEpisodeEdit, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordEpisodeUndo, recordInitialOpenUI } from "@/learning/episode";
+import { abandonEpisode, appendEpisodeEdit, appendEpisodeFeedback, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordEpisodeUndo, recordInitialOpenUI } from "@/learning/episode";
 import { defaultSkillStepReuse, exportLearningData, getLearningSettings, listEpisodes, listPolicies, listPolicyObservations, listSkillCandidates, listSkills, listSkillVersions, putEpisode, putLearningSettings, putPolicy, putPolicyObservation } from "@/learning/storage";
 import { abandonTaskRun, acceptTaskRunAndCreateCandidate, beginStepCapture, completeStepCapture, failStepCapture, failTaskRun, recordCardEdit, recordClarificationAnswers, startTaskRun, workflowRunId } from "@/learning/workflowCapture";
 import type { AttributionReport, PolicyGradientCandidate } from "@/lib/reflection/types";
@@ -29,7 +29,7 @@ import { rankMatchableSkills, selectionFromMatch, SKILL_SUGGEST_THRESHOLD, type 
 import { buildSkillStepContext } from "@/learning/skillRecipe";
 import type { ExternalSkillMatcherModel, QueryAbstractionV1, SkillCandidateRecord, SkillInvocation, SkillMatchReport, SkillRecord, SkillRecipe, SkillReuseSelection, SkillVersionRecord } from "@/learning/workflowTypes";
 import { autoPublishSkillCandidate } from "@/learning/skillPackage";
-import { applyExternalSkillRanking, buildSkillInvocation, buildSkillMatchReport, EXTERNAL_SKILL_CANDIDATE_LIMIT, toExternalCandidateView, type ExternalSkillMatchWireResult } from "@/learning/externalSkillMatcher";
+import { applyExternalSkillRanking, buildSkillInvocation, buildSkillMatchDecisionLogs, buildSkillMatchReport, EXTERNAL_SKILL_CANDIDATE_LIMIT, toExternalCandidateView, type ExternalSkillMatchWireResult } from "@/learning/externalSkillMatcher";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -160,6 +160,9 @@ interface InferState {
   editStatus: "idle" | "streaming" | "error" | "done";
   editError: string | null;
   editStreamingPatch: string;
+  overallFeedbackDraft: string;
+  feedbackStatus: "idle" | "saving" | "saved" | "error";
+  feedbackError: string | null;
   openuiVersions: OpenUIEditVersion[];
   openuiVersionIndex: number;
   currentEpisode: GenerationEpisode | null;
@@ -191,6 +194,7 @@ interface InferState {
     durationMs?: number;
     promptTokens?: number;
     candidateCount: number;
+    decisionLogs?: string[];
   } | null;
   setQuery: (query: string) => void;
   setLayoutMode: (mode: CardLayoutMode) => void;
@@ -207,6 +211,8 @@ interface InferState {
   setTargeting: (active: boolean) => void;
   setCardEditTarget: (target: CardEditTarget | null) => void;
   setEditDraft: (value: string) => void;
+  setOverallFeedbackDraft: (value: string) => void;
+  submitOverallFeedback: () => Promise<void>;
   setCardEditModelProfile: (profile: CardEditModelProfile) => void;
   submitCardEdit: () => Promise<void>;
   undoOpenUIEdit: () => void;
@@ -272,7 +278,8 @@ function clearedResult() {
     answers: {}, runAllPaused: false,
     prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
     isTargeting: false, cardEditTarget: null as CardEditTarget | null, editDraft: "", editStatus: "idle" as const,
-    editError: null as string | null, editStreamingPatch: "", openuiVersions: [] as OpenUIEditVersion[], openuiVersionIndex: -1,
+    editError: null as string | null, editStreamingPatch: "", overallFeedbackDraft: "", feedbackStatus: "idle" as const, feedbackError: null as string | null,
+    openuiVersions: [] as OpenUIEditVersion[], openuiVersionIndex: -1,
   };
 }
 
@@ -572,6 +579,20 @@ export const useInferStore = create<InferState>((set, get) => ({
   },
   setTargeting: (isTargeting) => set({ isTargeting, ...(isTargeting ? { cardEditTarget: null, editError: null } : {}) }),
   setCardEditTarget: (cardEditTarget) => set({ cardEditTarget, isTargeting: false, editError: null }),
+  setOverallFeedbackDraft: (overallFeedbackDraft) => set({ overallFeedbackDraft, feedbackStatus: "idle", feedbackError: null }),
+  submitOverallFeedback: async () => {
+    const state = get();
+    const text = state.overallFeedbackDraft.trim();
+    if (!state.currentEpisode || state.currentEpisode.status === "accepted" || !text) return;
+    const episode = appendEpisodeFeedback(state.currentEpisode, text);
+    set({ feedbackStatus: "saving", feedbackError: null });
+    try {
+      await putEpisode(episode);
+      set({ currentEpisode: episode, overallFeedbackDraft: "", feedbackStatus: "saved", feedbackError: null });
+    } catch (error) {
+      set({ feedbackStatus: "error", feedbackError: error instanceof Error ? error.message : "整体反馈保存失败" });
+    }
+  },
   setEditDraft: (editDraft) => set({ editDraft }),
   setCardEditModelProfile: (cardEditModelProfile) => set({ cardEditModelProfile }),
   undoOpenUIEdit: () => set((state) => {
@@ -670,7 +691,10 @@ export const useInferStore = create<InferState>((set, get) => ({
     const state = get();
     if (!state.currentEpisode || !state.openuiCode) return;
     if (state.layoutMode === "fixed-600x300" && !state.layoutStabilization.stable) return;
-    const episode = finalizeEpisode(state.currentEpisode, state.openuiCode);
+    const episodeWithPendingFeedback = state.overallFeedbackDraft.trim()
+      ? appendEpisodeFeedback(state.currentEpisode, state.overallFeedbackDraft)
+      : state.currentEpisode;
+    const episode = finalizeEpisode(episodeWithPendingFeedback, state.openuiCode);
     try {
       await putEpisode(episode);
     } catch (error) {
@@ -685,7 +709,7 @@ export const useInferStore = create<InferState>((set, get) => ({
         inferenceState: state.inferenceState,
         queryAbstraction: state.queryAbstraction,
       }).then(async (candidate) => {
-        if (candidate && episode.edits.length === 0) {
+        if (candidate && episode.edits.length === 0 && !(episode.feedback?.length)) {
           await autoPublishSkillCandidate({
             candidateId: candidate.id,
             name: state.queryAbstraction?.displayName ?? state.cardPlan?.skillName ?? "已接受生成流程",
@@ -696,10 +720,10 @@ export const useInferStore = create<InferState>((set, get) => ({
       }).catch(() => undefined);
     }
     if (!FEATURE_FLAGS.REFLECTION_ATTRIBUTION || !state.learningSettings.enabled) {
-      set({ currentEpisode: episode, isReflectionOpen: false, reflectionStatus: "idle" });
+      set({ currentEpisode: episode, overallFeedbackDraft: "", feedbackStatus: "saved", isReflectionOpen: false, reflectionStatus: "idle" });
       return;
     }
-    set({ currentEpisode: episode, isReflectionOpen: true, reflectionStatus: "attributing", attributionReport: null, gradientCandidates: [], candidateDecisions: {}, reflectionError: null });
+    set({ currentEpisode: episode, overallFeedbackDraft: "", feedbackStatus: "saved", isReflectionOpen: true, reflectionStatus: "attributing", attributionReport: null, gradientCandidates: [], candidateDecisions: {}, reflectionError: null });
     void get().runReflection(episode);
   },
   runReflection: async (episodeInput) => {
@@ -981,19 +1005,29 @@ export const useInferStore = create<InferState>((set, get) => ({
       const local = await rankMatchableSkills({
         query: current.query, classification: current.queryClassification, layoutMode: current.layoutMode, profileDigest,
       });
-      const matches = local.filter((candidate) => candidate.score >= SKILL_SUGGEST_THRESHOLD);
-      const chosen = matches.find((candidate) => candidate.activation === "auto");
+      const matches = local
+        .filter((candidate) => candidate.score >= SKILL_SUGGEST_THRESHOLD)
+        .map((candidate) => ({
+          ...candidate,
+          activation: "suggested" as const,
+          autoBlockReasons: ["任务抽象模型不可用，本地候选禁止自动应用"],
+        }));
       if (requestId !== skillMatchRequestId) return;
       set({
         queryAbstraction: null,
         skillMatchReport: null,
         skillMatches: matches,
-        selectedSkill: chosen ? selectionFromMatch(chosen) : null,
-        selectedSkillRecipe: chosen?.recipe ?? null,
+        selectedSkill: null,
+        selectedSkillRecipe: null,
         selectedSkillInvocation: null,
         skillMatchStatus: "fallback",
         skillMatchError: `任务抽象不可用，已回退旧版本地匹配：${error instanceof Error ? error.message : "未知错误"}`,
-        skillMatchDiagnostics: { candidateCount: Math.min(local.length, EXTERNAL_SKILL_CANDIDATE_LIMIT) },
+        skillMatchDiagnostics: {
+          candidateCount: Math.min(local.length, EXTERNAL_SKILL_CANDIDATE_LIMIT),
+          decisionLogs: matches.length
+            ? matches.map((candidate) => `FALLBACK · ${candidate.skill.name} · ${candidate.autoBlockReasons?.[0]}`)
+            : ["NO_MATCH · 任务抽象失败，且没有本地候选"],
+        },
       });
       return;
     }
@@ -1006,7 +1040,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       set({
         queryAbstraction: abstraction, skillMatchReport: null, skillMatches: [], selectedSkill: null,
         selectedSkillRecipe: null, selectedSkillInvocation: null, skillMatchStatus: "ready",
-        skillMatchDiagnostics: { ...abstractionDiagnostics, candidateCount: 0 },
+        skillMatchDiagnostics: { ...abstractionDiagnostics, candidateCount: 0, decisionLogs: ["NO_MATCH · 没有有效、已发布且协议兼容的 Skill"] },
       });
       return;
     }
@@ -1035,7 +1069,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       const wire = await response.json() as ExternalSkillMatchWireResult & { error?: string };
       if (requestId !== skillMatchRequestId) return;
       if (!response.ok || wire.error) throw new Error(wire.error ?? "外部 Skill 匹配失败");
-      matches = applyExternalSkillRanking(candidates, wire, modelProfile, abstraction);
+      matches = applyExternalSkillRanking(candidates, wire, modelProfile, abstraction, current.layoutMode);
       matchReport = buildSkillMatchReport(wire, matches);
       diagnostics = {
         ...abstractionDiagnostics,
@@ -1043,12 +1077,22 @@ export const useInferStore = create<InferState>((set, get) => ({
         durationMs: wire.durationMs,
         promptTokens: wire.usage?.prompt,
         candidateCount: candidates.length,
+        decisionLogs: buildSkillMatchDecisionLogs(candidates, wire, matches),
       };
     } catch (error) {
       if (requestId !== skillMatchRequestId) return;
-      matches = ranked.filter((candidate) => candidate.score >= SKILL_SUGGEST_THRESHOLD);
+      const fallbackReason = `外部匹配模型不可用：${error instanceof Error ? error.message : "未知错误"}`;
+      matches = ranked
+        .filter((candidate) => candidate.score >= SKILL_SUGGEST_THRESHOLD)
+        .map((candidate) => ({ ...candidate, activation: "suggested" as const, autoBlockReasons: [fallbackReason] }));
       status = "fallback";
       matchError = `外部匹配不可用，已回退本地：${error instanceof Error ? error.message : "未知错误"}`;
+      diagnostics = {
+        ...diagnostics,
+        decisionLogs: matches.length
+          ? matches.map((candidate) => `FALLBACK · ${candidate.skill.name} · ${fallbackReason}`)
+          : [`NO_MATCH · ${fallbackReason}，且没有达到建议阈值的本地候选`],
+      };
     }
     const currentManual = current.selectedSkill?.activation === "manual"
       ? ranked.find((candidate) => candidate.skill.id === current.selectedSkill?.skillId)

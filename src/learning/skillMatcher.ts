@@ -30,6 +30,10 @@ export interface SkillMatchCandidate {
   matcherModel?: ExternalSkillMatcherModel;
   matchExplanation?: string;
   matchComparison?: SkillMatchComparison;
+  /** Host-verifiable reasons that prevented automatic reuse. Empty means auto-eligible. */
+  autoBlockReasons?: string[];
+  /** Non-blocking decision notes such as runtime layout overrides. */
+  decisionNotes?: string[];
   breakdown: {
     intentTemplate: number;
     taskFamily: number;

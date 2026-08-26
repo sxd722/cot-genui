@@ -29,6 +29,13 @@ export interface EpisodeEditRecord {
   metrics?: OpenUIEditVersion["metrics"];
 }
 
+export interface EpisodeFeedbackRecord {
+  id: string;
+  scope: "card-flow";
+  text: string;
+  createdAt: string;
+}
+
 export interface GenerationEpisode {
   id: string;
   schemaVersion: 1;
@@ -52,6 +59,8 @@ export interface GenerationEpisode {
     recordedAt: string;
   };
   edits: EpisodeEditRecord[];
+  /** 只供持久化与 Reflection 使用，不即时改写当前 CardPlan/OpenUI。 */
+  feedback?: EpisodeFeedbackRecord[];
   finalOpenUI?: string;
   rewardMetrics?: {
     editCount: number;
@@ -60,6 +69,7 @@ export interface GenerationEpisode {
     undoCount: number;
     acceptedWithoutEdit: boolean;
     timeToAcceptMs: number;
+    feedbackCount?: number;
   };
 }
 

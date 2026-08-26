@@ -229,6 +229,9 @@ interface CapturedStepOutput {
     executionMode: "normal" | "guided" | "deterministic" | "fallback";
     callsAvoided: number;
     fallbackReason?: string;
+    effectSummary: string;
+    promptAddition?: string;
+    projectionKeys: string[];
   };
 }
 
@@ -504,7 +507,10 @@ export async function acceptTaskRunAndCreateCandidate(input: {
   const run = await database.taskRuns.get(runId);
   if (!run) return null;
   const finalData = await artifactData("openui-source-final", input.finalOpenUI, { runId });
-  const feedbackData = await artifactData("acceptance-feedback", input.episode.rewardMetrics ?? {}, { runId });
+  const feedbackData = await artifactData("acceptance-feedback", {
+    metrics: input.episode.rewardMetrics ?? {},
+    overallFeedback: input.episode.feedback ?? [],
+  }, { runId });
   const recipe = recipeFromRun({
     run, episode: input.episode, plan: input.cardPlan, state: input.inferenceState ?? undefined,
     finalOpenUI: input.finalOpenUI, abstraction: input.queryAbstraction ?? undefined,

@@ -160,6 +160,9 @@ export interface PipelineStepOutput {
     executionMode: SkillExecutionMode;
     callsAvoided: number;
     fallbackReason?: string;
+    effectSummary: string;
+    promptAddition?: string;
+    projectionKeys: string[];
   };
   provenance?: StepProvenance;
 }

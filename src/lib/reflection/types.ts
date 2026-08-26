@@ -30,7 +30,8 @@ export interface ReflectionEpisodeView {
   step3: { questions: string[] };
   step4: { summary?: string; assumptions: string[] };
   step5: { cardPlanMarkdown?: string };
-  step6: { relevantInitialCardSlices: string[] };
+  step6: { relevantInitialCardSlices: string[]; overallOpenUI?: string };
+  overallFeedback: Array<{ id: string; text: string; createdAt: string }>;
   edits: Array<{ cardId: string; target: CardEditTarget; instruction: string; beforeCardSlice: string; afterCardSlice: string }>;
 }
 

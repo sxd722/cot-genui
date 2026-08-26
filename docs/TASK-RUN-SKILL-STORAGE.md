@@ -33,7 +33,9 @@ flowchart LR
 
 外部模型先把当前 query 拆为稳定 `intentKey`、不变量和 runtime 参数；本地再按 intent、参数结构、任务分类和兼容性检索候选。宿主最多将 24 个脱敏索引摘要发送给用户选择的 Qwen 27B 或 GLM-5.2。第二阶段只接收结构化 abstraction，不再接收原 query；两个请求均不包含 recipe、设备原文、历史槽位值、图片、URL 或 OpenUI 源码。
 
-有 abstraction 时，本地结构分优先比较 intent template 与参数 key/type；最终分数由外部模型 70% 和宿主结构分 30% 组成。模型 ID、参数映射和步骤名都必须通过宿主 allowlist。最高分不低于 0.82、领先第二名至少 0.08、无冲突且判定 compatible 时自动应用；0.62–0.82 只展示建议。抽象失败回退旧词法匹配，第二阶段失败则回退已抽象的本地结构分。
+有 abstraction 时，本地结构分只用于从有效 Skill 中预筛最多 24 个候选，不发送给外部模型，也不参与最终置信度。最终语义分完全采用外部模型的结构化 score；模型 ID、参数映射和步骤名仍必须通过宿主 allowlist。最高分不低于 0.82、领先第二名至少 0.08、无冲突、判定 compatible，且当前 query 已明确提供的参数均以至少 0.8 置信度完整映射时自动应用。Skill 模板中尚未获得值的必填参数不会否决匹配，而是保留为运行时“待补参数”，交给证据解析或澄清步骤补齐。历史 Skill 的布局不再构成硬门槛，当前任务布局会覆盖历史布局，CardPlan/OpenUI 仍按当前约束重新生成。0.62–0.82 或未通过安全门槛时只展示建议。抽象或第二阶段匹配失败时，本地候选只能人工选择，不允许本地评分触发自动应用。匹配面板会输出结构化决策日志，显示 AUTO、SUGGESTED、REJECTED、FALLBACK 或 NO_MATCH 及具体原因。
+
+命中 Skill 后，各步骤响应会附带可审计的 `effectSummary`、`projectionKeys` 和可选 `promptAddition`。前端在步骤展开区展示实际复用内容：确定性执行会说明避免的模型调用，guided/fallback 会显示真正追加到本步 system prompt 的 Skill 先验，不展示隐藏 CoT。
 
 ## 受控复用边界
 

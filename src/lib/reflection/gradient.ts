@@ -27,7 +27,7 @@ export function eligibleAttributionTargets(report: AttributionReport): Attributi
 
 function overlapTokens(episode: GenerationEpisode): string[] {
   const markdown = episode.steps.card_plan_generate?.provenance?.cardPlanMarkdown ?? "";
-  const explicit = [episode.query, ...episode.edits.map((edit) => edit.cardId)]
+  const explicit = [episode.query, ...episode.edits.map((edit) => edit.cardId), ...(episode.feedback ?? []).map((feedback) => feedback.text)]
     .flatMap((value) => value.split(/[\s,，。！？:：/\\|()[\]{}]+/))
     .filter((value) => [...value].length >= 4);
   const headings = [...markdown.matchAll(/^#{1,3}\s+(.+)$/gm)].map((match) => match[1].replace(/[`*_]/g, "").trim()).filter((value) => [...value].length >= 4);

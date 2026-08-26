@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { InferQuestion, InferSlot } from "./schemas";
 import { PIPELINE_STEPS, type InferenceState, type PipelineStepName } from "./pipelineTypes";
-import type { SkillStepContext } from "../learning/workflowTypes";
+import type { SkillExecutionMode, SkillStepContext } from "../learning/workflowTypes";
 
 const FORBIDDEN = /(?:https?:\/\/|data:|javascript:|file:\/\/|api[_ -]?key|authorization|cookie|secret|token|devicecontext|profileview|ignore\s+(?:all|previous)|system\s+prompt|developer\s+message|tool\s*call|<script|\beval\s*\(|\brequire\s*\()/i;
 const text = z.string().trim().min(1).max(240).refine((value) => !FORBIDDEN.test(value), "Skill 文本不安全");
@@ -111,6 +111,46 @@ export function skillPriorText(context?: SkillStepContext): string | undefined {
     JSON.stringify(context.projection),
     "不得沿用其中不存在的具体用户值、事实、URL、资产或动作目标。",
   ].join("\n");
+}
+
+const SKILL_STEP_EFFECT: Record<PipelineStepName, string> = {
+  intent_analysis: "复用历史任务类型、交付等级、槽位骨架和画像绑定",
+  evidence_resolution: "复用历史画像检索范围与槽位证据结构",
+  clarification: "复用已验证的澄清条件、问题模板和选项结构",
+  context_enrichment: "复用交付等级、新鲜度与能力调用策略",
+  card_plan_generate: "向 CardPlan 生成补充历史卡片模式、动作和媒体组织先验",
+  openui_generate: "向 OpenUI 生成补充历史组件、构图和媒体摆放先验",
+};
+
+export function describeSkillReuseEffect(
+  step: PipelineStepName,
+  context: SkillStepContext,
+  executionMode: SkillExecutionMode,
+  callsAvoided: number,
+  fallbackReason?: string,
+  modelPromptSent = true,
+): { effectSummary: string; promptAddition?: string; projectionKeys: string[] } {
+  const projectionKeys = Object.keys(context.projection).filter((key) => context.projection[key] !== undefined);
+  if (executionMode === "deterministic") {
+    return {
+      effectSummary: `${SKILL_STEP_EFFECT[step]}；本步由宿主确定性执行，跳过 ${callsAvoided} 次模型调用，没有额外模型 prompt。`,
+      projectionKeys,
+    };
+  }
+  if (!modelPromptSent) {
+    return {
+      effectSummary: `${SKILL_STEP_EFFECT[step]}；本步处于 mock 或原始流程无需模型调用，因此没有实际发送额外 prompt。`,
+      projectionKeys,
+    };
+  }
+  const fallback = executionMode === "fallback"
+    ? `；确定性条件不足（${fallbackReason ?? "unknown"}），已回退模型生成`
+    : "";
+  return {
+    effectSummary: `${SKILL_STEP_EFFECT[step]}${fallback}；以下 Skill 结构先验作为额外关注方向加入本步 system prompt。`,
+    promptAddition: skillPriorText(context),
+    projectionKeys,
+  };
 }
 
 export interface DeterministicSkillResult {

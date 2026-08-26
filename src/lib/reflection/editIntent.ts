@@ -18,7 +18,15 @@ export function inferEditIntentHeuristic(edit: EpisodeEditRecord): {
   confidence: number;
   semanticCorrection: boolean;
 } {
-  const text = edit.instruction.trim();
+  return inferFeedbackIntentHeuristic(edit.instruction);
+}
+
+export function inferFeedbackIntentHeuristic(rawText: string): {
+  intent: EditIntent;
+  confidence: number;
+  semanticCorrection: boolean;
+} {
+  const text = rawText.trim();
   const match = RULES.find((rule) => rule.pattern.test(text));
   const intent = match?.intent ?? "content_rewrite";
   const semanticCorrection = ["goal_correction", "fact_correction", "priority_change", "content_add", "content_remove", "card_structure"].includes(intent)

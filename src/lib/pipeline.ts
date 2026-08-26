@@ -32,7 +32,7 @@ import { disabledAssetResolution, resolveAssetManifest } from "@/openui/assetRes
 import type { AssetResolutionDiagnostics } from "@/openui/assetTypes";
 import { ensureAssetRequests, type MediaPlanningDiagnostics } from "@/openui/mediaPlanning";
 import type { SkillStepContext } from "@/learning/workflowTypes";
-import { deterministicClarification, deterministicEnrichment, deterministicIntent, skillPriorText } from "@/lib/skillReuse";
+import { describeSkillReuseEffect, deterministicClarification, deterministicEnrichment, deterministicIntent, skillPriorText } from "@/lib/skillReuse";
 import { cardLayoutPolicy, estimateCardLayout, fitCardPlanToLayout, fixedOpenUILayoutPrompt, normalizeCardLayoutMode, withCardLayoutPolicy } from "@/openui/layoutPolicy";
 import {
   PIPELINE_STEPS,
@@ -996,6 +996,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
           matcherModel: input.skillContext.selection.matcherModel,
           executionMode: "deterministic",
           callsAvoided,
+          ...describeSkillReuseEffect(input.name, input.skillContext, "deterministic", callsAvoided),
         },
       };
       output.provenance = summarizeStepForProvenance(input.name, { classification, adaptiveContext: input.adaptiveContext, profileView, inputState: input.inferenceState, output });
@@ -1026,6 +1027,14 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         matcherModel: input.skillContext.selection.matcherModel,
         executionMode: input.skillContext.mode === "deterministic" ? "fallback" : "guided",
         callsAvoided: 0, fallbackReason: input.skillContext.mode === "deterministic" ? "deterministic_preconditions_not_met" : undefined,
+        ...describeSkillReuseEffect(
+          input.name,
+          input.skillContext,
+          input.skillContext.mode === "deterministic" ? "fallback" : "guided",
+          0,
+          input.skillContext.mode === "deterministic" ? "deterministic_preconditions_not_met" : undefined,
+          false,
+        ),
       } : undefined,
       provenance, model: "mock", modelProfile: input.modelProfile ?? DEFAULT_PROFILES[input.name], durationMs: totalMs,
       timing: { totalMs, llmMs: 0, overheadMs: totalMs },
@@ -1378,6 +1387,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     executionMode: skillExecutionMode,
     callsAvoided: skillCallsAvoided,
     fallbackReason: skillFallbackReason,
+    ...describeSkillReuseEffect(input.name, input.skillContext, skillExecutionMode, skillCallsAvoided, skillFallbackReason, llm.model !== "skipped"),
   } : undefined;
   const provenance = summarizeStepForProvenance(input.name, {
     classification,

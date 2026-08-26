@@ -74,7 +74,7 @@ flowchart TD
 
 Adaptive Layer 不构成第七步。query 分类是本地启发式函数，典型耗时低于 2ms、零模型调用；ProfileView V2 是 Step1 的输入投影，字符数不得超过旧 ProfileDigest，默认硬上限 6,000 字符；steering 只是一条额外关注方向，不得改变协议、schema、工具、模型或步骤。Web facts 是可选证据，不得因为存在来源就增加用户无价值的卡片。
 
-卡片编辑和 Reflection 都属于 post-generation：编辑 API 只接收目标卡片闭包并在服务端合并、整体验证成功后替换 UI，不重跑六步；Reflection 只在 OK 且 Episode 已保存后执行，不接触 provider reasoning 或隐藏思维链。Attribution 与 Gradient 固定使用 `glm-5.2 · Thinking`，不继承第⑥步模型选择，以承载较长的 compact episode 上下文。它唯一能产生的可变参数是 `profileOverlay` 或现有六步的单句 hint candidate。
+卡片编辑、整体卡片流反馈和 Reflection 都属于 post-generation：编辑 API 只接收目标卡片闭包并在服务端合并、整体验证成功后替换 UI，不重跑六步；整体反馈只追加到私有 GenerationEpisode，不即时改写 CardPlan/OpenUI；Reflection 只在 OK 且 Episode 已保存后执行，并同时参考局部编辑、整体反馈、CardPlan 投影和最终 OpenUI，不接触 provider reasoning 或隐藏思维链。Attribution 与 Gradient 固定使用 `glm-5.2 · Thinking`，不继承第⑥步模型选择，以承载较长的 compact episode 上下文。它唯一能产生的可变参数是 `profileOverlay` 或现有六步的单句 hint candidate。
 
 ---
 
@@ -100,7 +100,7 @@ Adaptive Layer 不构成第七步。query 分类是本地启发式函数，典�
 - `openuiCode / openuiDiagnostics`：OpenUI Lang 流式源码、parser 和覆盖校验结果；
 - `steps`：每一步状态、模型、耗时、token、费用和调用日志。
 - `queryClassification / stablePolicies`：确定性分类和当前可用策略库；
-- `currentEpisode / openuiVersions / cardEditTarget`：当前生成、局部编辑及 Undo/Redo；
+- `currentEpisode / openuiVersions / cardEditTarget / overallFeedbackDraft`：当前生成、局部编辑、整体反馈及 Undo/Redo；
 - `attributionReport / gradientCandidates`：OK 后异步反思结果，不进入首次生成路径；
 - `prefetchedSearch`：暂停期搜索词、provider 原始结果和获取时间；
 - 模块级步骤缓存：最多 20 项的前端 LRU，只供“一键全部/继续生成”复用。

@@ -53,7 +53,7 @@ describe("external Skill matcher route", () => {
         intentKey: "travel_planning", intentDisplayName: "旅游", invariantTerms: ["旅行", "规划"],
         parameterKeys: ["destination"], parameterKinds: ["location"],
         domains: ["travel"], slotKeys: ["destination"], profileDomains: ["travel"], capabilities: [],
-        cardArchetypes: ["comparison"], layoutModes: ["free"], actionTypes: [], requiresFreshData: false, localScore: 0.75,
+        cardArchetypes: ["comparison"], layoutModes: ["free"], actionTypes: [], requiresFreshData: false,
       }],
     }));
     expect(response.status).toBe(503);

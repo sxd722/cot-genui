@@ -6,6 +6,7 @@ if Step2 contains it and Step4 loses it, credit Step4;
 if ProfileView contains it but Step1 fails to create a requirement or retrieval, credit Step1;
 if visible profile evidence failed to enter ProfileView, credit profile.
 Use Step3 only for a necessary missing question or an unnecessary question.
+overallFeedback is explicit user feedback about the complete card flow. Use it as evidence even when edits is empty, but distinguish requested improvements from praise that requires no change.
 Return compact JSON with distribution, topTargets evidence, and reasonCodes. Do not output hidden reasoning or chain-of-thought.`;
 
 export const GRADIENT_SYSTEM_PROMPT = `Generate minimal textual steering updates from high-confidence attribution targets.

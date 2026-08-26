@@ -27,6 +27,7 @@ export function createGenerationEpisode(input: {
     updatedAt: timestamp,
     steps: {},
     edits: [],
+    feedback: [],
   };
 }
 
@@ -98,6 +99,22 @@ export function appendEpisodeEdit(episode: GenerationEpisode, version: OpenUIEdi
   };
 }
 
+export function appendEpisodeFeedback(episode: GenerationEpisode, rawText: string): GenerationEpisode {
+  const text = rawText.trim().slice(0, 2_000);
+  if (!text) return episode;
+  const timestamp = now();
+  return {
+    ...episode,
+    updatedAt: timestamp,
+    feedback: [...(episode.feedback ?? []), {
+      id: uniqueId("feedback"),
+      scope: "card-flow" as const,
+      text,
+      createdAt: timestamp,
+    }].slice(-20),
+  };
+}
+
 export function recordEpisodeUndo(episode: GenerationEpisode): GenerationEpisode {
   return {
     ...episode,
@@ -109,6 +126,7 @@ export function recordEpisodeUndo(episode: GenerationEpisode): GenerationEpisode
       undoCount: (episode.rewardMetrics?.undoCount ?? 0) + 1,
       acceptedWithoutEdit: false,
       timeToAcceptMs: episode.rewardMetrics?.timeToAcceptMs ?? 0,
+      feedbackCount: episode.rewardMetrics?.feedbackCount ?? episode.feedback?.length ?? 0,
     },
   };
 }
@@ -129,6 +147,7 @@ export function finalizeEpisode(episode: GenerationEpisode, finalOpenUI: string)
       undoCount: episode.rewardMetrics?.undoCount ?? 0,
       acceptedWithoutEdit: episode.edits.length === 0,
       timeToAcceptMs: Math.max(0, Date.parse(timestamp) - Date.parse(episode.startedAt)),
+      feedbackCount: episode.feedback?.length ?? 0,
     },
   };
 }

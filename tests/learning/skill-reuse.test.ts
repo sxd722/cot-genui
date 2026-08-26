@@ -11,8 +11,8 @@ import { matchSkills, selectionFromMatch } from "../../src/learning/skillMatcher
 import { buildSkillStepContext, upgradeSkillRecipe } from "../../src/learning/skillRecipe";
 import type { SkillRecipeV1, SkillReuseSelection } from "../../src/learning/workflowTypes";
 import { acceptTaskRunAndCreateCandidate, startTaskRun } from "../../src/learning/workflowCapture";
-import { deterministicClarification, deterministicEnrichment, deterministicIntent, sanitizeSkillStepContext } from "../../src/lib/skillReuse";
-import { applyExternalSkillRanking, toExternalCandidateView } from "../../src/learning/externalSkillMatcher";
+import { describeSkillReuseEffect, deterministicClarification, deterministicEnrichment, deterministicIntent, sanitizeSkillStepContext } from "../../src/lib/skillReuse";
+import { applyExternalSkillRanking, buildSkillInvocation, buildSkillMatchDecisionLogs, toExternalCandidateView, type ExternalSkillMatchWireResult } from "../../src/learning/externalSkillMatcher";
 
 const classification = { taskFamily: "planning", decisionMode: "compare", confidence: 0.92, source: "heuristic" } satisfies QueryClassification;
 const selection: SkillReuseSelection = {
@@ -97,6 +97,20 @@ describe("Skill recipe projection and deterministic execution", () => {
     expect(sanitizeSkillStepContext(context, "card_plan_generate")).toBeUndefined();
   });
 
+  it("describes the exact per-step Skill prompt addition and deterministic effect", () => {
+    const recipe = upgradeSkillRecipe(legacyRecipe());
+    const guidedContext = buildSkillStepContext(recipe, selection, "card_plan_generate");
+    const guided = describeSkillReuseEffect("card_plan_generate", guidedContext, "guided", 0);
+    expect(guided.effectSummary).toContain("CardPlan");
+    expect(guided.promptAddition).toContain("可复用 Skill 结构先验");
+    expect(guided.promptAddition).toContain("cardPlanRecipe");
+
+    const deterministicContext = buildSkillStepContext(recipe, selection, "intent_analysis");
+    const deterministic = describeSkillReuseEffect("intent_analysis", deterministicContext, "deterministic", 1);
+    expect(deterministic.effectSummary).toContain("跳过 1 次模型调用");
+    expect(deterministic.promptAddition).toBeUndefined();
+  });
+
   it("uses clarification templates only with full coverage and keeps enrichment strict", () => {
     const recipe = upgradeSkillRecipe(legacyRecipe());
     const state = deterministicIntent(buildSkillStepContext(recipe, selection, "intent_analysis"))!.state;
@@ -145,6 +159,7 @@ describe("Skill publication and local matching", () => {
 
     const candidateView = toExternalCandidateView(matches[0]);
     expect(candidateView).not.toHaveProperty("recipe");
+    expect(candidateView).not.toHaveProperty("localScore");
     expect(JSON.stringify(candidateView)).not.toContain("root = CardDeck");
     const abstraction = {
       formatVersion: "genui-query-abstraction/1" as const,
@@ -162,7 +177,83 @@ describe("Skill publication and local matching", () => {
     expect(external).toHaveLength(1);
     expect(external[0].matcherVersion).toBe("external-llm-v1");
     expect(external[0].matcherModel).toBe("glm_5_2");
+    expect(external[0].score).toBe(0.94);
     expect(selectionFromMatch(external[0]).matcherModel).toBe("glm_5_2");
+
+    const lowLocalCandidate = {
+      ...matches[0],
+      score: 0.1,
+      activation: "suggested" as const,
+      recipe: {
+        ...matches[0].recipe,
+        intentTemplate: {
+          ...matches[0].recipe.intentTemplate,
+          intentKey: "travel_planning",
+          parameters: [{ key: "destination", valueKind: "location" as const, required: true, bindingSources: ["query" as const] }],
+        },
+      },
+    };
+    const modelWire: ExternalSkillMatchWireResult = {
+      comparisons: [{
+        skillId: skill.id, score: 0.85, decision: "compatible", summary: "通用意图和参数角色完整匹配",
+        matchedInvariants: ["travel_planning", "旅行", "规划"],
+        parameterMappings: [{ currentKey: "destination", skillKey: "destination", confidence: 0.95 }],
+        conflicts: [], reusableSteps: ["intent_analysis"], rerunSteps: ["evidence_resolution"], reasonCodes: ["intent_match", "parameter_match"],
+      }],
+    };
+    const modelDecided = applyExternalSkillRanking([lowLocalCandidate], modelWire, "groq_qwen_3_6_27b", abstraction, "fixed-600x300");
+    expect(modelDecided[0].score).toBe(0.85);
+    expect(modelDecided[0].activation).toBe("auto");
+    expect(modelDecided[0].decisionNotes).toContain("历史 Skill 布局 free 已由当前布局 fixed-600x300 覆盖");
+    expect(buildSkillMatchDecisionLogs([lowLocalCandidate], modelWire, modelDecided)[0]).toContain("AUTO");
+
+    const missingMapping = applyExternalSkillRanking([lowLocalCandidate], {
+      comparisons: [{
+        skillId: skill.id, score: 0.95, decision: "compatible", summary: "意图匹配但参数映射缺失",
+        matchedInvariants: ["travel_planning"], parameterMappings: [], conflicts: [],
+        reusableSteps: ["intent_analysis"], rerunSteps: ["evidence_resolution"], reasonCodes: ["intent_match"],
+      }],
+    }, "groq_qwen_3_6_27b", abstraction);
+    expect(missingMapping[0].activation).toBe("suggested");
+    expect(missingMapping[0].autoBlockReasons).toContain("当前参数未完整映射：destination");
+    expect(buildSkillMatchDecisionLogs([lowLocalCandidate], { comparisons: [missingMapping[0].matchComparison!] }, missingMapping)[0]).toContain("当前参数未完整映射");
+    const missingInvocation = buildSkillInvocation(missingMapping[0], abstraction);
+    expect(missingInvocation.missingRequiredKeys).toContain("destination");
+    expect(missingInvocation.deterministicIntentEligible).toBe(false);
+
+    const intentOnlyAbstraction = {
+      ...abstraction,
+      parameters: [],
+    };
+    const pendingRuntimeParameter = applyExternalSkillRanking([lowLocalCandidate], {
+      comparisons: [{
+        skillId: skill.id, score: 0.92, decision: "compatible", summary: "通用旅游规划意图匹配，目的地可在后续补齐",
+        matchedInvariants: ["travel_planning", "旅行", "规划"], parameterMappings: [], conflicts: [],
+        reusableSteps: ["intent_analysis", "clarification"], rerunSteps: ["evidence_resolution"], reasonCodes: ["intent_match"],
+      }],
+    }, "groq_qwen_3_6_27b", intentOnlyAbstraction);
+    expect(pendingRuntimeParameter[0].activation).toBe("auto");
+    const pendingInvocation = buildSkillInvocation(pendingRuntimeParameter[0], intentOnlyAbstraction);
+    expect(pendingInvocation.missingRequiredKeys).toContain("destination");
+    expect(pendingInvocation.deterministicIntentEligible).toBe(true);
+
+    const extraParameterAbstraction = {
+      ...abstraction,
+      parameters: [
+        ...abstraction.parameters,
+        { key: "budget", valueKind: "number" as const, value: "10000", source: "query" as const, confidence: 0.92 },
+      ],
+    };
+    const unmatchedParameter = applyExternalSkillRanking([lowLocalCandidate], {
+      comparisons: [{
+        skillId: skill.id, score: 0.95, decision: "compatible", summary: "目的地匹配，但预算没有 Skill 参数",
+        matchedInvariants: ["travel_planning"],
+        parameterMappings: [{ currentKey: "destination", skillKey: "destination", confidence: 0.95 }],
+        conflicts: [], reusableSteps: ["intent_analysis"], rerunSteps: ["evidence_resolution"], reasonCodes: ["intent_match"],
+      }],
+    }, "groq_qwen_3_6_27b", extraParameterAbstraction);
+    expect(unmatchedParameter[0].activation).toBe("suggested");
+    expect(buildSkillInvocation(unmatchedParameter[0], extraParameterAbstraction).deterministicIntentEligible).toBe(false);
   });
 });
 
