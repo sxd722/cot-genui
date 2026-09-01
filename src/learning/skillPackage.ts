@@ -8,6 +8,7 @@ import type {
   GenUISkillPackage,
   SkillCandidateRecord,
   SkillIndexProfile,
+  SkillExecutionCapsuleV1,
   SkillRecipe,
   StoredSkillRecipe,
   SkillRecord,
@@ -15,7 +16,7 @@ import type {
 } from "./workflowTypes";
 
 const packageSchema = z.object({
-  packageVersion: z.enum(["genui-skill/1", "genui-skill/2", "genui-skill/3"]),
+  packageVersion: z.enum(["genui-skill/1", "genui-skill/2", "genui-skill/3", "genui-skill/4"]),
   exportedAt: z.string(),
   skill: z.object({
     slug: z.string().min(1).max(120),
@@ -25,6 +26,7 @@ const packageSchema = z.object({
   }),
   version: z.object({
     recipe: z.object({ formatVersion: z.enum(["genui-skill-recipe/1", "genui-skill-recipe/2", "genui-skill-recipe/3"]) }).passthrough(),
+    capsule: z.object({ formatVersion: z.literal("genui-skill-capsule/1") }).passthrough().optional(),
     indexProfile: z.object({
       taskFamilies: z.array(z.string()), decisionModes: z.array(z.string()), language: z.string(), domains: z.array(z.string()),
       intentTerms: z.array(z.string()), slotKeys: z.array(z.string()), profileDomains: z.array(z.string()), capabilities: z.array(z.string()),
@@ -34,7 +36,7 @@ const packageSchema = z.object({
     compatibility: z.array(z.string()),
     examples: z.array(z.unknown()).max(20),
   }),
-  checksums: z.object({ recipe: z.string(), examples: z.array(z.string()), bundle: z.string() }),
+  checksums: z.object({ recipe: z.string(), capsule: z.string().optional(), examples: z.array(z.string()), bundle: z.string() }),
 });
 
 const SAFE_CAPABILITIES = new Set(["web-search", "profile-retrieval", "host-image-search", "card-edit"]);
@@ -60,6 +62,14 @@ function assertShareSafe(value: unknown, path = "$" ) {
 function slugify(value: string) {
   const slug = value.toLocaleLowerCase().replace(/[^\p{Letter}\p{Number}]+/gu, "-").replace(/^-|-$/g, "").slice(0, 100);
   return slug || `skill-${Date.now().toString(36)}`;
+}
+
+async function linkAccelerators(sourceRunId: string, skillId: string, skillVersionId: string) {
+  const database = getLearningDatabase();
+  await Promise.all([
+    database.skillAccelerators.where("sourceRunId").equals(sourceRunId).modify({ skillId, skillVersionId }),
+    database.reuseSnapshots.where("sourceRunId").equals(sourceRunId).modify({ skillId, skillVersionId }),
+  ]);
 }
 
 function mergePatch(base: unknown, patch: unknown): unknown {
@@ -89,7 +99,7 @@ export function createJsonMergePatch(base: unknown, target: unknown): unknown {
   return output;
 }
 
-async function putShareableArtifact(kind: "skill-recipe" | "skill-recipe-patch", payload: unknown, skillVersionId: string): Promise<ArtifactRecord> {
+async function putShareableArtifact(kind: "skill-recipe" | "skill-recipe-patch" | "skill-execution-capsule", payload: unknown, skillVersionId: string): Promise<ArtifactRecord> {
   assertShareSafe(payload);
   const database = getLearningDatabase();
   const contentHash = await sha256(payload);
@@ -170,7 +180,7 @@ export async function resolveSkillCandidate(input: {
   const version: SkillVersionRecord = {
     id: versionId, skillId, version: 1, status: "published", storageMode,
     baseVersionId: input.resolution === "fork" ? input.baseVersionId : undefined,
-    recipeArtifactId, patchArtifactId, exampleIds: example ? [example.id] : [], recipeFingerprint: recipeHash, bundleHash,
+    recipeArtifactId, patchArtifactId, capsuleArtifactId: candidate.capsuleArtifactId, exampleIds: example ? [example.id] : [], recipeFingerprint: recipeHash, bundleHash,
     indexProfile: candidate.indexProfile, compatibility: ["six-step-v1", "genui-skill-recipe/3"],
     taskFamilies: candidate.taskFamilies, domains: candidate.domains, createdAt: timestamp,
   };
@@ -183,6 +193,7 @@ export async function resolveSkillCandidate(input: {
     });
     await database.taskRuns.update(candidate.runId, { skillCandidateStatus: input.resolution === "fork" ? "forked" : "new-skill", updatedAt: timestamp });
   });
+  await linkAccelerators(candidate.runId, skill.id, version.id);
   return skill;
 }
 
@@ -193,6 +204,7 @@ export async function exportSkillPackage(skillId: string): Promise<GenUISkillPac
   const version = await database.skillVersions.get(skill.activeVersionId);
   if (!version) throw new Error("Skill 当前版本不存在");
   const recipe = await materializeSkillRecipe(version.id);
+  const capsule = version.capsuleArtifactId ? await getArtifactPayload<SkillExecutionCapsuleV1>(version.capsuleArtifactId) : undefined;
   const compatibility = [...new Set([
     ...version.compatibility.filter((item) => !["genui-skill-recipe/1", "genui-skill-recipe/2"].includes(item)),
     "six-step-v1", "genui-skill-recipe/3",
@@ -201,18 +213,19 @@ export async function exportSkillPackage(skillId: string): Promise<GenUISkillPac
     const example = await database.skillExamples.get(id);
     return example ? getArtifactPayload(example.artifactId) : undefined;
   }))).filter((value) => value !== undefined);
-  assertShareSafe({ recipe, examples });
+  assertShareSafe({ recipe, capsule, examples });
   const recipeChecksum = await sha256(recipe);
+  const capsuleChecksum = capsule ? await sha256(capsule) : undefined;
   const exampleChecksums = await Promise.all(examples.map(sha256));
   const bundle = await sha256({
     skill: { slug: skill.slug, name: skill.name, description: skill.description, tags: skill.tags },
-    recipe: recipeChecksum, examples: exampleChecksums, indexProfile: version.indexProfile, compatibility,
+    recipe: recipeChecksum, capsule: capsuleChecksum, examples: exampleChecksums, indexProfile: version.indexProfile, compatibility,
   });
   return {
-    packageVersion: "genui-skill/3", exportedAt: new Date().toISOString(),
+    packageVersion: capsule ? "genui-skill/4" : "genui-skill/3", exportedAt: new Date().toISOString(),
     skill: { slug: skill.slug, name: skill.name, description: skill.description, tags: skill.tags },
-    version: { recipe, indexProfile: version.indexProfile, compatibility, examples },
-    checksums: { recipe: recipeChecksum, examples: exampleChecksums, bundle },
+    version: { recipe, capsule, indexProfile: version.indexProfile, compatibility, examples },
+    checksums: { recipe: recipeChecksum, capsule: capsuleChecksum, examples: exampleChecksums, bundle },
   };
 }
 
@@ -222,18 +235,19 @@ export async function importSkillPackage(raw: unknown): Promise<SkillRecord> {
   const disallowed = parsed.version.indexProfile.capabilities.filter((item) => !SAFE_CAPABILITIES.has(item));
   if (disallowed.length) throw new Error(`Skill 使用未授权 capability：${disallowed.join(", ")}`);
   const recipeChecksum = await sha256(parsed.version.recipe);
+  const capsuleChecksum = parsed.version.capsule ? await sha256(parsed.version.capsule) : undefined;
   const exampleChecksums = await Promise.all(parsed.version.examples.map(sha256));
   const bundleChecksum = await sha256({
-    skill: parsed.skill, recipe: recipeChecksum, examples: exampleChecksums,
+    skill: parsed.skill, recipe: recipeChecksum, capsule: capsuleChecksum, examples: exampleChecksums,
     indexProfile: parsed.version.indexProfile, compatibility: parsed.version.compatibility,
   });
-  if (recipeChecksum !== parsed.checksums.recipe
+  if (recipeChecksum !== parsed.checksums.recipe || capsuleChecksum !== parsed.checksums.capsule
     || canonicalJson(exampleChecksums) !== canonicalJson(parsed.checksums.examples)
     || bundleChecksum !== parsed.checksums.bundle) throw new Error("Skill 包校验和不匹配");
   const normalizedRecipe = validateSkillRecipe(parsed.version.recipe);
   const normalizedRecipeChecksum = await sha256(normalizedRecipe);
   const normalizedBundleChecksum = await sha256({
-    skill: parsed.skill, recipe: normalizedRecipeChecksum, examples: exampleChecksums,
+    skill: parsed.skill, recipe: normalizedRecipeChecksum, capsule: capsuleChecksum, examples: exampleChecksums,
     indexProfile: parsed.version.indexProfile,
     compatibility: [...new Set([
       ...parsed.version.compatibility.filter((item) => !["genui-skill-recipe/1", "genui-skill-recipe/2"].includes(item)),
@@ -245,6 +259,9 @@ export async function importSkillPackage(raw: unknown): Promise<SkillRecord> {
   const skillId = createLearningId("skill");
   const versionId = createLearningId("skillv");
   const recipeArtifact = await putShareableArtifact("skill-recipe", normalizedRecipe, versionId);
+  const capsuleArtifact = parsed.version.capsule
+    ? await putShareableArtifact("skill-execution-capsule", parsed.version.capsule, versionId)
+    : undefined;
   const importedExamples: Array<{ id: string; artifactId: string }> = [];
   for (const payload of parsed.version.examples) {
     const contentHash = await sha256(payload);
@@ -263,7 +280,7 @@ export async function importSkillPackage(raw: unknown): Promise<SkillRecord> {
     activeVersionId: versionId, createdAt: timestamp, updatedAt: timestamp,
   };
   const version: SkillVersionRecord = {
-    id: versionId, skillId, version: 1, status: "published", storageMode: "snapshot", recipeArtifactId: recipeArtifact.id,
+    id: versionId, skillId, version: 1, status: "published", storageMode: "snapshot", recipeArtifactId: recipeArtifact.id, capsuleArtifactId: capsuleArtifact?.id,
     exampleIds: importedExamples.map((item) => item.id), recipeFingerprint: normalizedRecipeChecksum, bundleHash: normalizedBundleChecksum,
     indexProfile: parsed.version.indexProfile as SkillIndexProfile,
     compatibility: [...new Set([
@@ -341,12 +358,13 @@ export async function autoPublishSkillCandidate(input: {
     const exampleIds = example ? [...new Set([...activeVersion.exampleIds, example.id])] : activeVersion.exampleIds;
     const bundleHash = await sha256({ recipeFingerprint, exampleIds });
     await database.transaction("rw", database.skillVersions, database.skillExamples, database.skillCandidates, database.taskRuns, database.skills, async () => {
-      await database.skillVersions.update(activeVersion.id, { exampleIds, bundleHash });
+      await database.skillVersions.update(activeVersion.id, { exampleIds, bundleHash, capsuleArtifactId: candidate.capsuleArtifactId ?? activeVersion.capsuleArtifactId });
       if (example) await database.skillExamples.update(example.id, { skillVersionId: activeVersion.id });
       await database.skillCandidates.update(candidate.id, { status: "resolved", resolvedSkillId: skill.id, resolvedAt: timestamp });
       await database.taskRuns.update(candidate.runId, { skillCandidateStatus: "updated-skill", updatedAt: timestamp });
       await database.skills.update(skill.id, { updatedAt: timestamp });
     });
+    await linkAccelerators(candidate.runId, skill.id, activeVersion.id);
     return { ...skill, updatedAt: timestamp };
   }
   const versionId = createLearningId("skillv");
@@ -369,6 +387,7 @@ export async function autoPublishSkillCandidate(input: {
     baseVersionId: migrateLegacySnapshot ? undefined : activeVersion.id,
     recipeArtifactId: recipeArtifact?.id,
     patchArtifactId: patchArtifact?.id,
+    capsuleArtifactId: candidate.capsuleArtifactId,
     exampleIds,
     recipeFingerprint, bundleHash: await sha256({ recipeFingerprint, exampleIds }),
     indexProfile: candidate.indexProfile, compatibility: ["six-step-v1", "genui-skill-recipe/3"],
@@ -382,5 +401,6 @@ export async function autoPublishSkillCandidate(input: {
     await database.skillCandidates.update(candidate.id, { status: "resolved", resolvedSkillId: skill.id, resolvedAt: timestamp });
     await database.taskRuns.update(candidate.runId, { skillCandidateStatus: "updated-skill", updatedAt: timestamp });
   });
+  await linkAccelerators(candidate.runId, skill.id, version.id);
   return { ...skill, activeVersionId: version.id, updatedAt: timestamp };
 }

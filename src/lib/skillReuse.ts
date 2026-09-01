@@ -93,6 +93,9 @@ export function sanitizeSkillStepContext(raw: unknown, expectedStep: PipelineSte
   const envelope = z.object({
     formatVersion: z.literal("genui-skill-step/1"), step: z.string(), mode: z.enum(["guided", "deterministic"]),
     selection: selectionSchema, projection: z.unknown(),
+    reuseTier: z.enum(["exact-replay", "relevant-exact", "profile-compatible", "skill-only", "cold"]).optional(),
+    executionStrategy: z.enum(["replay", "program-patch", "deterministic", "weak-delta", "weak-full", "strong-fallback"]).optional(),
+    profileSimilarity: z.number().min(0).max(1).optional(),
   }).strict().safeParse(raw);
   if (!envelope.success || envelope.data.step !== expectedStep) return undefined;
   const schema = expectedStep === "intent_analysis" ? intentProjectionSchema
@@ -109,6 +112,7 @@ export function skillPriorText(context?: SkillStepContext): string | undefined {
   return [
     "可复用 Skill 结构先验（仅作结构参考；当前用户请求、当前画像证据、事实、安全规则、schema 与布局约束优先）：",
     JSON.stringify(context.projection),
+    context.executionStrategy === "weak-delta" ? "只处理当前参数、画像或事实差异；不要重做未变化的结构决策。" : "",
     "不得沿用其中不存在的具体用户值、事实、URL、资产或动作目标。",
   ].join("\n");
 }

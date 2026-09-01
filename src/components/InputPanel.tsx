@@ -36,10 +36,12 @@ export function InputPanel() {
     setSkillReuseEnabled,
     setSkillStepReuse,
     setSkillMatchModel,
+    setSkillExecutionModel,
     setSkillCenterOpen,
     skillMatchStatus,
     skillMatchError,
     skillMatchDiagnostics,
+    reusePlan,
   } = useInferStore();
 
   useEffect(() => {
@@ -116,6 +118,32 @@ export function InputPanel() {
             <option value="glm_5_2">GLM-5.2</option>
           </select>
         </div>
+        <div className="mt-1.5 flex items-center gap-2">
+          <span className="shrink-0 text-[10px] text-zinc-500">增量执行</span>
+          <select
+            value={learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b"}
+            disabled={skillDecisionLocked || learningSettings.skillReuseEnabled === false}
+            onChange={(event) => void setSkillExecutionModel(event.target.value as "groq_qwen_3_6_27b" | "glm_4_7_flash")}
+            className="min-w-0 flex-1 rounded border border-emerald-200 bg-white px-1.5 py-1 text-[10px] dark:border-emerald-900 dark:bg-zinc-950"
+          >
+            <option value="groq_qwen_3_6_27b">Qwen 27B · Groq</option>
+            <option value="glm_4_7_flash">GLM-4.7-Flash</option>
+          </select>
+        </div>
+        {reusePlan && (
+          <div className="mt-1 rounded bg-emerald-100/70 px-1.5 py-1 text-[9px] text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+            <p>
+              复用等级 {reusePlan.tier} · 画像 {Math.round(reusePlan.profileSimilarity * 100)}%
+              {reusePlan.estimatedSavings ? ` · 冷启动基线 ${reusePlan.estimatedSavings.promptTokens + reusePlan.estimatedSavings.completionTokens} tok` : ""}
+            </p>
+            {reusePlan.delta && (
+              <p className="mt-0.5">
+                增量步骤 {reusePlan.delta.affectedSteps.length}/6 · 槽位 {reusePlan.delta.affectedSlotNames.length} · 卡片 {reusePlan.delta.affectedCardIds.length}
+                {reusePlan.delta.freshnessRequired ? " · 实时事实需刷新" : ""}
+              </p>
+            )}
+          </div>
+        )}
         {selectedSkill ? (
           <p className="mt-1 text-emerald-700 dark:text-emerald-400">
             已{selectedSkill.activation === "auto" ? "自动" : "手动"}锁定 · {Math.round(selectedSkill.score * 100)}% · {skillMatches.find((item) => item.skill.id === selectedSkill.skillId)?.skill.name}

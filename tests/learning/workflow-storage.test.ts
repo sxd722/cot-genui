@@ -130,6 +130,38 @@ describe("workflow storage", () => {
     expect((await getLearningDatabase().taskRuns.get(`run_${accepted.id}`))?.skillCandidateStatus).toBe("pending-comparison");
   });
 
+  it("creates a private replay snapshot only when accepted validators all pass", async () => {
+    const accepted = { ...episode("episode_snapshot"), query: "去北京旅行" };
+    await startTaskRun({ episodeId: accepted.id, query: accepted.query, classification, layoutMode: "free" });
+    const inferenceState = {
+      taskType: "travel", needsContext: true,
+      fulfillment: { outcome: "ideas" as const, requiresFreshData: false, requiresLocation: false, requiresActionLink: false },
+      requestedDomains: ["travel"],
+      retrievalRequests: [{ slotNames: ["destination"], domains: ["travel"], sourcePaths: ["travel.pace"], semanticQuery: "travel pace" }],
+      slotRequirements: [], slots: [], conflicts: [], questions: [], assumptions: [],
+    };
+    await acceptTaskRunAndCreateCandidate({
+      episode: accepted, finalOpenUI: accepted.finalOpenUI!, cardPlan: plan(2), inferenceState,
+      context: { travel: { pace: "slow" }, unrelated: { theme: "dark" } }, cardPlanMarkdown: "# 旅行方案",
+      validation: { accepted: true, topology: true, actions: true, assets: true, rawUrls: true, layout: true },
+    });
+    const snapshots = await getLearningDatabase().reuseSnapshots.toArray();
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].artifact.openuiCode).toBe(accepted.finalOpenUI);
+    expect(snapshots[0].profileDependencyManifest.relevantValues).toHaveProperty("travel.pace");
+    expect(String(snapshots[0].profileDependencyManifest.relevantValues["travel.pace"])).toMatch(/^sha256-/);
+    expect(JSON.stringify(snapshots[0])).not.toContain("theme");
+
+    const rejected = { ...episode("episode_rejected_snapshot"), query: "去上海旅行" };
+    await startTaskRun({ episodeId: rejected.id, query: rejected.query, classification, layoutMode: "free" });
+    await acceptTaskRunAndCreateCandidate({
+      episode: rejected, finalOpenUI: rejected.finalOpenUI!, cardPlan: plan(2), inferenceState,
+      context: { travel: { pace: "slow" } }, cardPlanMarkdown: "# 上海",
+      validation: { accepted: true, topology: true, actions: false, assets: true, rawUrls: true, layout: true },
+    });
+    expect(await getLearningDatabase().reuseSnapshots.count()).toBe(1);
+  });
+
   it("creates a lightweight fork and reconstructs its materialized recipe", async () => {
     const firstEpisode = episode("episode_root");
     await startTaskRun({ episodeId: firstEpisode.id, query: firstEpisode.query, classification, layoutMode: "free" });
@@ -189,7 +221,8 @@ describe("workflow storage", () => {
     });
     const skill = await resolveSkillCandidate({ candidateId: candidate!.id, resolution: "new-skill", name: "旅行规划" });
     const bundle = await exportSkillPackage(skill.id);
-    expect(bundle.packageVersion).toBe("genui-skill/3");
+    expect(bundle.packageVersion).toBe("genui-skill/4");
+    expect(bundle.version.capsule?.formatVersion).toBe("genui-skill-capsule/1");
     expect(bundle.version.recipe.intentTemplate.intentKey).toBe("travel_planning");
     expect(bundle.version.recipe.intentTemplate.parameters.map((parameter) => parameter.key)).toContain("destination");
     expect(JSON.stringify(bundle)).not.toContain("北京");

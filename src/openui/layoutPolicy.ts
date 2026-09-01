@@ -206,7 +206,12 @@ function splitCollectionBlock(block: IRBlock): IRBlock[] {
 function partitionCard(card: CardNode): CardNode[] {
   const blocks = card.blocks.flatMap(splitCollectionBlock);
   const actions = card.actions ?? [];
-  const contentBudget = FIXED_CARD_CONTENT_HEIGHT - (actions.length > 0 && actions.length <= 2 ? 41 : 0);
+  // Pack content independently first. The action row is attached only when the
+  // final content card still fits; otherwise actions receive a stable
+  // continuation card. Reserving action space up front could leave a media
+  // block as an indivisible 180-210px atom and then attach actions anyway,
+  // producing an invalid 220px+ card after "successful" partitioning.
+  const contentBudget = FIXED_CARD_CONTENT_HEIGHT;
   const groups: IRBlock[][] = [];
   let current: IRBlock[] = [];
   let currentUnits = 0;
@@ -238,7 +243,13 @@ function partitionCard(card: CardNode): CardNode[] {
   if (groups.length === 1 && actions.length <= 2 && estimateCardLayout(card).fits) return [card];
 
   const actionGroups: CardNode["actions"][] = [];
-  if (actions.length > 2) for (let index = 0; index < actions.length; index += 2) actionGroups.push(actions.slice(index, index + 2));
+  const lastGroup = groups.at(-1) ?? [];
+  const actionsFitLastContent = actions.length > 0
+    && actions.length <= 2
+    && estimateCardLayout({ ...card, blocks: lastGroup, actions }).fits;
+  if (actions.length > 0 && !actionsFitLastContent) {
+    for (let index = 0; index < actions.length; index += 2) actionGroups.push(actions.slice(index, index + 2));
+  }
 
   const baseTitle = conciseCardTitle(card.title ?? card.purpose, "卡片");
   const contentCards: CardNode[] = groups.map((group, index) => ({
@@ -248,7 +259,7 @@ function partitionCard(card: CardNode): CardNode[] {
     purpose: index === 0 ? card.purpose : `${card.purpose}（续 ${index + 1}）`,
     blocks: group,
     presentation: { ...(card.presentation ?? { archetype: "standard" as const }), density: "compact" as const },
-    actions: actions.length <= 2 && index === groups.length - 1 ? actions : undefined,
+    actions: actionsFitLastContent && index === groups.length - 1 ? actions : undefined,
   }));
   const actionCards = actionGroups.map((group, index) => ({
     ...card,

@@ -20,7 +20,8 @@
     "smoke:openui-assets": "node --env-file-if-exists=.env.local --import tsx scripts/smoke-openui-assets.ts",
     "test": "vitest run",
     "test:layout": "playwright test",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "benchmark:skill-reuse": "node --import tsx scripts/benchmark-skill-reuse.ts"
   },
   "dependencies": {
     "@openuidev/lang-core": "0.2.11",

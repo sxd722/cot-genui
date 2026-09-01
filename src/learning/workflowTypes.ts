@@ -8,6 +8,209 @@ export type SkillExecutionMode = "normal" | "guided" | "deterministic" | "fallba
 export type SkillMatchActivation = "auto" | "suggested" | "manual";
 export type SkillMatcherVersion = "local-lexical-v1" | "external-llm-v1";
 export type ExternalSkillMatcherModel = "groq_qwen_3_6_27b" | "glm_5_2";
+export type SkillExecutionModel = "groq_qwen_3_6_27b" | "glm_4_7_flash";
+
+export type ReuseTier =
+  | "exact-replay"
+  | "relevant-exact"
+  | "profile-compatible"
+  | "skill-only"
+  | "cold";
+
+export type StepExecutionStrategy =
+  | "replay"
+  | "program-patch"
+  | "deterministic"
+  | "weak-delta"
+  | "weak-full"
+  | "strong-fallback";
+
+export interface RuntimeCompatibilityV1 {
+  pipelineVersion: string;
+  promptSetHash: string;
+  openuiSpecHash: string;
+  featureFlagsHash: string;
+}
+
+export interface ProfileDependencyManifest {
+  formatVersion: "genui-profile-dependencies/1";
+  fullContextHash: string;
+  relevantFingerprint: string;
+  hardConstraintFingerprint: string;
+  domains: string[];
+  retrievalKeys: string[];
+  selectors: string[];
+  hardConstraintKeys: string[];
+  /** Private snapshot-only values used to compare a later local profile. */
+  relevantValues: Record<string, unknown>;
+  hardConstraintValues: Record<string, unknown>;
+  softValues: Record<string, unknown>;
+}
+
+export interface SkillExecutionCapsuleV1 {
+  formatVersion: "genui-skill-capsule/1";
+  recipeFingerprint: string;
+  compatibility: RuntimeCompatibilityV1;
+  intent: SkillIntentTemplate;
+  profileDependencies: {
+    domains: string[];
+    retrievalKeys: string[];
+    selectors: string[];
+    hardConstraintKeys: string[];
+  };
+  stepContracts: Array<{
+    step: PipelineStepName;
+    reusable: boolean;
+    requiredInputs: string[];
+    weakModelHint?: string;
+  }>;
+  cardPlanTemplate: SkillRecipeV3["cardPlanRecipe"];
+  openuiTemplate: SkillRecipeV3["openuiRecipe"];
+  validators: string[];
+}
+
+export interface ReuseSnapshotV1 {
+  id: string;
+  formatVersion: "genui-reuse-snapshot/1";
+  sourceRunId: string;
+  skillId?: string;
+  skillVersionId?: string;
+  queryFingerprint: string;
+  contextFingerprint: string;
+  relevantProfileFingerprint: string;
+  invocationFingerprint: string;
+  /** Generic Skill identity without concrete runtime parameter values. */
+  genericInvocationFingerprint?: string;
+  layoutMode: CardLayoutMode;
+  compatibility: RuntimeCompatibilityV1;
+  compatibilityHash: string;
+  requiresFreshData: boolean;
+  expiresAt?: string;
+  profileDependencyManifest: ProfileDependencyManifest;
+  artifact: {
+    queryAbstraction?: QueryAbstractionV1;
+    inferenceState: import("../lib/pipelineTypes").InferenceState;
+    cardPlan: import("../dsl/modules").CardPlan;
+    cardPlanMarkdown: string;
+    openuiCode: string;
+    reasoningGraph?: string;
+    result?: unknown;
+    assetManifest?: import("../openui/assetTypes").AssetManifest;
+    openuiDiagnostics?: unknown;
+    steps?: Partial<Record<PipelineStepName, {
+      reasoning: string;
+      outputs: Record<string, unknown>;
+      durationMs: number;
+      model?: string;
+      modelProfile?: ModelProfile;
+      usage?: TokenUsage;
+    }>>;
+  };
+  validation: {
+    accepted: boolean;
+    topology: boolean;
+    actions: boolean;
+    assets: boolean;
+    rawUrls: boolean;
+    layout: boolean;
+  };
+  baseline: { durationMs: number; promptTokens: number; completionTokens: number };
+  createdAt: string;
+}
+
+export type ReuseDecisionCode =
+  | "no-accepted-snapshot"
+  | "query-match"
+  | "context-match"
+  | "context-relevant-match"
+  | "context-compatible"
+  | "context-conflict"
+  | "layout-mismatch"
+  | "runtime-mismatch"
+  | "freshness-stale"
+  | "validation-rejected"
+  | "ready";
+
+export interface ReuseDecisionTrace {
+  code: ReuseDecisionCode;
+  outcome: "pass" | "partial" | "reject";
+  summary: string;
+  snapshotId?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface SnapshotLookupResult {
+  snapshot?: ReuseSnapshotV1;
+  recommendedTier: ReuseTier;
+  profile?: {
+    kind: "exact" | "relevant-exact" | "compatible" | "different" | "hard-conflict";
+    similarity: number;
+    coverage: number;
+    hardConflict: boolean;
+  };
+  trace: ReuseDecisionTrace[];
+}
+
+export interface ReuseDeltaChange {
+  key: string;
+  kind: "added" | "changed" | "removed";
+  beforeHash?: string;
+  afterHash?: string;
+  /** Private runtime value. Diagnostics must never render this field. */
+  afterValue?: unknown;
+}
+
+export interface ReuseDeltaV1 {
+  formatVersion: "genui-reuse-delta/1";
+  baselineSnapshotId: string;
+  queryChanged: boolean;
+  genericIntentChanged: boolean;
+  layoutChanged: boolean;
+  runtimeChanges: Array<keyof RuntimeCompatibilityV1>;
+  freshnessRequired: boolean;
+  parameterChanges: ReuseDeltaChange[];
+  profileChanges: ReuseDeltaChange[];
+  affectedSlotNames: string[];
+  affectedSteps: PipelineStepName[];
+  affectedCardIds: string[];
+  reasons: string[];
+}
+
+export interface ReuseExecutionPlan {
+  tier: ReuseTier;
+  snapshotId?: string;
+  skillId?: string;
+  skillVersionId?: string;
+  profileSimilarity: number;
+  hardConstraintConflict: boolean;
+  reasons: string[];
+  delta?: ReuseDeltaV1;
+  lookupTrace?: ReuseDecisionTrace[];
+  steps: Record<PipelineStepName, {
+    strategy: StepExecutionStrategy;
+    modelProfile?: ModelProfile;
+    fallbackModelProfile?: ModelProfile;
+    reason: string;
+  }>;
+  estimatedSavings?: { durationMs: number; promptTokens: number; completionTokens: number };
+}
+
+export interface ProfileDigestCacheRecord {
+  contextHash: string;
+  digest: import("../lib/profileTypes").ProfileDigest;
+  updatedAt: string;
+}
+
+export interface SkillAcceleratorRecord {
+  id: string;
+  skillId?: string;
+  skillVersionId?: string;
+  sourceRunId: string;
+  capsuleArtifactId: string;
+  recipeFingerprint: string;
+  compatibilityHash: string;
+  createdAt: string;
+}
 
 export type SkillParameterValueKind = "location" | "date" | "number" | "enum" | "entity" | "text";
 
@@ -181,6 +384,9 @@ export interface StepRunRecord {
   skillExecutionMode?: SkillExecutionMode;
   skillCallsAvoided?: number;
   skillFallbackReason?: string;
+  reuseTier?: ReuseTier;
+  executionStrategy?: StepExecutionStrategy;
+  profileSimilarity?: number;
   startedAt: string;
   completedAt?: string;
 }
@@ -206,6 +412,7 @@ export type ArtifactKind =
   | "acceptance-feedback"
   | "legacy-episode-summary"
   | "skill-recipe"
+  | "skill-execution-capsule"
   | "skill-recipe-patch"
   | "skill-example"
   | "query-abstraction"
@@ -410,6 +617,9 @@ export interface SkillStepContext {
   mode: "guided" | "deterministic";
   selection: SkillReuseSelection;
   projection: Record<string, unknown>;
+  reuseTier?: ReuseTier;
+  executionStrategy?: StepExecutionStrategy;
+  profileSimilarity?: number;
 }
 
 export interface SkillRecord {
@@ -434,6 +644,7 @@ export interface SkillVersionRecord {
   baseVersionId?: string;
   recipeArtifactId?: string;
   patchArtifactId?: string;
+  capsuleArtifactId?: string;
   exampleIds: string[];
   recipeFingerprint: string;
   bundleHash: string;
@@ -458,6 +669,7 @@ export interface SkillCandidateRecord {
   runId: string;
   status: "pending-comparison" | "resolved" | "discarded";
   candidateRecipeArtifactId: string;
+  capsuleArtifactId?: string;
   candidateExampleId: string;
   indexProfile: SkillIndexProfile;
   taskFamilies: TaskFamily[];
@@ -471,14 +683,15 @@ export interface SkillCandidateRecord {
 }
 
 export interface GenUISkillPackage {
-  packageVersion: "genui-skill/1" | "genui-skill/2" | "genui-skill/3";
+  packageVersion: "genui-skill/1" | "genui-skill/2" | "genui-skill/3" | "genui-skill/4";
   exportedAt: string;
   skill: Pick<SkillRecord, "slug" | "name" | "description" | "tags">;
   version: {
     recipe: SkillRecipe;
+    capsule?: SkillExecutionCapsuleV1;
     indexProfile: SkillIndexProfile;
     compatibility: string[];
     examples: unknown[];
   };
-  checksums: { recipe: string; examples: string[]; bundle: string };
+  checksums: { recipe: string; capsule?: string; examples: string[]; bundle: string };
 }

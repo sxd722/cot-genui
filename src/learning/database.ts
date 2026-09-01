@@ -8,10 +8,13 @@ import type {
   ArtifactRecord,
   SkillCandidateRecord,
   SkillExampleRecord,
+  SkillAcceleratorRecord,
   SkillRecord,
   SkillVersionRecord,
   StepRunRecord,
   TaskRunRecord,
+  ReuseSnapshotV1,
+  ProfileDigestCacheRecord,
 } from "./workflowTypes";
 
 export const LEARNING_DB_NAME = "cot-genui-learning";
@@ -30,6 +33,9 @@ export class LearningDatabase extends Dexie {
   skillVersions!: EntityTable<SkillVersionRecord, "id">;
   skillExamples!: EntityTable<SkillExampleRecord, "id">;
   skillCandidates!: EntityTable<SkillCandidateRecord, "id">;
+  skillAccelerators!: EntityTable<SkillAcceleratorRecord, "id">;
+  reuseSnapshots!: EntityTable<ReuseSnapshotV1, "id">;
+  profileDigests!: EntityTable<ProfileDigestCacheRecord, "contextHash">;
 
   constructor(name = LEARNING_DB_NAME) {
     super(name);
@@ -89,6 +95,42 @@ export class LearningDatabase extends Dexie {
           createdAt: episode.startedAt, updatedAt: timestamp, acceptedAt: episode.acceptedAt,
         } satisfies TaskRunRecord);
       }
+    });
+    this.version(3).stores({
+      episodes: "id,status,updatedAt",
+      policies: "id,status,scope,taskFamily,updatedAt",
+      policyObservations: "id,episodeId,taskFamily,decision,createdAt",
+      settings: "id",
+      taskRuns: "id,status,createdAt,updatedAt,taskFamily,decisionMode,[taskFamily+status],*domains,*intentTerms,*capabilities,sourceSkillId,skillCandidateStatus",
+      stepRuns: "id,runId,[runId+sequence],[runId+step],step,status,inputFingerprint,outputFingerprint,startedAt",
+      artifacts: "id,runId,skillVersionId,stepRunId,kind,contentHash,sensitivity,[runId+kind],createdAt",
+      artifactContents: "contentHash,byteSize,codec",
+      artifactLinks: "id,runId,fromArtifactId,toArtifactId,relation,[runId+step]",
+      skills: "id,&slug,status,updatedAt,activeVersionId,forkedFromSkillId,*tags",
+      skillVersions: "id,skillId,[skillId+version],baseVersionId,storageMode,bundleHash,*taskFamilies,*domains",
+      skillExamples: "id,skillVersionId,sourceRunId,qualityTier",
+      skillCandidates: "id,runId,status,createdAt,*taskFamilies,*domains",
+      skillAccelerators: "id,skillId,skillVersionId,sourceRunId,recipeFingerprint,compatibilityHash,createdAt,[skillVersionId+compatibilityHash]",
+      reuseSnapshots: "id,sourceRunId,skillId,skillVersionId,queryFingerprint,contextFingerprint,relevantProfileFingerprint,invocationFingerprint,layoutMode,compatibilityHash,expiresAt,createdAt,[queryFingerprint+contextFingerprint+layoutMode],[invocationFingerprint+relevantProfileFingerprint+layoutMode]",
+      profileDigests: "contextHash,updatedAt",
+    });
+    this.version(4).stores({
+      episodes: "id,status,updatedAt",
+      policies: "id,status,scope,taskFamily,updatedAt",
+      policyObservations: "id,episodeId,taskFamily,decision,createdAt",
+      settings: "id",
+      taskRuns: "id,status,createdAt,updatedAt,taskFamily,decisionMode,[taskFamily+status],*domains,*intentTerms,*capabilities,sourceSkillId,skillCandidateStatus",
+      stepRuns: "id,runId,[runId+sequence],[runId+step],step,status,inputFingerprint,outputFingerprint,startedAt",
+      artifacts: "id,runId,skillVersionId,stepRunId,kind,contentHash,sensitivity,[runId+kind],createdAt",
+      artifactContents: "contentHash,byteSize,codec",
+      artifactLinks: "id,runId,fromArtifactId,toArtifactId,relation,[runId+step]",
+      skills: "id,&slug,status,updatedAt,activeVersionId,forkedFromSkillId,*tags",
+      skillVersions: "id,skillId,[skillId+version],baseVersionId,storageMode,bundleHash,*taskFamilies,*domains",
+      skillExamples: "id,skillVersionId,sourceRunId,qualityTier",
+      skillCandidates: "id,runId,status,createdAt,*taskFamilies,*domains",
+      skillAccelerators: "id,skillId,skillVersionId,sourceRunId,recipeFingerprint,compatibilityHash,createdAt,[skillVersionId+compatibilityHash]",
+      reuseSnapshots: "id,sourceRunId,skillId,skillVersionId,queryFingerprint,contextFingerprint,relevantProfileFingerprint,invocationFingerprint,genericInvocationFingerprint,layoutMode,compatibilityHash,expiresAt,createdAt,[queryFingerprint+contextFingerprint+layoutMode],[invocationFingerprint+relevantProfileFingerprint+layoutMode],[genericInvocationFingerprint+layoutMode]",
+      profileDigests: "contextHash,updatedAt",
     });
   }
 }

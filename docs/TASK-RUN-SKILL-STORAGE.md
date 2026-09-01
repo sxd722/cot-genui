@@ -2,13 +2,35 @@
 
 当前实现覆盖 TaskRun 全链捕获、SkillRecipe v3、参数化外部匹配、受控步骤复用、零编辑自动发布、跨用户导入导出和版本回滚。复用是六步管线外围的可关闭优化，不改变 CardPlan/OpenUI 安全契约。
 
+## 增量推理加速层
+
+用户接受结果后会同时沉淀两类隔离产物：
+
+- `SkillExecutionCapsuleV1` 是可分享的任务契约，保存参数角色、逐步输入、CardPlan/OpenUI 结构模板和 validators，不包含用户值、画像正文、URL 或模型私有推理。
+- `ReuseSnapshotV1` 只保存在本机 IndexedDB，保存通过安全校验的 CardPlan、OpenUI、相关画像依赖指纹和冷启动基线，不进入 Skill package。
+
+生成前先按 `query + context + layout + runtime` 复合索引查询快照。完全一致时仅重新运行 OpenUI 与资产安全校验，不调用 LLM。未完全命中时，单次 `/api/skills/resolve` 同时完成任务抽象、参数绑定与最终 Skill 决策，并按 `relevant-exact / profile-compatible / skill-only / cold` 分别选择回放、确定性执行、弱模型增量或冷启动。弱模型失败只回退当前步骤。
+
+IndexedDB v3 新增 `reuseSnapshots`、`skillAccelerators` 和 `profileDigests`；v4 为快照增加 generic invocation 复合索引，分别负责私有回放、capsule/version 索引和跨刷新画像摘要缓存。
+
+### Typed Delta v2
+
+复用索引会同时保存规范化 query、包含参数值的 binding fingerprint 和不含参数值的 generic invocation fingerprint。因而 `travel_planning(destination=北京)` 与 `travel_planning(destination=西安)` 可以命中同一通用 Skill，但北京的事实和图片不会被直接复制到西安任务。
+
+查询快照不再静默返回 miss，而会记录 query、相关画像、硬约束、布局、运行时版本、TTL 和安全校验的逐项 trace。实时事实过期、OpenUI spec 变化或布局变化只会使依赖它们的步骤失效，不再丢弃整份快照。快照回放优先使用已经验收的私有 AssetManifest，避免图片 provider 临时超时把 0 LLM 回放打回冷启动。
+
+`ReuseDeltaV1` 在宿主中比较参数、画像 selector、freshness 和 runtime stamp，并沿 `sourceSlots` 定位受影响卡片。未受影响步骤直接 replay；⑤通过 typed card patch 更新目标卡片且保留原 action topology；⑥只发送目标卡片的 OpenUI statement dependency slice。delta 请求使用独立 `/api/infer/delta` prompt，不再附加在普通全量 prompt 后。所有 patch 合并后仍运行完整 CardPlan/OpenUI validator，失败只回退当前步骤。
+
+开发日志会输出 `DELTA_ONLY`、增量/全量 payload 字符数、受影响槽位和卡片，以及 snapshot lookup 的具体失败原因。
+
 ## 数据流
 
 ```mermaid
 flowchart LR
-  Q[当前 Query + 分类 + 当前画像目录 + 布局] --> A[外部模型任务抽象]
-  A -->|旅游 destination=北京| M[IndexedDB 通用模板候选检索]
-  M --> L[外部模型结构化匹配]
+  Q[当前 Query + 分类 + 当前画像目录 + 布局] --> E{精确私有快照?}
+  E -->|是| Z[0 LLM 安全复检并回放]
+  E -->|否| M[IndexedDB 通用模板候选预筛]
+  M --> L[单次外部 resolve: 抽象 + 参数绑定 + 匹配]
   L -->|高分且领先| K[自动锁定 Skill]
   L -->|中等分| S[建议 / 手动选择]
   K --> P[参数绑定与逐步安全投影]
@@ -31,7 +53,7 @@ flowchart LR
 
 ## 匹配规则
 
-外部模型先把当前 query 拆为稳定 `intentKey`、不变量和 runtime 参数；本地再按 intent、参数结构、任务分类和兼容性检索候选。宿主最多将 24 个脱敏索引摘要发送给用户选择的 Qwen 27B 或 GLM-5.2。第二阶段只接收结构化 abstraction，不再接收原 query；两个请求均不包含 recipe、设备原文、历史槽位值、图片、URL 或 OpenUI 源码。
+本地先从有效 Skill 中预筛最多 24 个候选，再由一次外部弱模型调用将当前 query 拆为稳定 `intentKey`、不变量和 runtime 参数，并同时作出最终匹配决策。请求只包含候选脱敏索引摘要和画像目录，不包含 recipe、设备原文、历史槽位值、图片、URL 或 OpenUI 源码。旧的 abstraction + match 两请求路径仅作为兼容性故障回退。
 
 有 abstraction 时，本地结构分只用于从有效 Skill 中预筛最多 24 个候选，不发送给外部模型，也不参与最终置信度。最终语义分完全采用外部模型的结构化 score；模型 ID、参数映射和步骤名仍必须通过宿主 allowlist。最高分不低于 0.82、领先第二名至少 0.08、无冲突、判定 compatible，且当前 query 已明确提供的参数均以至少 0.8 置信度完整映射时自动应用。Skill 模板中尚未获得值的必填参数不会否决匹配，而是保留为运行时“待补参数”，交给证据解析或澄清步骤补齐。历史 Skill 的布局不再构成硬门槛，当前任务布局会覆盖历史布局，CardPlan/OpenUI 仍按当前约束重新生成。0.62–0.82 或未通过安全门槛时只展示建议。抽象或第二阶段匹配失败时，本地候选只能人工选择，不允许本地评分触发自动应用。匹配面板会输出结构化决策日志，显示 AUTO、SUGGESTED、REJECTED、FALLBACK 或 NO_MATCH 及具体原因。
 

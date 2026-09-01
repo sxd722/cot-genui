@@ -133,6 +133,36 @@ describe("fixed and free CardPlan layout modes", () => {
     expect(fitted.plan.cards.every((card) => (card.actions?.length ?? 0) <= 2)).toBe(true);
   });
 
+  it("moves actions to a continuation card when media content fits alone but not with the action row", () => {
+    const plan = fixedPlan([{
+      kind: "list",
+      title: "酒店环境与纪念日服务亮点需要在同一张内容卡中完整展示并保持图片语义".repeat(2),
+      assetRequest: {
+        kind: "image",
+        query: "海岛酒店泳池与海景实景",
+        count: 1,
+        role: "hero",
+        aspect: "wide",
+      },
+      items: [
+        { label: "临海套房", detail: "带私人露台、日落景观、全天候管家服务以及房内纪念日布置体验".repeat(2) },
+        { label: "纪念日晚餐", detail: "提供沙滩烛光布置，并可按照饮食偏好调整菜单内容与用餐时间".repeat(2) },
+      ],
+    }]);
+    plan.cards[0].actions = [
+      { id: "book", label: "查看并预订", type: "external-link", link: "https://example.com/hotel" },
+    ];
+
+    const fitted = fitCardPlanToLayout(plan, "fixed-600x300");
+
+    expect(fitted.diagnostics.valid).toBe(true);
+    expect(fitted.plan.cards).toHaveLength(2);
+    expect(fitted.plan.cards[0].blocks[0].assetRequest?.query).toBe("海岛酒店泳池与海景实景");
+    expect(fitted.plan.cards[0].actions).toBeUndefined();
+    expect(fitted.plan.cards[1].id).toBe("overview__actions_1");
+    expect(fitted.plan.cards[1].actions?.map((action) => action.id)).toEqual(["book"]);
+  });
+
   it("splits a long list item while retaining its selection flow, source slots, and media request exactly once", () => {
     const detail = "很长的列表详情需要按语义空间继续展示。".repeat(30);
     const request = { kind: "image" as const, query: "杭州西溪湿地酒店实景", count: 1, role: "hero" as const, aspect: "wide" as const };

@@ -18,15 +18,16 @@ import type {
   SkillRecipe,
   SkillReuseSelection,
   SkillStepReuseSettings,
+  SkillExecutionCapsuleV1,
+  SkillAcceleratorRecord,
+  ReuseSnapshotV1,
   StepRunRecord,
   TaskRunRecord,
 } from "./workflowTypes";
 import { parameterKindForKey } from "./queryAbstraction";
-
-const PIPELINE_VERSION = "six-step-v1";
-const PROMPT_SET_HASH = "runtime-prompt-set";
-const OPENUI_SPEC_HASH = "generated-openui-spec";
-const FEATURE_FLAGS_HASH = "runtime-feature-flags";
+import { FEATURE_FLAGS_HASH, OPENUI_SPEC_HASH, PIPELINE_VERSION, PROMPT_SET_HASH } from "./runtimeCompatibility";
+import { createProfileDependencyManifest, putReuseSnapshot, reuseSnapshotKey, skillGenericInvocationFingerprint, skillInvocationFingerprint } from "./reuseAccelerator";
+import { currentRuntimeCompatibility } from "./runtimeCompatibility";
 
 function now() { return new Date().toISOString(); }
 export function workflowRunId(episodeId: string) { return `run_${episodeId}`; }
@@ -89,6 +90,7 @@ export async function startTaskRun(input: {
   queryAbstraction?: QueryAbstractionV1;
   skillMatchReport?: SkillMatchReport;
   skillInvocation?: SkillInvocation;
+  context?: unknown;
 }): Promise<TaskRunRecord> {
   const database = getLearningDatabase();
   const id = workflowRunId(input.episodeId);
@@ -108,6 +110,7 @@ export async function startTaskRun(input: {
     status: "running",
     queryArtifactId: queryData.artifact.id,
     queryFingerprint: queryData.content.contentHash,
+    contextFingerprint: input.context ? await sha256(input.context) : undefined,
     taskFamily: input.classification.taskFamily,
     decisionMode: input.classification.decisionMode,
     language: input.language ?? "zh-CN",
@@ -137,7 +140,7 @@ export async function startTaskRun(input: {
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const artifactItems = [queryData, ...privateDiagnostics.filter((item): item is NonNullable<typeof item> => !!item)];
+  const artifactItems = [queryData, ...privateDiagnostics].filter((item): item is NonNullable<typeof item> => !!item);
   await database.transaction("rw", database.taskRuns, database.artifacts, database.artifactContents, async () => {
     await database.artifactContents.bulkPut(artifactItems.map((item) => item.content));
     await database.artifacts.bulkPut(artifactItems.map((item) => item.artifact));
@@ -232,6 +235,8 @@ interface CapturedStepOutput {
     effectSummary: string;
     promptAddition?: string;
     projectionKeys: string[];
+    reuseTier?: import("./workflowTypes").ReuseTier;
+    executionStrategy?: import("./workflowTypes").StepExecutionStrategy;
   };
 }
 
@@ -289,6 +294,8 @@ export async function completeStepCapture(input: {
       skillExecutionMode: input.output.skillReuse?.executionMode,
       skillCallsAvoided: input.output.skillReuse?.callsAvoided,
       skillFallbackReason: input.output.skillReuse?.fallbackReason,
+      reuseTier: input.output.skillReuse?.reuseTier,
+      executionStrategy: input.output.skillReuse?.executionStrategy,
       completedAt,
     });
     const state = input.step === "clarification" && Array.isArray(input.output.questions) && input.output.questions.length
@@ -495,12 +502,51 @@ function structuralExample(plan: CardPlan) {
   };
 }
 
+function executionCapsule(input: { run: TaskRunRecord; recipe: SkillRecipe; recipeFingerprint: string; state?: InferenceState }): SkillExecutionCapsuleV1 {
+  const requests = input.state?.retrievalRequests ?? [];
+  return {
+    formatVersion: "genui-skill-capsule/1",
+    recipeFingerprint: input.recipeFingerprint,
+    compatibility: currentRuntimeCompatibility(),
+    intent: input.recipe.intentTemplate,
+    profileDependencies: {
+      domains: [...new Set(requests.flatMap((request) => request.domains))],
+      retrievalKeys: [...new Set(input.state?.profileDigest?.domains.flatMap((domain) => domain.retrievalKeys) ?? [])],
+      selectors: [...new Set(requests.flatMap((request) => request.sourcePaths ?? []))],
+      hardConstraintKeys: [...new Set(requests.flatMap((request) => request.sourcePaths ?? []).filter((path) => /health|allerg|medical|household|child|budget|location|健康|过敏|家庭|预算|地点/i.test(path)))],
+    },
+    stepContracts: input.recipe.pipeline.steps.map((item) => ({
+      step: item.step,
+      reusable: true,
+      requiredInputs: item.requiredInputs,
+      weakModelHint: item.hint,
+    })),
+    cardPlanTemplate: input.recipe.cardPlanRecipe,
+    openuiTemplate: input.recipe.openuiRecipe,
+    validators: input.recipe.acceptance.validators,
+  };
+}
+
 export async function acceptTaskRunAndCreateCandidate(input: {
   episode: GenerationEpisode;
   finalOpenUI: string;
   cardPlan: CardPlan;
   inferenceState?: InferenceState | null;
   queryAbstraction?: QueryAbstractionV1 | null;
+  context?: unknown;
+  cardPlanMarkdown?: string | null;
+  reasoningGraph?: string | null;
+  assetManifest?: AssetManifest | null;
+  openuiDiagnostics?: unknown;
+  steps?: Partial<Record<PipelineStepName, {
+    reasoning: string;
+    outputs: Record<string, unknown>;
+    durationMs: number;
+    model?: string;
+    modelProfile?: ModelProfile;
+    usage?: TokenUsage;
+  }>>;
+  validation?: ReuseSnapshotV1["validation"];
 }): Promise<SkillCandidateRecord | null> {
   const database = getLearningDatabase();
   const runId = workflowRunId(input.episode.id);
@@ -516,6 +562,9 @@ export async function acceptTaskRunAndCreateCandidate(input: {
     finalOpenUI: input.finalOpenUI, abstraction: input.queryAbstraction ?? undefined,
   });
   const recipeData = await artifactData("skill-recipe", recipe, { runId, sensitivity: "shareable" });
+  const recipeFingerprint = await sha256(recipe);
+  const capsule = executionCapsule({ run, recipe, recipeFingerprint, state: input.inferenceState ?? undefined });
+  const capsuleData = await artifactData("skill-execution-capsule", capsule, { runId, sensitivity: "shareable" });
   const exampleData = await artifactData("skill-example", structuralExample(input.cardPlan), { runId, sensitivity: "sanitized" });
   const example: SkillExampleRecord = {
     id: createLearningId("example"), sourceRunId: runId, artifactId: exampleData.artifact.id,
@@ -527,20 +576,73 @@ export async function acceptTaskRunAndCreateCandidate(input: {
   });
   const candidate: SkillCandidateRecord = {
     id: createLearningId("candidate"), runId, status: "pending-comparison",
-    candidateRecipeArtifactId: recipeData.artifact.id, candidateExampleId: example.id,
+    candidateRecipeArtifactId: recipeData.artifact.id, capsuleArtifactId: capsuleData.artifact.id, candidateExampleId: example.id,
     indexProfile: profile, taskFamilies: profile.taskFamilies, domains: profile.domains, createdAt: now(),
   };
-  const items = [finalData, feedbackData, recipeData, exampleData];
-  await database.transaction("rw", database.taskRuns, database.artifacts, database.artifactContents, database.skillExamples, database.skillCandidates, async () => {
+  const accelerator: SkillAcceleratorRecord = {
+    id: createLearningId("accelerator"), sourceRunId: runId, capsuleArtifactId: capsuleData.artifact.id,
+    recipeFingerprint, compatibilityHash: await sha256(currentRuntimeCompatibility()), createdAt: now(),
+  };
+  const items = [finalData, feedbackData, recipeData, capsuleData, exampleData];
+  await database.transaction("rw", [database.taskRuns, database.artifacts, database.artifactContents, database.skillExamples, database.skillCandidates, database.skillAccelerators], async () => {
     await database.artifactContents.bulkPut(items.map((item) => item.content));
     await database.artifacts.bulkPut(items.map((item) => item.artifact));
     await database.skillExamples.put(example);
     await database.skillCandidates.put(candidate);
+    await database.skillAccelerators.put(accelerator);
     await database.taskRuns.update(runId, {
       status: "accepted", skillCandidateStatus: "pending-comparison", acceptedMetrics: input.episode.rewardMetrics,
       acceptedAt: input.episode.acceptedAt ?? now(), updatedAt: now(),
     });
   });
+  if (input.context && input.inferenceState && input.cardPlanMarkdown && input.validation && Object.values(input.validation).every(Boolean)) {
+    const requests = input.inferenceState.retrievalRequests ?? [];
+    const profileDependencyManifest = await createProfileDependencyManifest({
+      context: input.context,
+      domains: [...new Set(requests.flatMap((request) => request.domains))],
+      retrievalKeys: [...new Set(input.inferenceState.profileDigest?.domains.flatMap((domain) => domain.retrievalKeys) ?? [])],
+      selectors: [...new Set([
+        ...requests.flatMap((request) => request.sourcePaths ?? []),
+        ...(input.context && typeof input.context === "object" && "customContextText" in input.context ? ["customContextText"] : []),
+      ])],
+    });
+    const key = await reuseSnapshotKey({ query: input.episode.query, context: input.context, layoutMode: input.cardPlan.layoutPolicy?.mode ?? run.layoutMode });
+    const invocationFingerprint = input.queryAbstraction
+      ? await skillInvocationFingerprint(input.queryAbstraction)
+      : await sha256(input.episode.query.trim());
+    const genericInvocationFingerprint = input.queryAbstraction
+      ? await skillGenericInvocationFingerprint(input.queryAbstraction)
+      : invocationFingerprint;
+    const stepValues = Object.values(input.steps ?? {});
+    const requiresFreshData = input.inferenceState.fulfillment?.requiresFreshData ?? false;
+    const snapshot: ReuseSnapshotV1 = {
+      id: createLearningId("snapshot"), formatVersion: "genui-reuse-snapshot/1", sourceRunId: runId,
+      skillId: run.sourceSkillId, skillVersionId: run.sourceSkillVersionId,
+      queryFingerprint: key.queryFingerprint, contextFingerprint: key.contextFingerprint,
+      relevantProfileFingerprint: profileDependencyManifest.relevantFingerprint, invocationFingerprint,
+      genericInvocationFingerprint,
+      layoutMode: input.cardPlan.layoutPolicy?.mode ?? run.layoutMode,
+      compatibility: currentRuntimeCompatibility(), compatibilityHash: key.compatibilityHash,
+      requiresFreshData,
+      ...(requiresFreshData ? { expiresAt: new Date(Date.now() + 10 * 60 * 1_000).toISOString() } : {}),
+      profileDependencyManifest,
+      artifact: {
+        queryAbstraction: input.queryAbstraction ?? undefined,
+        inferenceState: input.inferenceState, cardPlan: input.cardPlan, cardPlanMarkdown: input.cardPlanMarkdown,
+        openuiCode: input.finalOpenUI, reasoningGraph: input.reasoningGraph ?? undefined,
+        assetManifest: input.assetManifest ?? undefined, openuiDiagnostics: input.openuiDiagnostics,
+        steps: input.steps,
+      },
+      validation: input.validation,
+      baseline: {
+        durationMs: stepValues.reduce((sum, item) => sum + (item?.durationMs ?? 0), 0),
+        promptTokens: stepValues.reduce((sum, item) => sum + (item?.usage?.prompt ?? 0), 0),
+        completionTokens: stepValues.reduce((sum, item) => sum + (item?.usage?.completion ?? 0), 0),
+      },
+      createdAt: now(),
+    };
+    await putReuseSnapshot(snapshot);
+  }
   return candidate;
 }
 

@@ -14,7 +14,7 @@ import type { StepProvenance } from "@/lib/provenance";
 import type { CardEditModelProfile, CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
 import type { GenerationEpisode, LearningSettings, PolicyObservation } from "@/learning/types";
 import { abandonEpisode, appendEpisodeEdit, appendEpisodeFeedback, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordEpisodeUndo, recordInitialOpenUI } from "@/learning/episode";
-import { defaultSkillStepReuse, exportLearningData, getLearningSettings, listEpisodes, listPolicies, listPolicyObservations, listSkillCandidates, listSkills, listSkillVersions, putEpisode, putLearningSettings, putPolicy, putPolicyObservation } from "@/learning/storage";
+import { defaultSkillStepReuse, exportLearningData, getLearningSettings, getProfileDigestCache, listEpisodes, listPolicies, listPolicyObservations, listSkillCandidates, listSkills, listSkillVersions, putEpisode, putLearningSettings, putPolicy, putPolicyObservation, putProfileDigestCache } from "@/learning/storage";
 import { abandonTaskRun, acceptTaskRunAndCreateCandidate, beginStepCapture, completeStepCapture, failStepCapture, failTaskRun, recordCardEdit, recordClarificationAnswers, startTaskRun, workflowRunId } from "@/learning/workflowCapture";
 import type { AttributionReport, PolicyGradientCandidate } from "@/lib/reflection/types";
 import { canGuardedAutoPromote, observationFromCandidate, promoteCandidate, reflectionPolicyForEpisode, rollbackPolicy } from "@/lib/reflection/promotion";
@@ -27,9 +27,12 @@ import { stableTextHash } from "@/lib/provenance";
 import { buildDeterministicFixedOpenUI } from "@/openui/fixedArtifact";
 import { rankMatchableSkills, selectionFromMatch, SKILL_SUGGEST_THRESHOLD, type SkillMatchCandidate } from "@/learning/skillMatcher";
 import { buildSkillStepContext } from "@/learning/skillRecipe";
-import type { ExternalSkillMatcherModel, QueryAbstractionV1, SkillCandidateRecord, SkillInvocation, SkillMatchReport, SkillRecord, SkillRecipe, SkillReuseSelection, SkillVersionRecord } from "@/learning/workflowTypes";
+import type { ExternalSkillMatcherModel, QueryAbstractionV1, ReuseDeltaV1, ReuseExecutionPlan, ReuseSnapshotV1, SkillCandidateRecord, SkillExecutionModel, SkillInvocation, SkillMatchReport, SkillRecord, SkillRecipe, SkillReuseSelection, SkillVersionRecord } from "@/learning/workflowTypes";
 import { autoPublishSkillCandidate } from "@/learning/skillPackage";
 import { applyExternalSkillRanking, buildSkillInvocation, buildSkillMatchDecisionLogs, buildSkillMatchReport, EXTERNAL_SKILL_CANDIDATE_LIMIT, toExternalCandidateView, type ExternalSkillMatchWireResult } from "@/learning/externalSkillMatcher";
+import { createReuseDelta, createReuseExecutionPlan, findInvocationReuseSnapshot, findReuseSnapshot, getReuseSnapshot, skillGenericInvocationFingerprint, skillInvocationFingerprint } from "@/learning/reuseAccelerator";
+import { sha256 } from "@/learning/hash";
+import { applyProgramInferenceDelta, publicDeltaSummary } from "@/learning/deltaPatch";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -77,6 +80,8 @@ interface SearchPrefetch {
 
 interface InferApiResponse {
   error?: string;
+  delta?: unknown;
+  fallback?: "strong-current-step";
   _mock?: boolean;
   _logs?: StepLog[];
   reasoning?: string;
@@ -196,6 +201,8 @@ interface InferState {
     candidateCount: number;
     decisionLogs?: string[];
   } | null;
+  reusePlan: ReuseExecutionPlan | null;
+  reuseDelta: ReuseDeltaV1 | null;
   setQuery: (query: string) => void;
   setLayoutMode: (mode: CardLayoutMode) => void;
   hydrateLayoutMode: () => void;
@@ -225,6 +232,7 @@ interface InferState {
   setSkillReuseEnabled: (enabled: boolean) => Promise<void>;
   setSkillStepReuse: (step: StepName, enabled: boolean) => Promise<void>;
   setSkillMatchModel: (model: ExternalSkillMatcherModel) => Promise<void>;
+  setSkillExecutionModel: (model: SkillExecutionModel) => Promise<void>;
   prepareSkillReuse: () => Promise<void>;
   selectSkillMatch: (skillId: string | null) => void;
   refreshSkills: () => Promise<void>;
@@ -300,6 +308,123 @@ function persistLayoutPreference(layoutMode: CardLayoutMode) {
   } catch {
     // The in-memory selection remains authoritative for this session.
   }
+}
+
+function replayedSteps(snapshot: ReuseSnapshotV1): Record<StepName, StepState> {
+  return Object.fromEntries(STEP_ORDER.map((name) => {
+    const stored = snapshot.artifact.steps?.[name];
+    return [name, {
+      status: "done" as const,
+      reasoning: stored?.reasoning ?? "已从用户接受且运行时兼容的私有快照回放。",
+      outputs: {
+        ...(stored?.outputs ?? {}),
+        reuseTier: "exact-replay",
+        executionStrategy: "replay",
+        sourceRunId: snapshot.sourceRunId,
+      },
+      durationMs: 0,
+      timing: { totalMs: 0, llmMs: 0, overheadMs: 0 },
+      model: "local-replay",
+      tokens: { prompt: 0, completion: 0, total: 0, cached: 0 },
+      streamingChars: 0,
+      error: null,
+      logs: [{ ts: new Date().toISOString(), phase: "reuse", message: `Exact Replay · ${name} · 跳过模型调用` }],
+      skillReuse: {
+        skillId: snapshot.skillId ?? "private-snapshot",
+        skillVersionId: snapshot.skillVersionId ?? snapshot.sourceRunId,
+        recipeFingerprint: "private-snapshot",
+        score: 1,
+        activation: "auto" as const,
+        matcherVersion: "local-lexical-v1" as const,
+        executionMode: "deterministic" as const,
+        callsAvoided: 1,
+        effectSummary: "直接回放已接受结果，并重新执行 OpenUI 安全校验。",
+        projectionKeys: ["acceptedSnapshot"],
+        reuseTier: "exact-replay" as const,
+        executionStrategy: "replay" as const,
+        profileSimilarity: 1,
+      },
+    } satisfies StepState];
+  })) as unknown as Record<StepName, StepState>;
+}
+
+interface ReplayValidationPayload {
+  valid?: boolean;
+  error?: string;
+  validation?: NonNullable<InferApiResponse["openuiDiagnostics"]>;
+  assetManifest?: AssetManifest;
+}
+
+async function validateReplaySnapshot(snapshot: ReuseSnapshotV1): Promise<ReplayValidationPayload> {
+  const response = await fetch("/api/openui/replay", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      cardPlan: snapshot.artifact.cardPlan,
+      openuiCode: snapshot.artifact.openuiCode,
+      assetManifest: snapshot.artifact.assetManifest,
+      preferSnapshotAssets: true,
+    }),
+  });
+  const payload = await response.json() as ReplayValidationPayload;
+  return response.ok ? payload : { ...payload, valid: false };
+}
+
+function replayStatePatch(state: InferState, snapshot: ReuseSnapshotV1, validation: ReplayValidationPayload, plan: ReuseExecutionPlan): Partial<InferState> {
+  let episode = createGenerationEpisode({ query: state.query, classification: state.queryClassification, userKey: snapshot.contextFingerprint });
+  episode = recordInitialOpenUI(episode, snapshot.artifact.openuiCode, snapshot.artifact.cardPlan.cards.length);
+  const storedDiagnostics = snapshot.artifact.openuiDiagnostics as InferApiResponse["openuiDiagnostics"] | undefined;
+  const diagnostics = validation.validation ? {
+    ...storedDiagnostics, ...validation.validation,
+    repaired: storedDiagnostics?.repaired ?? false,
+    repairTriggered: storedDiagnostics?.repairTriggered ?? false,
+    assetManifest: validation.assetManifest,
+  } : storedDiagnostics ?? null;
+  return {
+    runAllPaused: false, currentEpisode: episode, isReflectionOpen: false, skillDecisionLocked: true, reusePlan: plan,
+    inferenceState: snapshot.artifact.inferenceState,
+    slots: snapshot.artifact.inferenceState.slots,
+    conflicts: snapshot.artifact.inferenceState.conflicts,
+    questions: snapshot.artifact.inferenceState.questions,
+    result: (snapshot.artifact.result as InferResult | undefined) ?? null,
+    cardPlan: snapshot.artifact.cardPlan, cardPlanMarkdown: snapshot.artifact.cardPlanMarkdown,
+    reasoningGraph: snapshot.artifact.reasoningGraph ?? null, openuiCode: snapshot.artifact.openuiCode,
+    openuiDiagnostics: diagnostics,
+    assetManifest: validation.assetManifest ?? snapshot.artifact.assetManifest ?? null,
+    steps: replayedSteps(snapshot), rightView: "openui",
+    openuiVersions: [{ id: "v0", createdAt: new Date().toISOString(), code: snapshot.artifact.openuiCode }],
+    openuiVersionIndex: 0,
+    layoutStabilization: diagnostics?.layout ?? emptyLayoutStabilization(snapshot.artifact.cardPlan.cards.length),
+    skillMatchStatus: "ready", skillMatchError: null,
+    skillMatchDiagnostics: {
+      ...(state.skillMatchDiagnostics ?? { candidateCount: 0 }),
+      decisionLogs: [
+        ...(state.skillMatchDiagnostics?.decisionLogs ?? []),
+        `${plan.tier.toUpperCase()} · ${snapshot.id} · 后续 0 LLM · 预计节省 ${snapshot.baseline.promptTokens + snapshot.baseline.completionTokens} tokens / ${snapshot.baseline.durationMs}ms`,
+      ],
+    },
+  };
+}
+
+function deltaSkillReuse(snapshot: ReuseSnapshotV1, plan: ReuseExecutionPlan, name: StepName, selection?: SkillReuseSelection | null): NonNullable<PipelineStepOutput["skillReuse"]> {
+  const targetCount = name === "card_plan_generate" || name === "openui_generate"
+    ? plan.delta?.affectedCardIds.length ?? 0
+    : plan.delta?.affectedSlotNames.length ?? 0;
+  return {
+    skillId: selection?.skillId ?? snapshot.skillId ?? "private-snapshot",
+    skillVersionId: selection?.skillVersionId ?? snapshot.skillVersionId ?? snapshot.sourceRunId,
+    recipeFingerprint: selection?.recipeFingerprint ?? "private-snapshot",
+    score: selection?.score ?? 1,
+    activation: selection?.activation ?? "auto",
+    matcherVersion: selection?.matcherVersion ?? "local-lexical-v1",
+    matcherModel: selection?.matcherModel,
+    executionMode: "guided",
+    callsAvoided: 0,
+    effectSummary: `使用私有快照作为基线，仅让弱模型处理 ${targetCount || 1} 个受影响目标。`,
+    projectionKeys: ["reuseDelta", "baselineSlice", "typedPatch"],
+    reuseTier: plan.tier,
+    executionStrategy: "weak-delta",
+    profileSimilarity: plan.profileSimilarity,
+  };
 }
 
 function savedLayoutPreference(): CardLayoutMode | null {
@@ -439,6 +564,17 @@ function persistAbandoned(episode: GenerationEpisode | null) {
   void abandonTaskRun(episode.id).catch(() => undefined);
 }
 
+function runtimeContextForReuse(contextText: string, customContextText: string): Record<string, unknown> | null {
+  try {
+    const deviceContext = JSON.parse(contextText) as Record<string, unknown>;
+    return customContextText.trim().length > 20
+      ? { deviceContext, customContextText: customContextText.trim() }
+      : deviceContext;
+  } catch {
+    return null;
+  }
+}
+
 function downloadJson(value: unknown, filename: string) {
   const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -475,6 +611,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   learningSettings: {
     id: "settings", enabled: true, learningMode: "manual", skillReuseEnabled: true,
     skillStepReuse: defaultSkillStepReuse(), skillMatchModel: "groq_qwen_3_6_27b", updatedAt: new Date(0).toISOString(),
+    skillExecutionModel: "groq_qwen_3_6_27b",
   },
   skillMatches: [],
   selectedSkill: null,
@@ -490,6 +627,8 @@ export const useInferStore = create<InferState>((set, get) => ({
   skillMatchStatus: "idle",
   skillMatchError: null,
   skillMatchDiagnostics: null,
+  reusePlan: null,
+  reuseDelta: null,
   ...clearedResult(),
 
   setQuery: (query) => {
@@ -503,6 +642,8 @@ export const useInferStore = create<InferState>((set, get) => ({
       steps: emptySteps(),
       skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false,
       skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null,
+      reusePlan: null,
+      reuseDelta: null,
       ...clearedResult(),
     });
   },
@@ -530,6 +671,8 @@ export const useInferStore = create<InferState>((set, get) => ({
       currentEpisode: null,
       skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false,
       skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null,
+      reusePlan: null,
+      reuseDelta: null,
       steps: {
         ...state.steps,
         card_plan_generate: emptyStep(),
@@ -549,6 +692,8 @@ export const useInferStore = create<InferState>((set, get) => ({
       contextText, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null,
       steps: emptySteps(), currentEpisode: null, skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false,
       skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null,
+      reusePlan: null,
+      reuseDelta: null,
       ...clearedResult(),
     });
   },
@@ -559,6 +704,8 @@ export const useInferStore = create<InferState>((set, get) => ({
       customContextText: text, profileStatus: "idle", profileDigest: null, profileContextText: null,
       currentEpisode: null, steps: emptySteps(), skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false,
       skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null,
+      reusePlan: null,
+      reuseDelta: null,
       ...clearedResult(),
     });
   },
@@ -702,13 +849,31 @@ export const useInferStore = create<InferState>((set, get) => ({
       return;
     }
     if (state.cardPlan) {
-      void acceptTaskRunAndCreateCandidate({
-        episode,
-        finalOpenUI: state.openuiCode,
-        cardPlan: state.cardPlan,
-        inferenceState: state.inferenceState,
-        queryAbstraction: state.queryAbstraction,
-      }).then(async (candidate) => {
+      try {
+        const candidate = await acceptTaskRunAndCreateCandidate({
+          episode,
+          finalOpenUI: state.openuiCode,
+          cardPlan: state.cardPlan,
+          inferenceState: state.inferenceState,
+          queryAbstraction: state.queryAbstraction,
+          context: runtimeContextForReuse(state.contextText, state.customContextText) ?? undefined,
+          cardPlanMarkdown: state.cardPlanMarkdown,
+          reasoningGraph: state.reasoningGraph,
+          assetManifest: state.assetManifest,
+          openuiDiagnostics: state.openuiDiagnostics,
+          steps: Object.fromEntries(Object.entries(state.steps).filter(([, step]) => step.status === "done").map(([name, step]) => [name, {
+            reasoning: step.reasoning, outputs: step.outputs, durationMs: step.durationMs,
+            model: step.model, modelProfile: step.modelProfile, usage: step.tokens,
+          }])) as ReuseSnapshotV1["artifact"]["steps"],
+          validation: {
+            accepted: true,
+            topology: !!state.openuiDiagnostics && state.openuiDiagnostics.coverage.matched === state.openuiDiagnostics.coverage.required,
+            actions: !!state.openuiDiagnostics && state.openuiDiagnostics.coverage.matched === state.openuiDiagnostics.coverage.required,
+            assets: state.openuiDiagnostics?.assetCoverage.valid ?? !(state.assetManifest?.requests.length),
+            rawUrls: true,
+            layout: state.layoutMode === "free" || state.layoutStabilization.stable,
+          },
+        });
         if (candidate && episode.edits.length === 0 && !(episode.feedback?.length)) {
           await autoPublishSkillCandidate({
             candidateId: candidate.id,
@@ -717,7 +882,15 @@ export const useInferStore = create<InferState>((set, get) => ({
           });
         }
         await get().refreshSkills();
-      }).catch(() => undefined);
+      } catch (error) {
+        set((current) => ({
+          skillMatchError: `结果已接受，但复用快照写入失败：${error instanceof Error ? error.message : "IndexedDB 不可用"}`,
+          skillMatchDiagnostics: {
+            ...(current.skillMatchDiagnostics ?? { candidateCount: 0 }),
+            decisionLogs: [...(current.skillMatchDiagnostics?.decisionLogs ?? []), "SNAPSHOT_WRITE_FAILED · 接受结果未进入复用索引"],
+          },
+        }));
+      }
     }
     if (!FEATURE_FLAGS.REFLECTION_ATTRIBUTION || !state.learningSettings.enabled) {
       set({ currentEpisode: episode, overallFeedbackDraft: "", feedbackStatus: "saved", isReflectionOpen: false, reflectionStatus: "idle" });
@@ -809,7 +982,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     await putLearningSettings(settings);
     set({
       learningSettings: settings,
-      ...(!skillReuseEnabled ? { selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillMatches: [], skillMatchStatus: "idle" as const, skillMatchError: null, skillMatchDiagnostics: null } : {}),
+      ...(!skillReuseEnabled ? { selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillMatches: [], skillMatchStatus: "idle" as const, skillMatchError: null, skillMatchDiagnostics: null, reusePlan: null, reuseDelta: null } : {}),
     });
     if (skillReuseEnabled) await get().prepareSkillReuse();
   },
@@ -825,8 +998,14 @@ export const useInferStore = create<InferState>((set, get) => ({
     skillMatchRequestId += 1;
     const settings: LearningSettings = { ...get().learningSettings, id: "settings", skillMatchModel, updatedAt: new Date().toISOString() };
     await putLearningSettings(settings);
-    set({ learningSettings: settings, selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null });
+    set({ learningSettings: settings, selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null, reusePlan: null, reuseDelta: null });
     await get().prepareSkillReuse();
+  },
+  setSkillExecutionModel: async (skillExecutionModel) => {
+    if (get().skillDecisionLocked) return;
+    const settings: LearningSettings = { ...get().learningSettings, id: "settings", skillExecutionModel, updatedAt: new Date().toISOString() };
+    await putLearningSettings(settings);
+    set({ learningSettings: settings, reusePlan: null, reuseDelta: null });
   },
   rollbackAdaptivePolicy: async (policyId) => {
     const state = get();
@@ -962,7 +1141,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       });
       return;
     }
-    set({ skillMatchStatus: "matching", skillMatchError: null, skillMatchDiagnostics: null });
+    set({ skillMatchStatus: "matching", skillMatchError: null, skillMatchDiagnostics: null, reuseDelta: null });
     const profileDigest = state.profileDigest ?? await state.ensureProfileDigest();
     const current = get();
     const modelProfile = current.learningSettings.skillMatchModel ?? "groq_qwen_3_6_27b";
@@ -970,6 +1149,85 @@ export const useInferStore = create<InferState>((set, get) => ({
       domains: (profileDigest?.domains ?? []).map((domain) => domain.name).slice(0, 30),
       retrievalKeys: [...new Set((profileDigest?.domains ?? []).flatMap((domain) => domain.retrievalKeys))].slice(0, 60),
     };
+    try {
+      const prefiltered = (await rankMatchableSkills({
+        query: current.query, classification: current.queryClassification, layoutMode: current.layoutMode, profileDigest,
+      })).slice(0, EXTERNAL_SKILL_CANDIDATE_LIMIT);
+      const response = await fetch("/api/skills/resolve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: current.query, classification: current.queryClassification, layoutMode: current.layoutMode,
+          profileContext, modelProfile, candidates: prefiltered.map(toExternalCandidateView),
+        }),
+      });
+      const wire = await response.json() as ExternalSkillMatchWireResult & {
+        abstraction?: QueryAbstractionV1; error?: string; model?: string; durationMs?: number; usage?: { prompt?: number };
+      };
+      if (!response.ok || wire.error || !wire.abstraction) throw new Error(wire.error ?? "Skill resolve 未返回有效结果");
+      if (requestId !== skillMatchRequestId) return;
+      const abstraction = wire.abstraction;
+      const matches = applyExternalSkillRanking(prefiltered, wire, modelProfile, abstraction, current.layoutMode);
+      const currentManual = current.selectedSkill?.activation === "manual"
+        ? prefiltered.find((candidate) => candidate.skill.id === current.selectedSkill?.skillId)
+        : undefined;
+      const chosen = currentManual ?? matches.find((candidate) => candidate.activation === "auto");
+      const invocation = chosen ? buildSkillInvocation(chosen, abstraction) : null;
+      let reusePlan = createReuseExecutionPlan({
+        tier: chosen ? "skill-only" : "cold", weakModel: current.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+        skillId: chosen?.skill.id, skillVersionId: chosen?.version.id,
+        reasons: chosen ? ["Skill 语义匹配，但没有可兼容的私有快照"] : ["单次 resolve 未自动选中 Skill"],
+      });
+      let reuseDelta: ReuseDeltaV1 | null = null;
+      const reuseContext = runtimeContextForReuse(current.contextText, current.customContextText);
+      if (chosen && reuseContext) {
+        const invocationReuse = await findInvocationReuseSnapshot({
+          invocationFingerprint: await skillInvocationFingerprint(abstraction),
+          genericInvocationFingerprint: await skillGenericInvocationFingerprint(abstraction),
+          context: reuseContext, layoutMode: current.layoutMode, skillId: chosen.skill.id,
+        }).catch(() => undefined);
+        if (invocationReuse) {
+          const profileReusable = invocationReuse.profile.kind !== "hard-conflict" && invocationReuse.profile.kind !== "different";
+          reuseDelta = profileReusable ? await createReuseDelta({
+            snapshot: invocationReuse.snapshot, query: current.query, abstraction,
+            context: reuseContext, layoutMode: current.layoutMode,
+          }) : null;
+          reusePlan = createReuseExecutionPlan({
+            tier: profileReusable ? (invocationReuse.profile.kind === "compatible" ? "profile-compatible" : "relevant-exact") : "skill-only",
+            weakModel: current.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b", snapshot: profileReusable ? invocationReuse.snapshot : undefined,
+            skillId: chosen.skill.id, skillVersionId: chosen.version.id, profileSimilarity: invocationReuse.profile.similarity,
+            hardConstraintConflict: invocationReuse.profile.hardConflict,
+            reasons: profileReusable ? invocationReuse.profile.reasons : [...invocationReuse.profile.reasons, "禁止复用旧画像事实，仅保留通用 Skill 契约"],
+            delta: reuseDelta ?? undefined,
+          });
+        }
+      }
+      if (requestId !== skillMatchRequestId) return;
+      set({
+        queryAbstraction: abstraction,
+        skillMatchReport: buildSkillMatchReport(wire, matches),
+        skillMatches: matches,
+        selectedSkill: chosen ? selectionFromMatch(chosen, currentManual ? "manual" : chosen.activation) : null,
+        selectedSkillRecipe: chosen?.recipe ?? null,
+        selectedSkillInvocation: invocation,
+        skillMatchStatus: "ready",
+        skillMatchError: null,
+        skillMatchDiagnostics: {
+          abstractionModel: wire.model ?? modelProfile,
+          abstractionDurationMs: wire.durationMs,
+          abstractionPromptTokens: wire.usage?.prompt,
+          model: wire.model ?? modelProfile,
+          durationMs: wire.durationMs,
+          promptTokens: wire.usage?.prompt,
+          candidateCount: prefiltered.length,
+          decisionLogs: ["RESOLVE_ONE_PASS · 任务抽象、参数绑定与最终 Skill 决策由同一次弱模型请求完成", ...buildSkillMatchDecisionLogs(prefiltered, wire, matches)],
+        },
+        reusePlan,
+        reuseDelta,
+      });
+      return;
+    } catch {
+      // Compatibility fallback: older two-route abstraction + match flow remains available.
+    }
     let abstraction: QueryAbstractionV1;
     let abstractionDiagnostics: Pick<NonNullable<InferState["skillMatchDiagnostics"]>, "abstractionModel" | "abstractionDurationMs" | "abstractionPromptTokens"> = {};
     try {
@@ -1100,6 +1358,43 @@ export const useInferStore = create<InferState>((set, get) => ({
     if (currentManual && !matches.some((candidate) => candidate.skill.id === currentManual.skill.id)) matches = [currentManual, ...matches];
     const chosen = currentManual ?? matches.find((candidate) => candidate.activation === "auto");
     const invocation = chosen ? buildSkillInvocation(chosen, abstraction) : null;
+    let reusePlan = createReuseExecutionPlan({
+      tier: chosen ? "skill-only" : "cold",
+      weakModel: current.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+      skillId: chosen?.skill.id,
+      skillVersionId: chosen?.version.id,
+      reasons: chosen ? ["Skill 语义匹配，但没有可兼容的私有快照"] : ["外部模型未自动选中 Skill"],
+    });
+    let reuseDelta: ReuseDeltaV1 | null = null;
+    const reuseContext = runtimeContextForReuse(current.contextText, current.customContextText);
+    if (chosen && reuseContext) {
+      const invocationReuse = await findInvocationReuseSnapshot({
+        invocationFingerprint: await skillInvocationFingerprint(abstraction),
+        genericInvocationFingerprint: await skillGenericInvocationFingerprint(abstraction),
+        context: reuseContext,
+        layoutMode: current.layoutMode,
+        skillId: chosen.skill.id,
+      }).catch(() => undefined);
+      if (invocationReuse) {
+        const profileReusable = invocationReuse.profile.kind !== "hard-conflict" && invocationReuse.profile.kind !== "different";
+        const tier = profileReusable ? (invocationReuse.profile.kind === "compatible" ? "profile-compatible" : "relevant-exact") : "skill-only";
+        reuseDelta = profileReusable ? await createReuseDelta({
+          snapshot: invocationReuse.snapshot, query: current.query, abstraction,
+          context: reuseContext, layoutMode: current.layoutMode,
+        }) : null;
+        reusePlan = createReuseExecutionPlan({
+          tier,
+          weakModel: current.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+          snapshot: profileReusable ? invocationReuse.snapshot : undefined,
+          skillId: chosen.skill.id,
+          skillVersionId: chosen.version.id,
+          profileSimilarity: invocationReuse.profile.similarity,
+          hardConstraintConflict: invocationReuse.profile.hardConflict,
+          reasons: profileReusable ? invocationReuse.profile.reasons : [...invocationReuse.profile.reasons, "禁止复用旧画像事实，仅保留通用 Skill 契约"],
+          delta: reuseDelta ?? undefined,
+        });
+      }
+    }
     if (requestId !== skillMatchRequestId) return;
     set({
       queryAbstraction: abstraction,
@@ -1111,6 +1406,8 @@ export const useInferStore = create<InferState>((set, get) => ({
       skillMatchStatus: status,
       skillMatchError: matchError,
       skillMatchDiagnostics: diagnostics,
+      reusePlan,
+      reuseDelta,
     });
   },
   selectSkillMatch: (skillId) => {
@@ -1133,7 +1430,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     skillMatchRequestId += 1;
     persistAbandoned(get().currentEpisode);
     stepCache.clear();
-    set({ deviceContext: preset, contextText: pretty(preset.records), steps: emptySteps(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null, ...clearedResult() });
+    set({ deviceContext: preset, contextText: pretty(preset.records), steps: emptySteps(), isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null, reusePlan: null, reuseDelta: null, ...clearedResult() });
     void get().ensureProfileDigest();
   },
 
@@ -1149,6 +1446,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     pendingProfileRequest = (async () => {
       try {
         let response: Response;
+        let localContextHash: string | undefined;
         if (useFreeText) {
           response = await fetch("/api/profile/compress-free-text", {
             method: "POST",
@@ -1159,6 +1457,12 @@ export const useInferStore = create<InferState>((set, get) => ({
           let deviceContext: Record<string, unknown>;
           try { deviceContext = JSON.parse(state.contextText); }
           catch { set({ profileStatus: "error", profileError: "设备上下文不是合法 JSON" }); return null; }
+          localContextHash = (await sha256(deviceContext)).replace(/^sha256-/, "");
+          const cached = await getProfileDigestCache(localContextHash);
+          if (cached?.digest) {
+            set({ profileDigest: cached.digest, profileContextText: sourceKey, profileStatus: cached.digest.degraded ? "degraded" : "ready", profileError: null });
+            return cached.digest;
+          }
           response = await fetch("/api/profile/compress", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1169,6 +1473,7 @@ export const useInferStore = create<InferState>((set, get) => ({
         if (!response.ok || !data.digest) throw new Error(data.error ?? "画像压缩失败");
         if (get().customContextText.trim() !== customText && get().contextText !== state.contextText) return null;
         const digest = data.digest as ProfileDigest;
+        await putProfileDigestCache({ contextHash: digest.contextHash || localContextHash!, digest, updatedAt: new Date().toISOString() }).catch(() => undefined);
         set({ profileDigest: digest, profileContextText: sourceKey, profileStatus: digest.degraded ? "degraded" : "ready", profileError: null });
         return digest;
       } catch (error) {
@@ -1225,6 +1530,7 @@ export const useInferStore = create<InferState>((set, get) => ({
           queryAbstraction: initialState.queryAbstraction ?? undefined,
           skillMatchReport: initialState.skillMatchReport ?? undefined,
           skillInvocation: initialState.selectedSkillInvocation ?? undefined,
+          context: runtimeContextForReuse(initialState.contextText, initialState.customContextText) ?? undefined,
         });
       } catch {
         // Workflow capture is best-effort and must never block generation.
@@ -1237,6 +1543,58 @@ export const useInferStore = create<InferState>((set, get) => ({
       if (captureEpisode) void failTaskRun(captureEpisode.id).catch(() => undefined);
       set((state) => ({ steps: { ...state.steps, [name]: { ...state.steps[name], status: "error", error: "设备上下文不是合法 JSON" } } }));
       return;
+    }
+    const replayPlan = get().reusePlan;
+    if (replayPlan?.steps[name].strategy === "replay" && replayPlan.snapshotId) {
+      const snapshot = await getReuseSnapshot(replayPlan.snapshotId).catch(() => undefined);
+      if (snapshot) {
+        const replayed = replayedSteps(snapshot)[name];
+        set((state) => ({
+          steps: {
+            ...state.steps,
+            [name]: {
+              ...replayed,
+              outputs: { ...replayed.outputs, reuseTier: replayPlan.tier, executionStrategy: "replay" },
+              logs: [{ ts: new Date().toISOString(), phase: "reuse", message: `REPLAY · ${name} · 依赖未变化，0 LLM` }],
+              skillReuse: replayed.skillReuse ? { ...replayed.skillReuse, reuseTier: replayPlan.tier } : replayed.skillReuse,
+            },
+          },
+          ...(name === "openui_generate" ? { rightView: "openui" as const } : {}),
+        }));
+        return;
+      }
+    }
+    let programPatchFallbackMessage: string | undefined;
+    if (replayPlan?.steps[name].strategy === "program-patch" && replayPlan.snapshotId && replayPlan.delta) {
+      const snapshot = await getReuseSnapshot(replayPlan.snapshotId).catch(() => undefined);
+      if (snapshot) {
+        try {
+          const currentState = get().inferenceState ?? snapshot.artifact.inferenceState;
+          const nextState = applyProgramInferenceDelta(currentState, replayPlan.delta);
+          const reuse = deltaSkillReuse(snapshot, replayPlan, name, get().selectedSkill);
+          set((state) => ({
+            inferenceState: nextState,
+            slots: nextState.slots,
+            conflicts: nextState.conflicts,
+            questions: nextState.questions,
+            steps: {
+              ...state.steps,
+              [name]: {
+                status: "done", reasoning: "宿主根据 query/画像差异直接绑定已有槽位，未调用模型。",
+                outputs: { delta: publicDeltaSummary(replayPlan.delta!), patchedSlots: replayPlan.delta!.affectedSlotNames, callsAvoided: 1 },
+                durationMs: 0, timing: { totalMs: 0, llmMs: 0, overheadMs: 0 }, model: "local-program-patch",
+                tokens: { prompt: 0, completion: 0, total: 0, cached: 0 }, streamingChars: 0, error: null,
+                logs: [{ ts: new Date().toISOString(), phase: "reuse-delta", message: `PROGRAM_PATCH · ${name} · 0 LLM · slots=${replayPlan.delta!.affectedSlotNames.join(",")}` }],
+                skillReuse: { ...reuse, executionMode: "deterministic", callsAvoided: 1, executionStrategy: "program-patch", effectSummary: "程序直接把变化参数绑定到已有槽位，跳过本步骤模型调用。" },
+              },
+            },
+          }));
+          return;
+        } catch (error) {
+          programPatchFallbackMessage = error instanceof Error ? error.message : "确定性字段绑定失败";
+          // Fall through to the normal current-step request when deterministic binding is no longer safe.
+        }
+      }
     }
     let capturedStepRunId: string | undefined;
 
@@ -1268,13 +1626,21 @@ export const useInferStore = create<InferState>((set, get) => ({
         && (state.learningSettings.skillStepReuse?.[name] ?? true)
         && !!state.selectedSkill
         && !!state.selectedSkillRecipe;
-      const skillContext = reuseEnabledForStep
+      const executionPlanStep = state.reusePlan?.steps[name];
+      const baseSkillContext = reuseEnabledForStep
         ? buildSkillStepContext(state.selectedSkillRecipe!, state.selectedSkill!, name, state.selectedSkillInvocation ?? undefined)
         : undefined;
+      const skillContext = baseSkillContext ? {
+        ...baseSkillContext,
+        reuseTier: state.reusePlan?.tier,
+        executionStrategy: executionPlanStep?.strategy,
+        profileSimilarity: state.reusePlan?.profileSimilarity,
+      } : undefined;
+      const executionModelProfile = executionPlanStep?.modelProfile ?? state.stepModels[name];
       const requestBody = {
         query, deviceContext, step: name,
         layoutMode: state.layoutMode,
-        modelProfile: state.stepModels[name],
+        modelProfile: executionModelProfile,
         ...(FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? { classification: state.queryClassification } : {}),
         ...(adaptiveContext ? { adaptiveContext } : {}),
         ...(skillContext ? { skillContext } : {}),
@@ -1289,6 +1655,32 @@ export const useInferStore = create<InferState>((set, get) => ({
           stream: true,
         } : {}),
       };
+      const deltaSupported = (["evidence_resolution", "context_enrichment", "card_plan_generate", "openui_generate"] as StepName[]).includes(name)
+        && executionPlanStep?.strategy === "weak-delta"
+        && !!state.reuseDelta
+        && !!state.reusePlan?.snapshotId
+        && !(name === "context_enrichment" && state.reuseDelta.freshnessRequired);
+      const deltaSnapshot = deltaSupported && state.reusePlan?.snapshotId
+        ? await getReuseSnapshot(state.reusePlan.snapshotId).catch(() => undefined)
+        : undefined;
+      const deltaRequestBody = deltaSnapshot && state.reuseDelta ? {
+        step: name,
+        query,
+        modelProfile: executionModelProfile,
+        delta: state.reuseDelta,
+        baselineInferenceState: deltaSnapshot.artifact.inferenceState,
+        currentInferenceState: state.inferenceState ?? deltaSnapshot.artifact.inferenceState,
+        layoutMode: state.layoutMode,
+        ...(name === "evidence_resolution" || name === "context_enrichment" ? { userAnswers: state.answers } : {}),
+        ...(name === "card_plan_generate" ? { baselineCardPlan: deltaSnapshot.artifact.cardPlan } : {}),
+        ...(name === "openui_generate" ? {
+          currentCardPlan: state.cardPlan ?? deltaSnapshot.artifact.cardPlan,
+          baselineAssetManifest: deltaSnapshot.artifact.assetManifest,
+          baselineOpenuiCode: deltaSnapshot.artifact.openuiCode,
+        } : {}),
+      } : undefined;
+      const transportBody = deltaRequestBody ?? requestBody;
+      const inferEndpoint = deltaRequestBody ? "/api/infer/delta" : "/api/infer";
       const episode = state.currentEpisode ?? captureEpisode;
       if (episode) {
         try {
@@ -1296,13 +1688,14 @@ export const useInferStore = create<InferState>((set, get) => ({
             episodeId: episode.id, query, classification: state.queryClassification, layoutMode: state.layoutMode,
             skillSelection: state.selectedSkill ?? undefined,
             skillStepReuse: { ...defaultSkillStepReuse(), ...(state.learningSettings.skillStepReuse ?? {}) },
+            context: runtimeContextForReuse(state.contextText, state.customContextText) ?? undefined,
           });
           const answerArtifactId = name === "context_enrichment"
             ? await recordClarificationAnswers(workflowRunId(episode.id), state.answers)
             : undefined;
           capturedStepRunId = (await beginStepCapture({
-            runId: workflowRunId(episode.id), step: name, request: requestBody,
-            modelProfile: state.stepModels[name], policyId: adaptiveContext?.policyId,
+            runId: workflowRunId(episode.id), step: name, request: transportBody,
+            modelProfile: executionModelProfile, policyId: adaptiveContext?.policyId,
             policyVersion: adaptiveContext?.policyVersion, steeringHint: adaptiveContext?.stepHint,
             skillSelection: skillContext?.selection,
             dependencyArtifactIds: answerArtifactId ? [answerArtifactId] : undefined,
@@ -1311,7 +1704,7 @@ export const useInferStore = create<InferState>((set, get) => ({
           // Workflow capture is best-effort and must never block generation.
         }
       }
-      const cacheKey = `${name}|${state.stepModels[name]}|${stableStringify(requestBody)}`;
+      const cacheKey = `${name}|${executionModelProfile}|${inferEndpoint}|${stableStringify(transportBody)}`;
       const cached = options.useCache ? cacheGet(cacheKey) : undefined;
       let data: InferApiResponse;
       let responseOk = true;
@@ -1327,10 +1720,10 @@ export const useInferStore = create<InferState>((set, get) => ({
         if (name === "openui_generate") {
           set({ openuiStreamMetrics: { requestStartedAt: performance.now() } });
         }
-        const response = await fetch("/api/infer", {
+        const response = await fetch(inferEndpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
+          body: JSON.stringify(transportBody),
         });
         responseOk = response.ok;
         if (name === "openui_generate") {
@@ -1374,12 +1767,51 @@ export const useInferStore = create<InferState>((set, get) => ({
             }));
           }
         });
+        if (deltaRequestBody && deltaSnapshot && state.reusePlan) {
+          data._logs = [
+            { ts: new Date().toISOString(), phase: "reuse-delta", message: `DELTA_ONLY · ${name} · payload=${JSON.stringify(deltaRequestBody).length} chars · full=${JSON.stringify(requestBody).length} chars`, detail: { affectedSlots: state.reuseDelta?.affectedSlotNames, affectedCards: state.reuseDelta?.affectedCardIds } },
+            ...(data._logs ?? []),
+          ];
+          data.skillReuse = deltaSkillReuse(deltaSnapshot, state.reusePlan, name, state.selectedSkill);
+        }
+        if (programPatchFallbackMessage) {
+          data._logs = [
+            { ts: new Date().toISOString(), phase: "reuse-delta", message: `PROGRAM_PATCH_FALLBACK · ${name} · ${programPatchFallbackMessage}`, detail: { stage: "program-patch", reason: programPatchFallbackMessage } },
+            ...(data._logs ?? []),
+          ];
+        }
         if (responseOk && !data.error && options.useCache) cacheSet(cacheKey, data);
       }
       if (!responseOk || data.error) {
-        if (episode && capturedStepRunId) void failStepCapture(workflowRunId(episode.id), capturedStepRunId, data.error ?? "推理失败").catch(() => undefined);
-        set((current) => ({ steps: { ...current.steps, [name]: { ...current.steps[name], status: "error", error: data.error ?? "推理失败", logs: data._logs ?? [] } } }));
-        return;
+        const weakFailed = executionPlanStep?.strategy === "weak-delta" || executionPlanStep?.strategy === "weak-full";
+        if (weakFailed) {
+          const fallbackModelProfile = executionPlanStep?.fallbackModelProfile
+            ?? (state.stepModels[name] !== executionModelProfile ? state.stepModels[name] : "glm_5_2");
+          const fallbackBody = {
+            ...requestBody,
+            modelProfile: fallbackModelProfile,
+            ...(skillContext ? { skillContext: { ...skillContext, executionStrategy: "strong-fallback" as const } } : {}),
+          };
+          const weakError = data.error ?? `HTTP request failed`;
+          const weakDelta = data.delta;
+          const fallbackResponse = await fetch("/api/infer", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fallbackBody),
+          });
+          responseOk = fallbackResponse.ok;
+          data = await readInferResponse(fallbackResponse, (delta, streamingChars) => set((current) => ({
+            openuiCode: name === "openui_generate" ? `${current.openuiCode ?? ""}${delta}` : current.openuiCode,
+            steps: { ...current.steps, [name]: { ...current.steps[name], streamingChars } },
+          })));
+          data._logs = [
+            { ts: new Date().toISOString(), phase: "reuse-fallback", message: `弱模型 ${executionModelProfile} 局部失败，已仅回退当前步骤到 ${fallbackModelProfile}：${weakError}`, detail: { stage: "weak-delta", weakError, step: name, delta: weakDelta } },
+            ...(data._logs ?? []),
+          ];
+        }
+        if (!responseOk || data.error) {
+          if (episode && capturedStepRunId) void failStepCapture(workflowRunId(episode.id), capturedStepRunId, data.error ?? "推理失败").catch(() => undefined);
+          set((current) => ({ steps: { ...current.steps, [name]: { ...current.steps[name], status: "error", error: data.error ?? "推理失败", logs: data._logs ?? [] } } }));
+          return;
+        }
       }
 
       if (episode && capturedStepRunId) {
@@ -1461,8 +1893,107 @@ export const useInferStore = create<InferState>((set, get) => ({
 
   runAll: async () => {
     persistAbandoned(get().currentEpisode);
+    const beforeReuse = get();
+    const reuseContext = runtimeContextForReuse(beforeReuse.contextText, beforeReuse.customContextText);
+    let preResolvedSnapshot = false;
+    if (FEATURE_FLAGS.SKILL_REUSE && beforeReuse.learningSettings.skillReuseEnabled !== false && reuseContext) {
+      try {
+        const lookup = await findReuseSnapshot({ query: beforeReuse.query, context: reuseContext, layoutMode: beforeReuse.layoutMode });
+        const snapshot = lookup.snapshot;
+        if (snapshot && (lookup.recommendedTier === "exact-replay" || lookup.recommendedTier === "relevant-exact")) {
+          const replayValidation = await validateReplaySnapshot(snapshot);
+          if (replayValidation.valid) {
+            const plan = createReuseExecutionPlan({
+              tier: lookup.recommendedTier, weakModel: beforeReuse.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b", snapshot,
+              profileSimilarity: lookup.profile?.similarity,
+              reasons: [...lookup.trace.map((item) => item.summary), "安全 validator 复检通过"],
+              lookupTrace: lookup.trace,
+            });
+            set({
+              ...replayStatePatch(get(), snapshot, replayValidation, plan),
+              reuseDelta: null,
+              skillMatchDiagnostics: {
+                candidateCount: 0,
+                decisionLogs: [
+                  ...lookup.trace.map((item) => `${item.outcome.toUpperCase()} · ${item.code} · ${item.summary}`),
+                  `EXACT_REPLAY · ${snapshot.id} · 0 LLM · 预计节省 ${snapshot.baseline.promptTokens + snapshot.baseline.completionTokens} tokens / ${snapshot.baseline.durationMs}ms`,
+                ],
+              },
+            });
+            return;
+          }
+          set({ reusePlan: createReuseExecutionPlan({
+            tier: "cold", weakModel: beforeReuse.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+            reasons: [`快照安全复检失败：${replayValidation.error ?? "OpenUI validator rejected"}`], lookupTrace: lookup.trace,
+          }) });
+        } else if (snapshot && lookup.recommendedTier === "profile-compatible") {
+          const delta = await createReuseDelta({
+            snapshot, query: beforeReuse.query, abstraction: beforeReuse.queryAbstraction,
+            context: reuseContext, layoutMode: beforeReuse.layoutMode,
+          });
+          const plan = createReuseExecutionPlan({
+            tier: "profile-compatible", weakModel: beforeReuse.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+            snapshot, profileSimilarity: lookup.profile?.similarity, hardConstraintConflict: lookup.profile?.hardConflict,
+            reasons: [...lookup.trace.map((item) => item.summary), ...delta.reasons], delta, lookupTrace: lookup.trace,
+          });
+          set({
+            reusePlan: plan, reuseDelta: delta,
+            inferenceState: snapshot.artifact.inferenceState,
+            slots: snapshot.artifact.inferenceState.slots,
+            conflicts: snapshot.artifact.inferenceState.conflicts,
+            questions: snapshot.artifact.inferenceState.questions,
+            cardPlan: snapshot.artifact.cardPlan,
+            cardPlanMarkdown: snapshot.artifact.cardPlanMarkdown,
+            reasoningGraph: snapshot.artifact.reasoningGraph ?? null,
+            openuiCode: snapshot.artifact.openuiCode,
+            openuiDiagnostics: snapshot.artifact.openuiDiagnostics as InferApiResponse["openuiDiagnostics"] ?? null,
+            assetManifest: snapshot.artifact.assetManifest ?? null,
+            skillMatchStatus: "ready",
+            skillMatchError: null,
+            skillMatchDiagnostics: {
+              candidateCount: 1,
+              decisionLogs: [
+                ...lookup.trace.map((item) => `${item.outcome.toUpperCase()} · ${item.code} · ${item.summary}`),
+                `DELTA_READY · ${delta.affectedSteps.join(" → ") || "no-op"} · cards=${delta.affectedCardIds.join(",") || "none"}`,
+              ],
+            },
+          });
+          preResolvedSnapshot = true;
+        } else {
+          set({
+            reusePlan: createReuseExecutionPlan({
+              tier: lookup.recommendedTier, weakModel: beforeReuse.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+              reasons: lookup.trace.map((item) => item.summary), lookupTrace: lookup.trace,
+            }),
+            reuseDelta: null,
+            skillMatchDiagnostics: { candidateCount: snapshot ? 1 : 0, decisionLogs: lookup.trace.map((item) => `${item.outcome.toUpperCase()} · ${item.code} · ${item.summary}`) },
+          });
+        }
+      } catch (error) {
+        set({ reusePlan: createReuseExecutionPlan({
+          tier: "cold", weakModel: beforeReuse.learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+          reasons: [`快照查询失败，已安全降级：${error instanceof Error ? error.message : "未知错误"}`],
+        }) });
+      }
+    }
     await get().ensureProfileDigest();
-    await get().prepareSkillReuse();
+    if (!preResolvedSnapshot) await get().prepareSkillReuse();
+    const resolvedReuse = get().reusePlan;
+    if (resolvedReuse?.tier === "relevant-exact" && resolvedReuse.snapshotId && !(resolvedReuse.delta?.affectedSteps.length)) {
+      const snapshot = await getReuseSnapshot(resolvedReuse.snapshotId).catch(() => undefined);
+      if (snapshot) {
+        const replayValidation = await validateReplaySnapshot(snapshot).catch((error) => ({ valid: false, error: error instanceof Error ? error.message : "复检失败" }));
+        if (replayValidation.valid) {
+          set(replayStatePatch(get(), snapshot, replayValidation, resolvedReuse));
+          return;
+        }
+        set({ reusePlan: createReuseExecutionPlan({
+          tier: "skill-only", weakModel: get().learningSettings.skillExecutionModel ?? "groq_qwen_3_6_27b",
+          skillId: get().selectedSkill?.skillId, skillVersionId: get().selectedSkill?.skillVersionId,
+          reasons: [`Relevant Exact 快照复检失败：${replayValidation.error ?? "validator rejected"}`],
+        }) });
+      }
+    }
     set({
       runAllPaused: false,
       currentEpisode: createGenerationEpisode({ query: get().query, classification: get().queryClassification, userKey: get().profileDigest?.contextHash }),
@@ -1499,6 +2030,6 @@ export const useInferStore = create<InferState>((set, get) => ({
   reset: () => {
     persistAbandoned(get().currentEpisode);
     stepCache.clear();
-    set({ query: DEFAULT_QUERY, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), cardEditModelProfile: "glm_5_2", isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null, ...clearedResult() });
+    set({ query: DEFAULT_QUERY, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), cardEditModelProfile: "glm_5_2", isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null, reusePlan: null, reuseDelta: null, ...clearedResult() });
   },
 }));

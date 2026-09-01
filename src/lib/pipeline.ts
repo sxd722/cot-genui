@@ -17,6 +17,7 @@ import { conciseCardTitle } from "@/openui/cardTitle";
 import { retrieveProfileEvidence } from "@/lib/profile";
 import type { ProfileDigest } from "@/lib/profileTypes";
 import { cardPlanSystemPromptFor } from "@/lib/cardPlanPrompt";
+import { normalizeCardPlanEnvelope } from "@/lib/cardPlanResponse";
 import { sanitizeCardPlanExternalLinks } from "@/lib/webFactIntegration";
 import { NVIDIA_DIFFUSION_GEMMA_MODEL, nvidiaChatOptions } from "@/lib/nvidia";
 import { resolveModelProfile, type GroqReasoningEffort } from "@/lib/modelProfiles";
@@ -102,6 +103,8 @@ const STEP_SAMPLING: Record<PipelineStepName, { temperature: number; doSample: b
   // OpenUI 需要适度视觉变化，同时优先保证语法稳定与低时延。
   openui_generate: { temperature: 0.2, doSample: true },
 };
+
+const CARD_PLAN_SCHEMA_HINT = "{reasoning:string,cardPlan:{skillName:string,iconText?:string,reasoning:string,cards:[{id:string,title:string,purpose:string,sourceSlots?:string[],presentation?:{archetype:'standard'|'hero'|'editorial'|'comparison'|'timeline'|'data'|'action'|'media',density?:'compact'|'balanced'|'immersive',emphasis?:'content'|'data'|'media'|'action'},blocks:[{kind:'hero'|'summary'|'list'|'progress'|'status'|'metric'|'choice'|'toggle'|'image'|'chart'|'infographic',title?:string,text?:string,detail?:string,tone?:string,value?:string,valueFromSlot?:string,items?:[{label:string,detail?:string}],itemsFromSlot?:string,options?:string[],currentFromSlot?:string,metrics?:[{label:string,value:string,unit?:string}],sourceSlots?:string[],assetRequest?:{kind:'image'|'gallery',query:string,count:number,role:'hero'|'supporting'|'gallery',aspect?:'wide'|'square'|'portrait'}}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?:string,writeTo?:string,writeValue?:string,link?:string,role?:'primary'|'secondary'|'tertiary'}]}]}}";
 
 function log(onLog: RunInput["onLog"], phase: CallLog["phase"], message: string, detail?: unknown) {
   onLog?.({ ts: new Date().toISOString(), phase, message, detail });
@@ -341,6 +344,7 @@ async function callJson(args: {
       let responseModel = args.model;
       let providerCreatedAt: number | undefined;
       let rawUsage: OpenAI.CompletionUsage | undefined;
+      let finishReason: string | null | undefined;
       for await (const rawChunk of completionStream) {
         const chunk = rawChunk as typeof rawChunk & { usage?: OpenAI.CompletionUsage | null };
         const delta = chunk.choices[0]?.delta?.content;
@@ -351,16 +355,33 @@ async function callJson(args: {
         if (chunk.model) responseModel = chunk.model;
         if (chunk.created) providerCreatedAt = chunk.created;
         if (chunk.usage) rawUsage = chunk.usage;
+        if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
       }
       const llmMs = Date.now() - started;
       const usage = addUsage(searchUsage, normalizeUsage(rawUsage));
-      const value = extractJson(content);
+      let value: unknown;
+      try {
+        value = extractJson(content);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        log(args.onLog, "error", `模型 JSON 解析失败 [json_parse] · ${reason}`, {
+          stage: "json_parse",
+          reason,
+          provider: args.provider,
+          model: responseModel,
+          finishReason,
+          responseChars: content.length,
+          streamed: true,
+        });
+        throw error;
+      }
       log(args.onLog, "response", `模型流式响应完成 ${llmMs}ms`, {
         model: responseModel,
         created: providerCreatedAt,
         usage: rawUsage,
         llmMs,
         streamedChars: content.length,
+        finishReason,
         responseShape: describeResponseShape(value),
         note: "created 是响应时间戳，不是服务端推理耗时",
       });
@@ -392,12 +413,29 @@ async function callJson(args: {
     const primaryUsage = normalizeUsage(completion.usage);
     const usage = addUsage(searchUsage, primaryUsage);
     const content = completion.choices[0]?.message?.content ?? "";
-    const value = extractJson(content);
+    const finishReason = completion.choices[0]?.finish_reason;
+    let value: unknown;
+    try {
+      value = extractJson(content);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log(args.onLog, "error", `模型 JSON 解析失败 [json_parse] · ${reason}`, {
+        stage: "json_parse",
+        reason,
+        provider: args.provider,
+        model: completion.model || args.model,
+        finishReason,
+        responseChars: content.length,
+        streamed: false,
+      });
+      throw error;
+    }
     log(args.onLog, "response", `模型响应完成 ${llmMs}ms`, {
       model: completion.model,
       created: completion.created,
       usage: completion.usage,
       llmMs,
+      finishReason,
       responseShape: describeResponseShape(value),
       webSearch: (completion as unknown as { web_search?: unknown }).web_search,
       note: "created 是响应时间戳，不是服务端推理耗时",
@@ -816,12 +854,6 @@ function graphFromPlan(plan: CardPlan, slots: InferSlot[]): string {
   return lines.join("\n");
 }
 
-function validCardPlan(value: unknown): value is CardPlan {
-  if (!value || typeof value !== "object") return false;
-  const plan = value as Partial<CardPlan>;
-  return typeof plan.skillName === "string" && typeof plan.reasoning === "string" && Array.isArray(plan.cards) && plan.cards.length > 0;
-}
-
 function normalizeCardPlan(plan: CardPlan, allowedExternalUrls: Set<string>, validSlotNames: Set<string>): CardPlan {
   const validRoles = new Set(["primary", "secondary", "tertiary"]);
   const validBlockKinds = new Set(["text", "hero", "summary", "list", "progress", "status", "metric", "choice", "toggle", "image", "chart", "infographic"]);
@@ -935,7 +967,9 @@ function mockResult(input: RunInput): Omit<PipelineStepOutput, "durationMs" | "t
 export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutput> {
   const started = Date.now();
   const selectedModel = resolveModelProfile(input.modelProfile ?? DEFAULT_PROFILES[input.name]);
-  const sampling = STEP_SAMPLING[input.name];
+  const sampling = input.skillContext?.executionStrategy === "weak-delta" || input.skillContext?.executionStrategy === "weak-full"
+    ? { temperature: 0, doSample: false }
+    : STEP_SAMPLING[input.name];
   const classification = input.adaptiveContext?.classification ?? input.classification ?? classifyQuery(input.query);
   const profileView: ProfileViewV2 | undefined = FEATURE_FLAGS.PROFILE_VIEW_V2 && input.name === "intent_analysis" && input.profileDigest
     ? buildProfileView({
@@ -963,7 +997,7 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       selectedDomains: [...new Set(profileView.selectedDetails.map((detail) => detail.domain))],
     });
   }
-  if (input.mock && input.skillContext?.mode === "deterministic") {
+  if (input.skillContext?.mode === "deterministic") {
     const deterministic = input.name === "intent_analysis"
       ? deterministicIntent(input.skillContext, input.profileDigest)
       : input.name === "clarification" && input.inferenceState
@@ -996,6 +1030,9 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
           matcherModel: input.skillContext.selection.matcherModel,
           executionMode: "deterministic",
           callsAvoided,
+          reuseTier: input.skillContext.reuseTier,
+          executionStrategy: input.skillContext.executionStrategy,
+          profileSimilarity: input.skillContext.profileSimilarity,
           ...describeSkillReuseEffect(input.name, input.skillContext, "deterministic", callsAvoided),
         },
       };
@@ -1027,6 +1064,9 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
         matcherModel: input.skillContext.selection.matcherModel,
         executionMode: input.skillContext.mode === "deterministic" ? "fallback" : "guided",
         callsAvoided: 0, fallbackReason: input.skillContext.mode === "deterministic" ? "deterministic_preconditions_not_met" : undefined,
+        reuseTier: input.skillContext.reuseTier,
+        executionStrategy: input.skillContext.executionStrategy,
+        profileSimilarity: input.skillContext.profileSimilarity,
         ...describeSkillReuseEffect(
           input.name,
           input.skillContext,
@@ -1207,16 +1247,72 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     if (!input.inferenceState.summary) throw new Error("请先完成不确定性提问和上下文能力补齐，再生成 CardPlan");
     const layoutMode = normalizeCardLayoutMode(input.layoutMode);
     const layoutPrompt = cardPlanSystemPromptFor(layoutMode);
-    llm = await callJson({
+    const cardPlanCall = {
       ...selectedModel, ...sampling, ...steering, onLog: input.onLog,
       system: FEATURE_FLAGS.WEB_FACTS_OPTIONAL
         ? layoutPrompt
         : `${layoutPrompt}\n兼容模式：若 webFacts 非空，必须把其中与任务有关的事实纳入现有业务卡，但仍不得为来源单独增加卡片。`,
       user: { query: input.query, inference: projectForModel(input.name, input.inferenceState), answers: input.userAnswers ?? {}, layoutPolicy: cardLayoutPolicy(layoutMode) },
-      schemaHint: "{reasoning:string,cardPlan:{skillName,iconText?,reasoning,cards:[{id,title,purpose,sourceSlots?,presentation?:{archetype:'standard'|'hero'|'editorial'|'comparison'|'timeline'|'data'|'action'|'media',density?:'compact'|'balanced'|'immersive',emphasis?:'content'|'data'|'media'|'action'},blocks:[{kind,title?,text?,detail?,tone?,value?,valueFromSlot?,items?:[{label:string,detail?:string}],itemsFromSlot?,options?,currentFromSlot?,metrics?,sourceSlots?,assetRequest?:{kind:'image'|'gallery',query:string,count:number,role:'hero'|'supporting'|'gallery',aspect?:'wide'|'square'|'portrait'}}],actions?:[{id:string,label:string,type:'navigate'|'select'|'toggle'|'external-link'|'confirm'|'copy'|'save'|'pick-file'|'ocr'|'llm-call',targetCardId?,writeTo?,writeValue?,link?,role?:'primary'|'secondary'|'tertiary'}]}]}}",
-    });
-    const raw = llm.value as { reasoning?: string; cardPlan?: unknown };
-    if (!validCardPlan(raw.cardPlan)) throw new Error("模型返回的 CardPlan 结构无效");
+      schemaHint: CARD_PLAN_SCHEMA_HINT,
+    };
+    try {
+      llm = await callJson(cardPlanCall);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (!/JSON|解析|模型返回空内容|Unexpected end|position \d+/i.test(reason)) throw error;
+      log(input.onLog, "fallback", `CardPlan JSON 重试 [json_retry] · ${reason}`);
+      llm = await callJson({
+        ...cardPlanCall,
+        thinking: false,
+        temperature: 0,
+        doSample: false,
+        system: `${cardPlanCall.system}\n\n上一次输出不是完整合法 JSON。重新生成同一 CardPlan；严格闭合所有对象和数组，不输出代码围栏或解释文字。`,
+      });
+      log(input.onLog, "response", "CardPlan JSON 重试成功 [json_retry]");
+    }
+    const cardPlanFallbacks = {
+      skillName: input.inferenceState.taskType || input.query.slice(0, 40) || "生成结果",
+      reasoning: "基于当前推断状态生成卡片计划。",
+    };
+    let envelope = normalizeCardPlanEnvelope(llm.value, cardPlanFallbacks);
+    if (envelope.plan) {
+      log(input.onLog, "response", `CardPlan 结构校验通过 · cards=${envelope.diagnostics.cardCount} · repairs=${envelope.diagnostics.repairs.length}`, envelope.diagnostics);
+    } else {
+      log(input.onLog, "error", `CardPlan 结构失败 [cardplan_shape] · ${envelope.diagnostics.issues.join(", ")}`, envelope.diagnostics);
+      log(input.onLog, "fallback", "CardPlan 结构修复 [cardplan_repair] · 使用当前模型低温重试一次");
+      const first = llm;
+      const repair = await callJson({
+        ...selectedModel,
+        thinking: false,
+        temperature: 0,
+        doSample: false,
+        steeringHint: input.adaptiveContext?.stepHint,
+        onLog: input.onLog,
+        system: `${layoutPrompt}\n\n你正在修复一次结构不合规的 CardPlan JSON。只修复字段外壳、必填字段与类型，不改变用户任务、卡片语义、动作和媒体意图。`,
+        user: {
+          query: input.query,
+          invalidCardPlanResponse: llm.value,
+          validationIssues: envelope.diagnostics.issues,
+          layoutPolicy: cardLayoutPolicy(layoutMode),
+        },
+        schemaHint: CARD_PLAN_SCHEMA_HINT,
+      });
+      llm = {
+        ...repair,
+        model: `${first.model} → ${repair.model}`,
+        llmMs: first.llmMs + repair.llmMs,
+        usage: addUsage(first.usage, repair.usage),
+        cost: (first.cost ?? 0) + (repair.cost ?? 0),
+      };
+      envelope = normalizeCardPlanEnvelope(repair.value, cardPlanFallbacks);
+      if (!envelope.plan) {
+        log(input.onLog, "error", `CardPlan 修复失败 [cardplan_repair] · ${envelope.diagnostics.issues.join(", ")}`, envelope.diagnostics);
+        throw new Error(`CardPlan 结构修复失败：${envelope.diagnostics.issues.join(", ")}`);
+      }
+      log(input.onLog, "response", `CardPlan 结构修复成功 · cards=${envelope.diagnostics.cardCount} · repairs=${envelope.diagnostics.repairs.length}`, envelope.diagnostics);
+    }
+    const rawPlan = envelope.plan;
+    if (!rawPlan) throw new Error("CardPlan 结构归一化未产生可用计划");
     // allowlist 优先采用 provider 原始搜索 URL（不可伪造）；
     // provider 结果缺失时退回模型结构化的 webFacts URL 并在日志标注。
     const webFactUrls = (input.inferenceState.webFacts ?? []).flatMap((fact) => [
@@ -1230,16 +1326,19 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
       ? `URL allowlist 使用 provider 原始结果（${providerUrls.length} 条），模型 webFacts 中 ${webFactUrls.length} 条将按此过滤`
       : `URL allowlist 退回模型 webFacts（${webFactUrls.length} 条）——本次无 provider 原始搜索结果`);
     const validSlotNames = new Set(input.inferenceState.slots.map((slot) => slot.name));
-    const normalizedPlan = sanitizeCardPlanExternalLinks(normalizeCardPlan(raw.cardPlan, allowedExternalUrls, validSlotNames), allowedExternalUrls);
+    const normalizedPlan = sanitizeCardPlanExternalLinks(normalizeCardPlan(rawPlan, allowedExternalUrls, validSlotNames), allowedExternalUrls);
     const mediaPlanning = ensureAssetRequests(normalizedPlan, input.query);
+    log(input.onLog, "request", `CardPlan 布局装箱 [layout_pack] · mode=${layoutMode} · inputCards=${mediaPlanning.plan.cards.length}`);
     const fitted = fitCardPlanToLayout(mediaPlanning.plan, layoutMode);
     if (!fitted.diagnostics.valid) {
       const details = fitted.diagnostics.cards.filter((card) => !card.fits).map((card) => `${card.cardId}: ${card.reasons.join(", ")}`).join("；");
+      log(input.onLog, "error", `CardPlan 布局失败 [layout_pack] · ${details}`, fitted.diagnostics);
       throw new Error(`固定卡片内容预算超限：${details}`);
     }
+    log(input.onLog, "response", `CardPlan 布局完成 · cards=${fitted.diagnostics.originalCardCount}→${fitted.diagnostics.finalCardCount} · split=${fitted.diagnostics.splitCards.length}`, fitted.diagnostics);
     const plan = fitted.plan;
     const resourceLinkCount = plan.cards.flatMap((card) => card.actions ?? []).filter((action) => action.type === "external-link" && !!action.link).length;
-    base = { name: input.name, reasoning: raw.reasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount, mediaPlanningDiagnostics: mediaPlanning.diagnostics, layoutPlanningDiagnostics: fitted.diagnostics }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
+    base = { name: input.name, reasoning: envelope.outerReasoning ?? plan.reasoning, outputs: { cardCount: plan.cards.length, webFactCount: input.inferenceState.webFacts?.length ?? 0, resourceLinkCount, cardPlanResponseDiagnostics: envelope.diagnostics, mediaPlanningDiagnostics: mediaPlanning.diagnostics, layoutPlanningDiagnostics: fitted.diagnostics }, cardPlan: plan, cardPlanMarkdown: cardPlanToVibeMarkdown(plan), reasoningGraph: graphFromPlan(plan, input.inferenceState.slots), result: { summary: plan.skillName, assumptions: input.inferenceState.assumptions } };
   } else if (input.name === "openui_generate") {
     if (!input.cardPlan) throw new Error("缺少 card_plan_generate 的 CardPlan");
     const layoutMode = normalizeCardLayoutMode(input.layoutMode ?? input.cardPlan.layoutPolicy?.mode);
@@ -1387,6 +1486,9 @@ export async function runPipelineStep(input: RunInput): Promise<PipelineStepOutp
     executionMode: skillExecutionMode,
     callsAvoided: skillCallsAvoided,
     fallbackReason: skillFallbackReason,
+    reuseTier: input.skillContext.reuseTier,
+    executionStrategy: input.skillContext.executionStrategy,
+    profileSimilarity: input.skillContext.profileSimilarity,
     ...describeSkillReuseEffect(input.name, input.skillContext, skillExecutionMode, skillCallsAvoided, skillFallbackReason, llm.model !== "skipped"),
   } : undefined;
   const provenance = summarizeStepForProvenance(input.name, {

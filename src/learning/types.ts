@@ -2,7 +2,7 @@ import type { QueryClassification, AdaptivePolicyEntry, TaskFamily } from "../li
 import type { CardEditTarget, OpenUIEditVersion } from "../lib/cardEditingTypes";
 import type { ModelProfile, PipelineStepName, TokenUsage } from "../lib/pipelineTypes";
 import type { StepProvenance } from "../lib/provenance";
-import type { ArtifactRecord, ExternalSkillMatcherModel, SkillCandidateRecord, SkillRecord, SkillStepReuseSettings, SkillVersionRecord, StepRunRecord, TaskRunRecord } from "./workflowTypes";
+import type { ArtifactRecord, ExternalSkillMatcherModel, SkillCandidateRecord, SkillExecutionModel, SkillRecord, SkillStepReuseSettings, SkillVersionRecord, StepRunRecord, TaskRunRecord } from "./workflowTypes";
 
 export type EpisodeStatus = "generating" | "editing" | "accepted" | "abandoned";
 
@@ -96,6 +96,8 @@ export interface LearningSettings {
   skillReuseEnabled?: boolean;
   skillStepReuse?: SkillStepReuseSettings;
   skillMatchModel?: ExternalSkillMatcherModel;
+  /** 用于 Skill 增量执行；两个配置都默认关闭 Thinking。 */
+  skillExecutionModel?: SkillExecutionModel;
   updatedAt: string;
 }
 

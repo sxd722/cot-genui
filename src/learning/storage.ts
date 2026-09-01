@@ -2,7 +2,7 @@ import type { AdaptivePolicyEntry } from "../lib/adaptive/types";
 import { getLearningDatabase } from "./database";
 import type { GenerationEpisode, LearningExport, LearningSettings, PolicyObservation } from "./types";
 import { PIPELINE_STEPS } from "../lib/pipelineTypes";
-import type { SkillStepReuseSettings } from "./workflowTypes";
+import type { ProfileDigestCacheRecord, SkillStepReuseSettings } from "./workflowTypes";
 
 export function defaultSkillStepReuse(): SkillStepReuseSettings {
   return Object.fromEntries(PIPELINE_STEPS.map((step) => [step, true])) as SkillStepReuseSettings;
@@ -25,6 +25,7 @@ export async function getLearningSettings(): Promise<LearningSettings> {
     skillReuseEnabled: stored?.skillReuseEnabled ?? true,
     skillStepReuse: { ...defaultSkillStepReuse(), ...(stored?.skillStepReuse ?? {}) },
     skillMatchModel: stored?.skillMatchModel ?? "groq_qwen_3_6_27b",
+    skillExecutionModel: stored?.skillExecutionModel ?? "groq_qwen_3_6_27b",
     updatedAt: stored?.updatedAt ?? new Date().toISOString(),
   };
 }
@@ -32,6 +33,8 @@ export async function getLearningSettings(): Promise<LearningSettings> {
 export const listSkills = () => getLearningDatabase().skills.toArray();
 export const listSkillVersions = () => getLearningDatabase().skillVersions.toArray();
 export const listSkillCandidates = () => getLearningDatabase().skillCandidates.toArray();
+export const putProfileDigestCache = (record: ProfileDigestCacheRecord) => getLearningDatabase().profileDigests.put(record).then(() => undefined);
+export const getProfileDigestCache = (contextHash: string) => getLearningDatabase().profileDigests.get(contextHash);
 
 export async function exportLearningData(): Promise<LearningExport> {
   const database = getLearningDatabase();

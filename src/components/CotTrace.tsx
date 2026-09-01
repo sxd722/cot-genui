@@ -32,6 +32,17 @@ function optionList(raw: unknown): string[] {
     .filter((s): s is string => !!s && typeof s === "string");
 }
 
+function DiagnosticLogDetail({ detail }: { detail: unknown }) {
+  if (!detail || typeof detail !== "object" || typeof (detail as Record<string, unknown>).stage !== "string") return null;
+  const text = JSON.stringify(detail, null, 2).slice(0, 8_000);
+  return (
+    <details className="mt-1 border-l border-zinc-200 pl-2 dark:border-zinc-700">
+      <summary className="cursor-pointer text-[9px] text-zinc-400">诊断详情</summary>
+      <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[9px] text-zinc-500 dark:text-zinc-400">{text}</pre>
+    </details>
+  );
+}
+
 const STATUS_BADGE: Record<string, { text: string; cls: string }> = {
   pending: { text: "待执行", cls: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400" },
   loading: { text: "执行中", cls: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400" },
@@ -100,7 +111,7 @@ function StepRow({ name }: { name: StepName }) {
               className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${s.skillReuse.executionMode === "deterministic" ? "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300" : s.skillReuse.executionMode === "fallback" ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300" : "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300"}`}
               title={`Skill ${s.skillReuse.skillVersionId} · ${s.skillReuse.matcherModel ?? s.skillReuse.matcherVersion} · score ${s.skillReuse.score.toFixed(2)}${s.skillReuse.fallbackReason ? ` · ${s.skillReuse.fallbackReason}` : ""}`}
             >
-              Skill · {s.skillReuse.executionMode === "deterministic" ? `跳过 ${s.skillReuse.callsAvoided} 次` : s.skillReuse.executionMode === "fallback" ? "回退" : "引导"}
+              Skill · {s.skillReuse.executionStrategy ?? (s.skillReuse.executionMode === "deterministic" ? `跳过 ${s.skillReuse.callsAvoided} 次` : s.skillReuse.executionMode === "fallback" ? "回退" : "引导")}
             </span>
           )}
           {/* 统计标签：token · 费用 */}
@@ -134,6 +145,12 @@ function StepRow({ name }: { name: StepName }) {
                 <section className="mt-2 rounded border border-violet-200 bg-violet-50 p-2 text-[10px] text-violet-900 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-200">
                   <strong className="block text-[11px]">Skill 对本步骤的具体影响</strong>
                   <p className="mt-1 whitespace-pre-wrap leading-relaxed">{s.skillReuse.effectSummary || "本步骤已应用 Skill 结构先验。"}</p>
+                  {s.skillReuse.reuseTier && (
+                    <p className="mt-1 text-emerald-700 dark:text-emerald-400">
+                      复用等级：{s.skillReuse.reuseTier} · 执行：{s.skillReuse.executionStrategy ?? s.skillReuse.executionMode}
+                      {s.skillReuse.profileSimilarity !== undefined ? ` · 画像 ${Math.round(s.skillReuse.profileSimilarity * 100)}%` : ""}
+                    </p>
+                  )}
                   <p className="mt-1 text-violet-600 dark:text-violet-400">使用投影：{(s.skillReuse.projectionKeys ?? []).join("、") || "无"}</p>
                   {s.skillReuse.promptAddition ? (
                     <details className="mt-1.5">
@@ -185,6 +202,7 @@ function StepRow({ name }: { name: StepName }) {
                       [{l.phase}]
                     </span>{" "}
                     {l.message}
+                    <DiagnosticLogDetail detail={l.detail} />
                   </div>
                 ))}
               </div>

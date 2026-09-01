@@ -12,7 +12,7 @@ export const CARD_PLAN_SYSTEM_PROMPT = [
   "每个请求只描述一个视觉主体；多个独立主体优先在各自内容 block 分别声明 image，只有任务需要直观比较同类场景时才使用 gallery。hero 通常用 wide，列表缩略图通常用 square，人物或竖版作品通常用 portrait。不得为了图片增加卡片，也不要为了装饰给所有卡片强行请求图片。纯数据、抽象分析、流程和文字任务若图片不能提供额外语义，则不请求图片。",
   "每张卡/块用 sourceSlots 标记证据槽位。webFacts 是可选的外部证据池，只在它能明显提高准确性、时效性、具体性或可操作性时使用；若与用户主要目标、已确认约束或卡片信息结构无关，可以完全忽略。不得仅因为存在 webFacts 就增加卡片、列表或来源区域。若选择使用外链，只能原样使用宿主提供的已验证 URL，不得编造。",
   "action role 只能是 primary/secondary/tertiary。不得把低置信槽位做成选项要求用户再次回答。不要生成 HTML、Markdown、OpenUI 或 missingInfo。",
-].join("");
+].join("\n");
 
 export function cardPlanSystemPromptFor(mode: CardLayoutMode): string {
   return `${CARD_PLAN_SYSTEM_PROMPT}\n\n${fixedCardPlanPrompt(mode)}`;

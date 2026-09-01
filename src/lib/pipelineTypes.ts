@@ -8,7 +8,7 @@ import type { OpenUILayoutCoverage } from "@/openui/layoutValidation";
 import type { AssetManifest, AssetResolutionDiagnostics } from "@/openui/assetTypes";
 import type { OpenUIAssetCoverage } from "@/openui/assetCoverage";
 import type { OpenUILayoutStabilizationDiagnostics } from "@/openui/layoutRuntime";
-import type { SkillExecutionMode } from "@/learning/workflowTypes";
+import type { ReuseTier, SkillExecutionMode, StepExecutionStrategy } from "@/learning/workflowTypes";
 
 export const PIPELINE_STEPS = [
   "intent_analysis",
@@ -163,6 +163,11 @@ export interface PipelineStepOutput {
     effectSummary: string;
     promptAddition?: string;
     projectionKeys: string[];
+    reuseTier?: ReuseTier;
+    executionStrategy?: StepExecutionStrategy;
+    profileSimilarity?: number;
+    promptTokensAvoided?: number;
+    completionTokensAvoided?: number;
   };
   provenance?: StepProvenance;
 }
