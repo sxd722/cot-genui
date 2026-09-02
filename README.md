@@ -35,6 +35,14 @@ npm run dev
 
 第⑥步不再把供人阅读的 CardPlan Markdown 当作模型协议。宿主从 CardPlan 确定性构建 `designBrief`：只有 `renderableContent` 可以成为可见文案，`designIntent` 只是 NON-RENDERABLE 的组件、层级、密度和强调提示；媒体与动作分别只暴露 `assetRef` 和 `actionRef`。生成后 validator 会拦截设计字段、Vibe 标题或作者指导语泄漏，并沿现有 repair 路径清理。
 
+第⑥步也可单独选择 **Google Stitch · H5**。该分支在进入 `/api/infer` 前截断，不调用 OpenUI 模型、OpenUI stream 或 repair。宿主只向 Stitch 提供用户题材和经过 URL 脱敏的事实/动作素材，不发送 OpenUI design brief 或 presentation intent，并要求所有可见界面文案使用简体中文。自由布局模式下不限制页面结构、卡片数量或视觉风格；选择 `fixed-600x300` 时则严格要求一份 CardPlan section 对应一张卡、数量和顺序不变、每张恰好 600×300 且卡内不滚动或溢出。宿主取得 SDK 提供的 HTML attachment 下载地址后，执行 HTTPS、重定向和 2 MiB 大小检查并获取真正的 H5 源码。浏览器通过无 `sandbox` 的 `srcDoc` iframe 原样执行 H5（仅适用于当前 demo 信任边界），截图作为兜底。Stitch SDK 当前不直接提供 React 源码或增量 HTML；Stitch H5 也不进入 OpenUI 局部编辑、动作绑定、validator、Skill 快照或 Reflection。
+
+```bash
+STITCH_API_KEY=your-server-only-key
+STITCH_MODEL_ID=GEMINI_3_FLASH
+NEXT_PUBLIC_STEP6_BACKEND=openui # 或 stitch；界面中可随时切换
+```
+
 静态回归命令：
 
 ```bash

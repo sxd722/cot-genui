@@ -24,6 +24,7 @@
     "benchmark:skill-reuse": "node --import tsx scripts/benchmark-skill-reuse.ts"
   },
   "dependencies": {
+    "@google/stitch-sdk": "^0.3.5",
     "@openuidev/lang-core": "0.2.11",
     "@openuidev/react-headless": "0.9.8",
     "@openuidev/react-lang": "0.2.11",

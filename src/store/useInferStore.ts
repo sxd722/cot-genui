@@ -33,6 +33,7 @@ import { applyExternalSkillRanking, buildSkillInvocation, buildSkillMatchDecisio
 import { createReuseDelta, createReuseExecutionPlan, findInvocationReuseSnapshot, findReuseSnapshot, getReuseSnapshot, skillGenericInvocationFingerprint, skillInvocationFingerprint } from "@/learning/reuseAccelerator";
 import { sha256 } from "@/learning/hash";
 import { applyProgramInferenceDelta, publicDeltaSummary } from "@/learning/deltaPatch";
+import { isStitchArtifact, type Step6Backend, type StitchArtifact } from "@/stitch/types";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -133,6 +134,7 @@ interface InferState {
   contextText: string;
   steps: Record<StepName, StepState>;
   stepModels: Record<StepName, ModelProfile>;
+  step6Backend: Step6Backend;
   isMock: boolean;
   profileStatus: "idle" | "compressing" | "ready" | "degraded" | "error";
   profileDigest: ProfileDigest | null;
@@ -149,6 +151,7 @@ interface InferState {
   cardPlanMarkdown: string | null;
   reasoningGraph: string | null;
   openuiCode: string | null;
+  stitchArtifact: StitchArtifact | null;
   openuiDiagnostics: InferApiResponse["openuiDiagnostics"] | null;
   assetManifest: AssetManifest | null;
   openuiStreamMetrics: OpenUIStreamMetrics;
@@ -211,6 +214,7 @@ interface InferState {
   setCustomContextText: (text: string) => void;
   answerQuestion: (index: number, value: string) => void;
   setStepModel: (name: StepName, profile: ModelProfile) => void;
+  setStep6Backend: (backend: Step6Backend) => void;
   setRightView: (view: ResultView) => void;
   markOpenUIFirstRenderableRoot: (timestamp?: number) => void;
   reportOpenUILayout: (measurements: OpenUILayoutMeasurement[]) => Promise<void>;
@@ -282,7 +286,7 @@ function clearedResult() {
   return {
     inferenceState: null,
     slots: [] as InferSlot[], conflicts: [] as InferConflict[], questions: [] as InferQuestion[],
-    result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, assetManifest: null as AssetManifest | null, openuiStreamMetrics: {} as OpenUIStreamMetrics, layoutStabilization: emptyLayoutStabilization(), rightView: null as ResultView | null,
+    result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, stitchArtifact: null as StitchArtifact | null, openuiDiagnostics: null, assetManifest: null as AssetManifest | null, openuiStreamMetrics: {} as OpenUIStreamMetrics, layoutStabilization: emptyLayoutStabilization(), rightView: null as ResultView | null,
     answers: {}, runAllPaused: false,
     prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
     isTargeting: false, cardEditTarget: null as CardEditTarget | null, editDraft: "", editStatus: "idle" as const,
@@ -403,6 +407,10 @@ function replayStatePatch(state: InferState, snapshot: ReuseSnapshotV1, validati
       ],
     },
   };
+}
+
+function defaultStep6Backend(): Step6Backend {
+  return process.env.NEXT_PUBLIC_STEP6_BACKEND === "stitch" ? "stitch" : "openui";
 }
 
 function deltaSkillReuse(snapshot: ReuseSnapshotV1, plan: ReuseExecutionPlan, name: StepName, selection?: SkillReuseSelection | null): NonNullable<PipelineStepOutput["skillReuse"]> {
@@ -594,6 +602,7 @@ export const useInferStore = create<InferState>((set, get) => ({
   contextText: pretty(presets[0].records),
   steps: emptySteps(),
   stepModels: defaultStepModels(),
+  step6Backend: defaultStep6Backend(),
   isMock: false,
   profileStatus: "idle",
   profileDigest: null,
@@ -660,6 +669,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       cardPlanMarkdown: null,
       reasoningGraph: null,
       openuiCode: null,
+      stitchArtifact: null,
       openuiDiagnostics: null,
       assetManifest: null,
       openuiStreamMetrics: {},
@@ -713,6 +723,28 @@ export const useInferStore = create<InferState>((set, get) => ({
   setStepModel: (name, profile) => set((state) => ({
     stepModels: { ...state.stepModels, [name]: profile },
     steps: { ...state.steps, [name]: emptyStep() },
+    ...(name === "openui_generate" ? {
+      step6Backend: "openui" as const,
+      openuiCode: null,
+      stitchArtifact: null,
+      openuiDiagnostics: null,
+      openuiVersions: [],
+      openuiVersionIndex: -1,
+    } : {}),
+  })),
+  setStep6Backend: (step6Backend) => set((state) => ({
+    step6Backend,
+    openuiCode: null,
+    stitchArtifact: null,
+    openuiDiagnostics: null,
+    assetManifest: null,
+    openuiStreamMetrics: {},
+    layoutStabilization: emptyLayoutStabilization(),
+    openuiVersions: [],
+    openuiVersionIndex: -1,
+    cardEditTarget: null,
+    rightView: state.cardPlan ? "openui" : state.rightView,
+    steps: { ...state.steps, openui_generate: emptyStep() },
   })),
   setRightView: (rightView) => set({ rightView }),
   initializeLearning: async () => {
@@ -1544,6 +1576,122 @@ export const useInferStore = create<InferState>((set, get) => ({
       set((state) => ({ steps: { ...state.steps, [name]: { ...state.steps[name], status: "error", error: "设备上下文不是合法 JSON" } } }));
       return;
     }
+
+    if (name === "openui_generate" && get().step6Backend === "stitch") {
+      const cardPlan = get().cardPlan;
+      if (!cardPlan) {
+        set((state) => ({ steps: { ...state.steps, [name]: { ...state.steps[name], status: "error", error: "请先完成⑤ CardPlan 生成" } } }));
+        return;
+      }
+      set((state) => ({
+        openuiCode: null,
+        stitchArtifact: null,
+        openuiDiagnostics: null,
+        assetManifest: null,
+        openuiStreamMetrics: {},
+        layoutStabilization: emptyLayoutStabilization(),
+        openuiVersions: [],
+        openuiVersionIndex: -1,
+        cardEditTarget: null,
+        rightView: "openui",
+        steps: {
+          ...state.steps,
+          [name]: {
+            ...state.steps[name], status: "loading", streamingChars: 0, error: null,
+            logs: [{ ts: new Date().toISOString(), phase: "request", message: "STITCH_DIRECT · CardPlan → Stitch H5 · OpenUI model calls=0" }],
+          },
+        },
+      }));
+      const startedAt = performance.now();
+      let stitchStepRunId: string | undefined;
+      try {
+        if (captureEpisode) {
+          stitchStepRunId = (await beginStepCapture({
+            runId: workflowRunId(captureEpisode.id),
+            step: name,
+            request: { step: name, backend: "stitch", cardPlan },
+          })).id;
+        }
+        const response = await fetch("/api/stitch/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cardPlan, query }),
+        });
+        const raw = await response.text();
+        let payload: unknown;
+        try { payload = raw ? JSON.parse(raw) : null; }
+        catch { throw new Error(`Stitch 返回了无法解析的响应（HTTP ${response.status}）`); }
+        if (!response.ok || !isStitchArtifact(payload)) {
+          const providerError = payload && typeof payload === "object" && "error" in payload
+            ? String((payload as { error?: unknown }).error ?? "")
+            : "";
+          throw new Error(providerError || `Stitch 生成失败（HTTP ${response.status}）`);
+        }
+        const totalMs = Math.round(performance.now() - startedAt);
+        const timing: StepTiming = {
+          totalMs,
+          llmMs: Math.min(totalMs, payload.durationMs),
+          overheadMs: Math.max(0, totalMs - payload.durationMs),
+        };
+        const outputs = {
+          backend: "stitch",
+          renderer: "unrestricted-srcdoc-demo",
+          projectId: payload.projectId,
+          screenId: payload.screenId,
+          htmlBytes: payload.htmlBytes,
+          openuiModelCalls: 0,
+        };
+        if (captureEpisode && stitchStepRunId) {
+          await completeStepCapture({
+            runId: workflowRunId(captureEpisode.id),
+            stepRunId: stitchStepRunId,
+            step: name,
+            output: { outputs, model: `stitch/${payload.model}`, timing },
+          }).catch(() => undefined);
+        }
+        set((state) => {
+          let episode = state.currentEpisode ?? createGenerationEpisode({ query, classification: state.queryClassification, userKey: state.profileDigest?.contextHash });
+          episode = recordEpisodeStep(episode, name, {});
+          return {
+            stitchArtifact: payload,
+            currentEpisode: episode,
+            steps: {
+              ...state.steps,
+              [name]: {
+                status: "done",
+                reasoning: "CardPlan 已直接交给 Google Stitch 生成 H5；本步骤未调用 OpenUI 模型，也未执行 OpenUI repair。",
+                outputs,
+                durationMs: totalMs,
+                timing,
+                model: `stitch/${payload.model}`,
+                streamingChars: 0,
+                error: null,
+                logs: [
+                  { ts: new Date().toISOString(), phase: "request", message: "STITCH_DIRECT · CardPlan → Stitch H5 · OpenUI model calls=0" },
+                  { ts: new Date().toISOString(), phase: "response", message: `STITCH_READY · ${payload.htmlBytes} bytes · ${payload.durationMs}ms` },
+                ],
+              },
+            },
+          };
+        });
+      } catch (error) {
+        if (captureEpisode && stitchStepRunId) void failStepCapture(workflowRunId(captureEpisode.id), stitchStepRunId, error).catch(() => undefined);
+        set((state) => ({
+          steps: {
+            ...state.steps,
+            [name]: {
+              ...state.steps[name], status: "error", error: error instanceof Error ? error.message : "Stitch 生成失败",
+              logs: [
+                ...state.steps[name].logs,
+                { ts: new Date().toISOString(), phase: "error", message: error instanceof Error ? error.message : "Stitch 生成失败" },
+              ],
+            },
+          },
+        }));
+      }
+      return;
+    }
+
     const replayPlan = get().reusePlan;
     if (replayPlan?.steps[name].strategy === "replay" && replayPlan.snapshotId) {
       const snapshot = await getReuseSnapshot(replayPlan.snapshotId).catch(() => undefined);
@@ -1599,8 +1747,8 @@ export const useInferStore = create<InferState>((set, get) => ({
     let capturedStepRunId: string | undefined;
 
     set((state) => ({
-      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, openuiDiagnostics: null, assetManifest: null, openuiVersions: [], openuiVersionIndex: -1, rightView: "cardplan-markdown" as const } : {}),
-      ...(name === "openui_generate" ? { openuiCode: null, openuiDiagnostics: null, assetManifest: null, openuiStreamMetrics: {}, layoutStabilization: emptyLayoutStabilization(), openuiVersions: [], openuiVersionIndex: -1, cardEditTarget: null, rightView: "openui" as const } : {}),
+      ...(name === "card_plan_generate" ? { result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, stitchArtifact: null, openuiDiagnostics: null, assetManifest: null, openuiVersions: [], openuiVersionIndex: -1, rightView: "cardplan-markdown" as const } : {}),
+      ...(name === "openui_generate" ? { openuiCode: null, stitchArtifact: null, openuiDiagnostics: null, assetManifest: null, openuiStreamMetrics: {}, layoutStabilization: emptyLayoutStabilization(), openuiVersions: [], openuiVersionIndex: -1, cardEditTarget: null, rightView: "openui" as const } : {}),
       steps: { ...state.steps, [name]: { ...state.steps[name], status: "loading", streamingChars: 0, error: null, logs: [] } },
     }));
 
@@ -1896,7 +2044,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     const beforeReuse = get();
     const reuseContext = runtimeContextForReuse(beforeReuse.contextText, beforeReuse.customContextText);
     let preResolvedSnapshot = false;
-    if (FEATURE_FLAGS.SKILL_REUSE && beforeReuse.learningSettings.skillReuseEnabled !== false && reuseContext) {
+    if (beforeReuse.step6Backend === "openui" && FEATURE_FLAGS.SKILL_REUSE && beforeReuse.learningSettings.skillReuseEnabled !== false && reuseContext) {
       try {
         const lookup = await findReuseSnapshot({ query: beforeReuse.query, context: reuseContext, layoutMode: beforeReuse.layoutMode });
         const snapshot = lookup.snapshot;
@@ -2030,6 +2178,6 @@ export const useInferStore = create<InferState>((set, get) => ({
   reset: () => {
     persistAbandoned(get().currentEpisode);
     stepCache.clear();
-    set({ query: DEFAULT_QUERY, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), cardEditModelProfile: "glm_5_2", isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null, reusePlan: null, reuseDelta: null, ...clearedResult() });
+    set({ query: DEFAULT_QUERY, queryClassification: FEATURE_FLAGS.ADAPTIVE_QUERY_CLASSIFICATION ? classifyQuery(DEFAULT_QUERY) : { taskFamily: "general", decisionMode: "general", confidence: 1, source: "heuristic" }, deviceContext: presets[0], contextText: pretty(presets[0].records), steps: emptySteps(), stepModels: defaultStepModels(), step6Backend: defaultStep6Backend(), cardEditModelProfile: "glm_5_2", isMock: false, profileStatus: "idle", profileDigest: null, profileError: null, profileContextText: null, currentEpisode: null, isReflectionOpen: false, skillMatches: [], selectedSkill: null, selectedSkillRecipe: null, queryAbstraction: null, skillMatchReport: null, selectedSkillInvocation: null, skillDecisionLocked: false, skillMatchStatus: "idle", skillMatchError: null, skillMatchDiagnostics: null, reusePlan: null, reuseDelta: null, ...clearedResult() });
   },
 }));

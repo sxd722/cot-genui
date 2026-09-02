@@ -17,6 +17,7 @@ export function EditComposer() {
       <div className="flex items-center gap-2">
         <strong className="text-xs">卡片局部编辑</strong>
         {!FEATURE_FLAGS.OPENUI_CARD_EDIT ? <span className="text-[10px] text-zinc-400">feature flag 已关闭</span> : null}
+        {state.step6Backend === "stitch" ? <span className="text-[10px] text-amber-500">Stitch H5 不进入 OpenUI 局部编辑与 Reflection</span> : null}
         {!layoutReady ? <span className="text-[10px] text-amber-500">{state.layoutStabilization.status === "error" ? "布局未能稳定" : "正在优化布局"}</span> : null}
         <label className="flex items-center gap-1 text-[10px] text-zinc-500">
           二次编辑模型

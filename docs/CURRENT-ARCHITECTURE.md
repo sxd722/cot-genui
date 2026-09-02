@@ -213,6 +213,12 @@ CardPlan Markdown 不是第二个模型产物，而是 CardPlan 的唯一文本�
 
 ## 5. OpenUI 生成与渲染
 
+第⑥步现在有两个互斥后端：默认 `openui` 保持本章描述的 OpenUI Lang 流式链路；选择 `stitch` 时，前端直接调用 `/api/stitch/generate`，不会请求 `/api/infer`，也不会触发 OpenUI 模型、repair、asset resolver 或 validator。Stitch 输入只包含用户题材和经过 URL 脱敏的事实/动作素材，不包含 OpenUI design brief 或 presentation intent，并始终要求可见界面使用简体中文。自由布局模式下页面结构、卡片数量和视觉表达完全由 Stitch 决定；`fixed-600x300` 模式下，prompt 会恢复严格拓扑契约：CardPlan section 与卡片一一对应、数量和顺序不变、每张恰好 600×300、卡内禁止滚动和溢出。Stitch SDK 只在生成完成后提供 HTML 与截图下载 URL，宿主会下载并限制 H5 为 2 MiB，再通过当前 demo 专用的无 `sandbox` `iframe srcDoc` 原样执行。当前 SDK 没有 React 源码或增量 HTML 导出，因此该产物定义为 H5 preview；Stitch 路径暂不进入 OpenUI 局部编辑、Reflection 和可复用快照。
+
+当前公开 `@google/stitch-sdk` 的 `project.generate()` 是阻塞式 `Promise<Screen>`：MCP 使用 `text/event-stream` 只是传输协议能力，`generate_screen_from_text` 工具本身没有声明 task/stream execution，且 HTML 只能在最终 `Screen` 返回后通过 `getHtml()` 取得。SDK 类型中的 `progressUpdates` 也属于最终 tool result 的组成部分，不是增量 HTML。因而无法复刻 Stitch 网站内部的真实设计画布流；若需要等待体验，只能由宿主流式发送 `accepted / generating / downloading / ready` 阶段并播放骨架或模拟编辑动画，最终一次性替换为真实 H5。
+
+Stitch MCP 连接采用请求级生命周期：每次 `/api/stitch/generate` 创建独立 `StitchToolClient + Protocol`，只复用 project ID，不跨请求复用 transport，并在 `finally` 中关闭 client。若 SDK 抛出已知的 stale-transport 错误，宿主会关闭当前 session，并用全新 client 局部重试一次。这避免 transport 出错后 SDK 的 `isConnected` 状态与 MCP Protocol 内部连接状态分叉。
+
 ### 5.1 Prompt 路由
 
 系统提示词根据模型能力选择组件面：

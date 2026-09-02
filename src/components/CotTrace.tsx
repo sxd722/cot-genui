@@ -57,7 +57,7 @@ function doneBadgeText(durationMs: number): string {
 }
 
 function StepRow({ name }: { name: StepName }) {
-  const { steps, stepModels, setStepModel, runStep } = useInferStore();
+  const { steps, stepModels, step6Backend, setStepModel, setStep6Backend, runStep } = useInferStore();
   const s = steps[name];
   const [open, setOpen] = useState(false);
   const badge = STATUS_BADGE[s.status];
@@ -83,8 +83,11 @@ function StepRow({ name }: { name: StepName }) {
         </button>
 
         <select
-          value={stepModels[name]}
-          onChange={(event) => setStepModel(name, event.target.value as ModelProfile)}
+          value={name === "openui_generate" && step6Backend === "stitch" ? "stitch" : stepModels[name]}
+          onChange={(event) => {
+            if (name === "openui_generate" && event.target.value === "stitch") setStep6Backend("stitch");
+            else setStepModel(name, event.target.value as ModelProfile);
+          }}
           disabled={s.status === "loading"}
           className="max-w-[170px] shrink-0 rounded border border-zinc-300 bg-white px-1.5 py-1 text-[10px] text-zinc-600 outline-none focus:border-zinc-600 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
           title={`${STEP_LABEL[name]} 使用的模型`}
@@ -92,6 +95,7 @@ function StepRow({ name }: { name: StepName }) {
           {MODEL_PROFILES.map((profile) => (
             <option key={profile} value={profile}>{MODEL_PROFILE_LABELS[profile]}</option>
           ))}
+          {name === "openui_generate" ? <option value="stitch">Google Stitch · H5</option> : null}
         </select>
 
         {/* 标题（点击展开/收起） */}
@@ -175,7 +179,9 @@ function StepRow({ name }: { name: StepName }) {
               <div><span className="block text-zinc-400">应用开销</span>{s.timing.overheadMs} ms</div>
               <div><span className="block text-zinc-400">模型</span>{s.modelProfile ? MODEL_PROFILE_LABELS[s.modelProfile] : (s.model ?? "—")}</div>
               <p className="col-span-2 mt-1 text-[9px] leading-relaxed text-zinc-400 sm:col-span-4">
-                {name === "openui_generate" ? "OpenUI Lang 使用流式传输并渐进渲染；" : "当前为非流式调用；"}
+                {name === "openui_generate" && step6Backend === "stitch"
+                  ? "Stitch 直接生成 H5，宿主下载后在不受限的 demo iframe 中原样执行；不会调用 OpenUI 模型。"
+                  : name === "openui_generate" ? "OpenUI Lang 使用流式传输并渐进渲染；" : "当前为非流式调用；"}
                 模型响应仅提供 created 时间戳和 token usage，不提供服务端纯推理时延；“LLM 请求”是本服务测得的完整请求墙钟时间。
               </p>
             </div>
