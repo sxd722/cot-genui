@@ -31,11 +31,13 @@ export function StitchPreview({ artifact, loading, error }: {
         <span>Stitch H5 · {artifact.model}</span>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setPreviewMode("html")} className={previewMode === "html" ? "text-white" : "hover:text-zinc-200"}>HTML</button>
-          <button type="button" onClick={() => setPreviewMode("image")} className={previewMode === "image" ? "text-white" : "hover:text-zinc-200"}>截图</button>
+          {artifact.imageUrl ? (
+            <button type="button" onClick={() => setPreviewMode("image")} className={previewMode === "image" ? "text-white" : "hover:text-zinc-200"}>截图</button>
+          ) : null}
           <span>{artifact.htmlBytes} bytes · {artifact.durationMs}ms</span>
         </div>
       </div>
-      {previewMode === "image" ? (
+      {previewMode === "image" && artifact.imageUrl ? (
         // eslint-disable-next-line @next/next/no-img-element -- Stitch 远程截图 URL 是运行时动态地址，next/image 需要预配置远程域名，MVP 兜底直接用 img
         <img src={artifact.imageUrl} alt="Stitch generated UI" referrerPolicy="no-referrer" className="min-h-0 flex-1 object-contain" />
       ) : (

@@ -21,7 +21,12 @@
     "test": "vitest run",
     "test:layout": "playwright test",
     "test:watch": "vitest",
-    "benchmark:skill-reuse": "node --import tsx scripts/benchmark-skill-reuse.ts"
+    "benchmark:skill-reuse": "node --import tsx scripts/benchmark-skill-reuse.ts",
+    "dev:vinext": "vinext dev --port 3001",
+    "build:vinext": "vinext build",
+    "build:sites": "npm run generate:openui && vinext build",
+    "start:vinext": "wrangler dev --config dist/server/wrangler.json",
+    "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   },
   "dependencies": {
     "@google/stitch-sdk": "^0.3.5",
@@ -29,6 +34,7 @@
     "@openuidev/react-headless": "0.9.8",
     "@openuidev/react-lang": "0.2.11",
     "@openuidev/react-ui": "0.13.6",
+    "@vinext/cloudflare": "^1.0.0-beta.6",
     "ai": "6.0.116",
     "dexie": "^4.4.5",
     "lit": "^3.3.3",
@@ -37,23 +43,32 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",
+    "react-server-dom-webpack": "^19.2.8",
     "remark-gfm": "^4.0.1",
+    "vinext": "^1.0.0-beta.8",
     "zod": "4.4.3",
     "zustand": "4.5.7"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.3",
+    "@openai/sites-vite-plugin": "^0.2.0",
     "@openuidev/cli": "^0.2.8",
     "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.1.1",
+    "@vitejs/plugin-rsc": "^0.5.34",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "fake-indexeddb": "^6.2.5",
     "tailwindcss": "^4",
     "tsx": "^4.20.5",
     "typescript": "^5",
-    "vitest": "^4.1.10"
-  }
+    "vite": "^8.2.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.128.0"
+  },
+  "type": "module"
 }

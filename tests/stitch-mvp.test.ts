@@ -198,6 +198,24 @@ describe("Stitch MVP side path", () => {
     expect(markup).not.toContain("src=\"https://contribution.usercontent.google.com/download");
   });
 
+  it("keeps the HTML preview usable while a Stitch screenshot is unavailable", () => {
+    const artifact: StitchArtifact = {
+      provider: "stitch",
+      projectId: "project_1",
+      screenId: "screen_1",
+      model: "GEMINI_3_FLASH",
+      htmlSource: "<!doctype html><html><body>html only</body></html>",
+      htmlBytes: 52,
+      imageUrl: "",
+      durationMs: 1200,
+    };
+
+    const markup = renderToStaticMarkup(createElement(StitchPreview, { artifact, loading: false }));
+    expect(markup).toContain("html only");
+    expect(markup).not.toContain(">截图<");
+    expect(markup).not.toContain("<img");
+  });
+
   it("routes Step 6 directly to Stitch without calling the OpenUI infer endpoint", async () => {
     const artifact: StitchArtifact = {
       provider: "stitch",

@@ -75,8 +75,18 @@ export async function POST(request: Request) {
       return { projectId: project.id, screenId: screen.id, htmlUrl, imageUrl };
     });
     const { projectId, screenId, htmlUrl, imageUrl } = generated;
-    if (!isTrustedStitchUrl(htmlUrl) || !isTrustedStitchUrl(imageUrl)) {
-      throw new Error("Stitch returned an invalid preview URL");
+    if (!isTrustedStitchUrl(htmlUrl)) {
+      throw new Error("Stitch returned an invalid HTML download URL");
+    }
+    const trustedImageUrl = isTrustedStitchUrl(imageUrl) ? imageUrl : "";
+    if (!trustedImageUrl) {
+      // A freshly generated screen can expose HTML before its asynchronous
+      // screenshot is ready. HTML is the primary artifact, so keep the run
+      // usable and hide the optional screenshot fallback.
+      console.warn("[stitch:generate] screenshot unavailable", {
+        screenId,
+        imageUrlPresent: Boolean(imageUrl),
+      });
     }
     const html = await fetchStitchHtmlSource(htmlUrl);
 
@@ -87,7 +97,7 @@ export async function POST(request: Request) {
       model,
       htmlSource: html.source,
       htmlBytes: html.bytes,
-      imageUrl,
+      imageUrl: trustedImageUrl,
       durationMs: Date.now() - startedAt,
     };
     return NextResponse.json(artifact, { headers: { "Cache-Control": "no-store" } });
