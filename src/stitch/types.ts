@@ -8,8 +8,39 @@ export interface StitchArtifact {
   model: string;
   htmlSource: string;
   htmlBytes: number;
-  imageUrl: string;
+  imageUrl?: string;
   durationMs: number;
+}
+
+export type StitchJobStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "expired";
+export type StitchJobPhase = "queued" | "generating" | "fetching-html" | "finalizing" | "complete";
+
+export interface StitchJobAccepted {
+  jobId: string;
+  readToken: string;
+  status: "queued";
+  pollAfterMs: number;
+}
+
+export interface StitchJobProgress {
+  jobId: string;
+  status: StitchJobStatus;
+  phase: StitchJobPhase;
+  createdAt: string;
+  updatedAt: string;
+  elapsedMs: number;
+  pollAfterMs: number;
+  artifact?: StitchArtifact;
+  error?: { code: string; message: string };
+}
+
+export interface ActiveStitchJobRecord {
+  jobId: string;
+  readToken: string;
+  query: string;
+  cardPlan: unknown;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export function isStitchArtifact(value: unknown): value is StitchArtifact {
@@ -21,6 +52,6 @@ export function isStitchArtifact(value: unknown): value is StitchArtifact {
     && typeof artifact.model === "string"
     && typeof artifact.htmlSource === "string"
     && typeof artifact.htmlBytes === "number"
-    && typeof artifact.imageUrl === "string"
+    && (artifact.imageUrl === undefined || typeof artifact.imageUrl === "string")
     && typeof artifact.durationMs === "number";
 }

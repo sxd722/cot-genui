@@ -43,6 +43,8 @@ STITCH_MODEL_ID=GEMINI_3_FLASH
 NEXT_PUBLIC_STEP6_BACKEND=openui # 或 stitch；界面中可随时切换
 ```
 
+公开部署建议使用异步 Stitch 执行器，避免 Sites 的同步请求时限中断生成。配置 `STITCH_EXECUTOR_URL`、`STITCH_EXECUTOR_SECRET` 后，第⑥步会提交 Cloud Tasks 并轮询真实阶段；部署与数据保留说明见 [docs/STITCH-ASYNC-EXECUTOR.md](docs/STITCH-ASYNC-EXECUTOR.md)。
+
 静态回归命令：
 
 ```bash

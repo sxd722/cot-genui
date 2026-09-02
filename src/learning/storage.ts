@@ -3,6 +3,7 @@ import { getLearningDatabase } from "./database";
 import type { GenerationEpisode, LearningExport, LearningSettings, PolicyObservation } from "./types";
 import { PIPELINE_STEPS } from "../lib/pipelineTypes";
 import type { ProfileDigestCacheRecord, SkillStepReuseSettings } from "./workflowTypes";
+import type { ActiveStitchJobRecord } from "../stitch/types";
 
 export function defaultSkillStepReuse(): SkillStepReuseSettings {
   return Object.fromEntries(PIPELINE_STEPS.map((step) => [step, true])) as SkillStepReuseSettings;
@@ -35,6 +36,9 @@ export const listSkillVersions = () => getLearningDatabase().skillVersions.toArr
 export const listSkillCandidates = () => getLearningDatabase().skillCandidates.toArray();
 export const putProfileDigestCache = (record: ProfileDigestCacheRecord) => getLearningDatabase().profileDigests.put(record).then(() => undefined);
 export const getProfileDigestCache = (contextHash: string) => getLearningDatabase().profileDigests.get(contextHash);
+export const putActiveStitchJob = (record: ActiveStitchJobRecord) => getLearningDatabase().stitchJobs.put(record).then(() => undefined);
+export const getLatestActiveStitchJob = () => getLearningDatabase().stitchJobs.orderBy("updatedAt").last();
+export const deleteActiveStitchJob = (jobId: string) => getLearningDatabase().stitchJobs.delete(jobId).then(() => undefined);
 
 export async function exportLearningData(): Promise<LearningExport> {
   const database = getLearningDatabase();

@@ -6,7 +6,7 @@ import { useInferStore, type ResultView } from "@/store/useInferStore";
 import { CardPlanMarkdownView } from "./CardPlanMarkdownView";
 
 export function ResultPane() {
-  const { steps, step6Backend, cardPlan, cardPlanMarkdown, openuiCode, stitchArtifact, assetManifest, openuiDiagnostics, rightView, setRightView } = useInferStore();
+  const { steps, step6Backend, cardPlan, cardPlanMarkdown, openuiCode, stitchArtifact, stitchJobProgress, assetManifest, openuiDiagnostics, rightView, setRightView, cancelActiveStitchJob } = useInferStore();
   const streaming = steps.openui_generate.status === "loading";
   const isStitch = step6Backend === "stitch";
   const generatedSource = isStitch ? stitchArtifact?.htmlSource : openuiCode;
@@ -34,7 +34,7 @@ export function ResultPane() {
         {!active ? <div className="flex h-full items-center justify-center text-xs text-zinc-500">执行⑤ CardPlan 后在此查看和编辑卡片</div> : null}
         {active === "openui" && cardPlan ? (
           isStitch ? (
-            <StitchPreview artifact={stitchArtifact} loading={streaming} error={steps.openui_generate.error} />
+            <StitchPreview artifact={stitchArtifact} loading={streaming} error={steps.openui_generate.error} progress={stitchJobProgress} onCancel={() => void cancelActiveStitchJob()} />
           ) : (
             <div className="workspace-openui h-full p-3"><OpenUIRenderer code={openuiCode ?? ""} cardPlan={cardPlan} assetManifest={assetManifest} assetResolutionDiagnostics={openuiDiagnostics?.assetResolutionDiagnostics} assetUsage={openuiDiagnostics?.quality?.assetUsage} layoutCoverage={openuiDiagnostics?.layoutCoverage} isStreaming={streaming} /></div>
           )

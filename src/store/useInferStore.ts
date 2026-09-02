@@ -14,7 +14,7 @@ import type { StepProvenance } from "@/lib/provenance";
 import type { CardEditModelProfile, CardEditTarget, OpenUIEditVersion } from "@/lib/cardEditingTypes";
 import type { GenerationEpisode, LearningSettings, PolicyObservation } from "@/learning/types";
 import { abandonEpisode, appendEpisodeEdit, appendEpisodeFeedback, createGenerationEpisode, finalizeEpisode, recordEpisodeStep, recordEpisodeUndo, recordInitialOpenUI } from "@/learning/episode";
-import { defaultSkillStepReuse, exportLearningData, getLearningSettings, getProfileDigestCache, listEpisodes, listPolicies, listPolicyObservations, listSkillCandidates, listSkills, listSkillVersions, putEpisode, putLearningSettings, putPolicy, putPolicyObservation, putProfileDigestCache } from "@/learning/storage";
+import { defaultSkillStepReuse, deleteActiveStitchJob, exportLearningData, getLatestActiveStitchJob, getLearningSettings, getProfileDigestCache, listEpisodes, listPolicies, listPolicyObservations, listSkillCandidates, listSkills, listSkillVersions, putActiveStitchJob, putEpisode, putLearningSettings, putPolicy, putPolicyObservation, putProfileDigestCache } from "@/learning/storage";
 import { abandonTaskRun, acceptTaskRunAndCreateCandidate, beginStepCapture, completeStepCapture, failStepCapture, failTaskRun, recordCardEdit, recordClarificationAnswers, startTaskRun, workflowRunId } from "@/learning/workflowCapture";
 import type { AttributionReport, PolicyGradientCandidate } from "@/lib/reflection/types";
 import { canGuardedAutoPromote, observationFromCandidate, promoteCandidate, reflectionPolicyForEpisode, rollbackPolicy } from "@/lib/reflection/promotion";
@@ -33,7 +33,8 @@ import { applyExternalSkillRanking, buildSkillInvocation, buildSkillMatchDecisio
 import { createReuseDelta, createReuseExecutionPlan, findInvocationReuseSnapshot, findReuseSnapshot, getReuseSnapshot, skillGenericInvocationFingerprint, skillInvocationFingerprint } from "@/learning/reuseAccelerator";
 import { sha256 } from "@/learning/hash";
 import { applyProgramInferenceDelta, publicDeltaSummary } from "@/learning/deltaPatch";
-import { isStitchArtifact, type Step6Backend, type StitchArtifact } from "@/stitch/types";
+import { type ActiveStitchJobRecord, type Step6Backend, type StitchArtifact, type StitchJobProgress } from "@/stitch/types";
+import { cancelStitchJob as cancelRemoteStitchJob, createStitchJob, generateStitchSynchronously, pollStitchJob } from "@/stitch/browserJobs";
 
 export { RESULT_VIEWS, type ResultView } from "@/lib/resultViews";
 
@@ -152,6 +153,7 @@ interface InferState {
   reasoningGraph: string | null;
   openuiCode: string | null;
   stitchArtifact: StitchArtifact | null;
+  stitchJobProgress: StitchJobProgress | null;
   openuiDiagnostics: InferApiResponse["openuiDiagnostics"] | null;
   assetManifest: AssetManifest | null;
   openuiStreamMetrics: OpenUIStreamMetrics;
@@ -219,6 +221,8 @@ interface InferState {
   markOpenUIFirstRenderableRoot: (timestamp?: number) => void;
   reportOpenUILayout: (measurements: OpenUILayoutMeasurement[]) => Promise<void>;
   initializeLearning: () => Promise<void>;
+  resumeActiveStitchJob: () => Promise<void>;
+  cancelActiveStitchJob: () => Promise<void>;
   setTargeting: (active: boolean) => void;
   setCardEditTarget: (target: CardEditTarget | null) => void;
   setEditDraft: (value: string) => void;
@@ -286,7 +290,7 @@ function clearedResult() {
   return {
     inferenceState: null,
     slots: [] as InferSlot[], conflicts: [] as InferConflict[], questions: [] as InferQuestion[],
-    result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, stitchArtifact: null as StitchArtifact | null, openuiDiagnostics: null, assetManifest: null as AssetManifest | null, openuiStreamMetrics: {} as OpenUIStreamMetrics, layoutStabilization: emptyLayoutStabilization(), rightView: null as ResultView | null,
+    result: null, cardPlan: null, cardPlanMarkdown: null, reasoningGraph: null, openuiCode: null, stitchArtifact: null as StitchArtifact | null, stitchJobProgress: null as StitchJobProgress | null, openuiDiagnostics: null, assetManifest: null as AssetManifest | null, openuiStreamMetrics: {} as OpenUIStreamMetrics, layoutStabilization: emptyLayoutStabilization(), rightView: null as ResultView | null,
     answers: {}, runAllPaused: false,
     prefetchedSearch: null as SearchPrefetch | null, prefetchStatus: "idle" as const,
     isTargeting: false, cardEditTarget: null as CardEditTarget | null, editDraft: "", editStatus: "idle" as const,
@@ -670,6 +674,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       reasoningGraph: null,
       openuiCode: null,
       stitchArtifact: null,
+      stitchJobProgress: null,
       openuiDiagnostics: null,
       assetManifest: null,
       openuiStreamMetrics: {},
@@ -727,6 +732,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       step6Backend: "openui" as const,
       openuiCode: null,
       stitchArtifact: null,
+      stitchJobProgress: null,
       openuiDiagnostics: null,
       openuiVersions: [],
       openuiVersionIndex: -1,
@@ -736,6 +742,7 @@ export const useInferStore = create<InferState>((set, get) => ({
     step6Backend,
     openuiCode: null,
     stitchArtifact: null,
+    stitchJobProgress: null,
     openuiDiagnostics: null,
     assetManifest: null,
     openuiStreamMetrics: {},
@@ -753,8 +760,58 @@ export const useInferStore = create<InferState>((set, get) => ({
         listPolicies(), getLearningSettings(), listSkills(), listSkillVersions(), listSkillCandidates(),
       ]);
       set({ stablePolicies, learningSettings, skills, skillVersions, skillCandidates });
+      await get().resumeActiveStitchJob();
     }
     catch { set({ stablePolicies: [] }); }
+  },
+  resumeActiveStitchJob: async () => {
+    let active: ActiveStitchJobRecord | undefined;
+    try { active = await getLatestActiveStitchJob(); } catch { return; }
+    if (!active) return;
+    const cardPlan = active.cardPlan as CardPlan;
+    set((state) => ({
+      query: active.query,
+      cardPlan,
+      step6Backend: "stitch",
+      rightView: "openui",
+      stitchArtifact: null,
+      steps: {
+        ...state.steps,
+        openui_generate: {
+          ...state.steps.openui_generate,
+          status: "loading",
+          error: null,
+          logs: [{ ts: new Date().toISOString(), phase: "resume", message: `STITCH_RESUME · ${active.jobId}` }],
+        },
+      },
+    }));
+    try {
+      const artifact = await pollStitchJob({ jobId: active.jobId, readToken: active.readToken, onProgress: (progress) => set({ stitchJobProgress: progress }) });
+      await deleteActiveStitchJob(active.jobId);
+      set((state) => ({
+        stitchArtifact: artifact,
+        stitchJobProgress: null,
+        steps: { ...state.steps, openui_generate: {
+          ...state.steps.openui_generate, status: "done", model: `stitch/${artifact.model}`, durationMs: artifact.durationMs,
+          reasoning: "已从本地任务记录恢复并取得异步 Stitch H5。", outputs: { backend: "stitch", projectId: artifact.projectId, screenId: artifact.screenId, htmlBytes: artifact.htmlBytes, resumed: true },
+          logs: [...state.steps.openui_generate.logs, { ts: new Date().toISOString(), phase: "response", message: `STITCH_READY · ${artifact.htmlBytes} bytes` }],
+        } },
+      }));
+    } catch (error) {
+      const terminal = get().stitchJobProgress?.status;
+      if (terminal && ["failed", "canceled", "expired"].includes(terminal)) {
+        try { await deleteActiveStitchJob(active.jobId); } catch { /* best-effort cleanup */ }
+      }
+      set((state) => ({ steps: { ...state.steps, openui_generate: { ...state.steps.openui_generate, status: "error", error: error instanceof Error ? error.message : "Stitch 任务恢复失败" } } }));
+    }
+  },
+  cancelActiveStitchJob: async () => {
+    let active: ActiveStitchJobRecord | undefined;
+    try { active = await getLatestActiveStitchJob(); } catch { return; }
+    if (!active) return;
+    await cancelRemoteStitchJob(active.jobId, active.readToken);
+    await deleteActiveStitchJob(active.jobId);
+    set((state) => ({ stitchJobProgress: null, steps: { ...state.steps, openui_generate: { ...state.steps.openui_generate, status: "error", error: "Stitch 任务已取消" } } }));
   },
   setTargeting: (isTargeting) => set({ isTargeting, ...(isTargeting ? { cardEditTarget: null, editError: null } : {}) }),
   setCardEditTarget: (cardEditTarget) => set({ cardEditTarget, isTargeting: false, editError: null }),
@@ -1586,6 +1643,7 @@ export const useInferStore = create<InferState>((set, get) => ({
       set((state) => ({
         openuiCode: null,
         stitchArtifact: null,
+        stitchJobProgress: null,
         openuiDiagnostics: null,
         assetManifest: null,
         openuiStreamMetrics: {},
@@ -1598,7 +1656,7 @@ export const useInferStore = create<InferState>((set, get) => ({
           ...state.steps,
           [name]: {
             ...state.steps[name], status: "loading", streamingChars: 0, error: null,
-            logs: [{ ts: new Date().toISOString(), phase: "request", message: "STITCH_DIRECT · CardPlan → Stitch H5 · OpenUI model calls=0" }],
+            logs: [{ ts: new Date().toISOString(), phase: "request", message: "STITCH_ASYNC · CardPlan → Cloud Tasks → Stitch H5 · OpenUI model calls=0" }],
           },
         },
       }));
@@ -1612,21 +1670,44 @@ export const useInferStore = create<InferState>((set, get) => ({
             request: { step: name, backend: "stitch", cardPlan },
           })).id;
         }
-        const response = await fetch("/api/stitch/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardPlan, query }),
-        });
-        const raw = await response.text();
-        let payload: unknown;
-        try { payload = raw ? JSON.parse(raw) : null; }
-        catch { throw new Error(`Stitch 返回了无法解析的响应（HTTP ${response.status}）`); }
-        if (!response.ok || !isStitchArtifact(payload)) {
-          const providerError = payload && typeof payload === "object" && "error" in payload
-            ? String((payload as { error?: unknown }).error ?? "")
-            : "";
-          throw new Error(providerError || `Stitch 生成失败（HTTP ${response.status}）`);
+        let payload: StitchArtifact | undefined;
+        let accepted: Awaited<ReturnType<typeof createStitchJob>> | undefined;
+        try {
+          accepted = await createStitchJob({
+            cardPlan,
+            query,
+            idempotencyKey: `${captureEpisode?.id ?? crypto.randomUUID()}:stitch-v1`,
+          });
+        } catch (asyncError) {
+          set((state) => ({ steps: { ...state.steps, [name]: { ...state.steps[name], logs: [...state.steps[name].logs, { ts: new Date().toISOString(), phase: "fallback", message: `STITCH_SYNC_FALLBACK · ${asyncError instanceof Error ? asyncError.message : "async unavailable"}` }] } } }));
+          payload = await generateStitchSynchronously(cardPlan, query);
         }
+        if (accepted) {
+          try {
+            await putActiveStitchJob({
+              jobId: accepted.jobId, readToken: accepted.readToken, query, cardPlan,
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            });
+          } catch {
+            // Persistence is a refresh-recovery enhancement; generation can continue without IndexedDB.
+          }
+          set((state) => ({
+            stitchJobProgress: {
+              jobId: accepted.jobId, status: "queued", phase: "queued", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), elapsedMs: 0, pollAfterMs: accepted.pollAfterMs,
+            },
+            steps: { ...state.steps, [name]: { ...state.steps[name], logs: [...state.steps[name].logs, { ts: new Date().toISOString(), phase: "queued", message: `STITCH_QUEUED · ${accepted.jobId}` }] } },
+          }));
+          payload = await pollStitchJob({
+            jobId: accepted.jobId,
+            readToken: accepted.readToken,
+            onProgress: (progress) => set((state) => ({
+              stitchJobProgress: progress,
+              steps: { ...state.steps, [name]: { ...state.steps[name], reasoning: `Stitch 异步任务：${progress.phase} · ${Math.round(progress.elapsedMs / 1000)}s` } },
+            })),
+          });
+          try { await deleteActiveStitchJob(accepted.jobId); } catch { /* IndexedDB may be unavailable in tests/private mode. */ }
+        }
+        if (!payload) throw new Error("Stitch 任务未返回可渲染的 H5");
         const totalMs = Math.round(performance.now() - startedAt);
         const timing: StepTiming = {
           totalMs,
@@ -1654,6 +1735,7 @@ export const useInferStore = create<InferState>((set, get) => ({
           episode = recordEpisodeStep(episode, name, {});
           return {
             stitchArtifact: payload,
+            stitchJobProgress: null,
             currentEpisode: episode,
             steps: {
               ...state.steps,

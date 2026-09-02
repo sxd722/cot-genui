@@ -216,7 +216,7 @@ describe("Stitch MVP side path", () => {
     expect(markup).not.toContain("<img");
   });
 
-  it("routes Step 6 directly to Stitch without calling the OpenUI infer endpoint", async () => {
+  it("routes Step 6 through the asynchronous Stitch job API without calling OpenUI", async () => {
     const artifact: StitchArtifact = {
       provider: "stitch",
       projectId: "project_1",
@@ -229,8 +229,13 @@ describe("Stitch MVP side path", () => {
     };
     const fetchMock = vi.fn(async (...args: [RequestInfo | URL, RequestInit?]) => {
       const [input] = args;
-      if (String(input) !== "/api/stitch/generate") throw new Error(`unexpected endpoint: ${String(input)}`);
-      return new Response(JSON.stringify(artifact), { status: 200, headers: { "content-type": "application/json" } });
+      if (String(input) === "/api/stitch/jobs") {
+        return new Response(JSON.stringify({ jobId: "stj_test_job", readToken: "read-token", status: "queued", pollAfterMs: 0 }), { status: 202, headers: { "content-type": "application/json" } });
+      }
+      if (String(input).startsWith("/api/stitch/jobs/stj_test_job?token=")) {
+        return new Response(JSON.stringify({ jobId: "stj_test_job", status: "succeeded", phase: "complete", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), elapsedMs: 900, pollAfterMs: 0, artifact }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected endpoint: ${String(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
     useInferStore.getState().setStep6Backend("stitch");
@@ -238,8 +243,9 @@ describe("Stitch MVP side path", () => {
 
     await useInferStore.getState().runStep("openui_generate");
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/stitch/generate");
+    expect(useInferStore.getState().steps.openui_generate.error).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/stitch/jobs");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ query: expect.any(String) });
     expect(useInferStore.getState().steps.openui_generate.status).toBe("done");
     expect(useInferStore.getState().steps.openui_generate.outputs.openuiModelCalls).toBe(0);

@@ -1,16 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import type { StitchArtifact } from "@/stitch/types";
+import type { StitchArtifact, StitchJobProgress } from "@/stitch/types";
 
 /**
  * Render host-fetched Stitch HTML unchanged in an unrestricted demo iframe.
  * The screenshot remains a manual fallback for provider HTML incompatibility.
  */
-export function StitchPreview({ artifact, loading, error }: {
+const PHASE_LABELS: Record<string, string> = {
+  queued: "等待执行器",
+  generating: "Stitch 正在设计界面",
+  "fetching-html": "正在获取 H5",
+  finalizing: "正在保存结果",
+  complete: "已完成",
+};
+
+export function StitchPreview({ artifact, loading, error, progress, onCancel }: {
   artifact: StitchArtifact | null;
   loading: boolean;
   error?: string | null;
+  progress?: StitchJobProgress | null;
+  onCancel?: () => void;
 }) {
   const [previewMode, setPreviewMode] = useState<"html" | "image">("html");
 
@@ -18,7 +28,9 @@ export function StitchPreview({ artifact, loading, error }: {
     return (
       <div className="flex h-full items-center justify-center bg-zinc-950">
         <div className="flex flex-col items-center gap-3">
-          <div className="text-sm text-zinc-300">{loading ? "Stitch 正在生成 H5…" : "执行第⑥步后显示 Stitch H5"}</div>
+          <div className="text-sm text-zinc-300">{loading ? (PHASE_LABELS[progress?.phase ?? "queued"] ?? "Stitch 正在生成 H5…") : "执行第⑥步后显示 Stitch H5"}</div>
+          {loading && progress ? <div className="text-xs text-zinc-500">{Math.round(progress.elapsedMs / 1000)} 秒 · {progress.jobId}</div> : null}
+          {loading && onCancel ? <button type="button" onClick={onCancel} className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:border-zinc-500">取消任务</button> : null}
           {error ? <div className="max-w-lg text-xs text-red-400">{error}</div> : null}
         </div>
       </div>
